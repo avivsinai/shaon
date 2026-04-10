@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 const KEYRING_SERVICE: &str = "hilan-cli";
 
@@ -46,6 +48,8 @@ impl fmt::Debug for Config {
 impl Config {
     /// Load config from `~/.hilan/config.toml`.
     pub fn load() -> Result<Self> {
+        migrate_config_if_needed()?;
+
         let path = config_path();
         if !path.exists() {
             print_setup_instructions(&path);
@@ -66,6 +70,8 @@ impl Config {
             );
         }
 
+        migrate_subdomain_state_if_needed(&config.subdomain)?;
+
         Ok(config)
     }
 
@@ -73,7 +79,10 @@ impl Config {
     pub fn get_password(&self) -> Result<SecretString> {
         // 1. Try environment variable first (CI, scripts, testing)
         if let Ok(pw) = std::env::var("HILAN_PASSWORD") {
-            return Ok(SecretString::from(pw));
+            if !pw.is_empty() {
+                return Ok(SecretString::from(pw));
+            }
+            tracing::debug!("ignoring empty HILAN_PASSWORD");
         }
 
         // 2. Try OS keychain
@@ -113,10 +122,7 @@ impl Config {
             None => anyhow::bail!("No plaintext password in config to migrate"),
         };
 
-        let entry = keyring_entry(&self.subdomain, &self.username)?;
-        entry
-            .set_password(&pw)
-            .context("store password in OS keychain")?;
+        self.store_password_in_keychain(&pw)?;
 
         // Clear the in-memory password and rewrite config without it
         self.password = None;
@@ -167,7 +173,7 @@ pub fn config_dir() -> PathBuf {
     PathBuf::from(home).join(".hilan")
 }
 
-/// Returns `~/.config/hilan/{subdomain}/` for per-org state (cookies, ontology cache).
+/// Returns `~/.hilan/{subdomain}/` for per-org state (cookies, ontology cache).
 #[allow(dead_code)] // used in later phases
 pub fn subdomain_dir(subdomain: &str) -> PathBuf {
     config_dir().join(subdomain)
@@ -175,6 +181,121 @@ pub fn subdomain_dir(subdomain: &str) -> PathBuf {
 
 fn config_path() -> PathBuf {
     config_dir().join("config.toml")
+}
+
+fn legacy_config_roots() -> Vec<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let mut roots = Vec::new();
+
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        roots.push(PathBuf::from(xdg_config_home).join("hilan"));
+    } else {
+        roots.push(PathBuf::from(&home).join(".config").join("hilan"));
+    }
+
+    #[cfg(target_os = "macos")]
+    roots.push(
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("com.hilan.hilan"),
+    );
+
+    roots
+}
+
+fn migrate_config_if_needed() -> Result<()> {
+    let target = config_path();
+    if target.exists() {
+        return Ok(());
+    }
+
+    for legacy_root in legacy_config_roots() {
+        let legacy_path = legacy_root.join("config.toml");
+        if !legacy_path.exists() {
+            continue;
+        }
+
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create directory {}", parent.display()))?;
+        }
+        fs::copy(&legacy_path, &target).with_context(|| {
+            format!(
+                "migrate config from {} to {}",
+                legacy_path.display(),
+                target.display()
+            )
+        })?;
+        set_file_permissions_600(&target);
+        eprintln!(
+            "Migrated config from {} to {}",
+            legacy_path.display(),
+            target.display()
+        );
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+fn migrate_subdomain_state_if_needed(subdomain: &str) -> Result<()> {
+    let target = subdomain_dir(subdomain);
+    if target.exists() {
+        return Ok(());
+    }
+
+    for legacy_root in legacy_config_roots() {
+        let legacy_dir = legacy_root.join(subdomain);
+        if !legacy_dir.is_dir() {
+            continue;
+        }
+
+        copy_dir_recursively(&legacy_dir, &target)?;
+        eprintln!(
+            "Migrated state from {} to {}",
+            legacy_dir.display(),
+            target.display()
+        );
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+fn copy_dir_recursively(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target).with_context(|| format!("create directory {}", target.display()))?;
+
+    for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
+        let entry = entry.with_context(|| format!("read entry in {}", source.display()))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+
+        if entry
+            .file_type()
+            .with_context(|| format!("read file type for {}", source_path.display()))?
+            .is_dir()
+        {
+            copy_dir_recursively(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path).with_context(|| {
+                format!(
+                    "copy state file from {} to {}",
+                    source_path.display(),
+                    target_path.display()
+                )
+            })?;
+            set_file_permissions_600(&target_path);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 /// Warn if config file is group/world readable (Unix only).
@@ -240,6 +361,48 @@ fn print_setup_instructions(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secrecy::ExposeSecret;
+    use std::ffi::OsString;
+
+    struct EnvGuard {
+        home: Option<OsString>,
+        xdg_config_home: Option<OsString>,
+        hilan_password: Option<OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            restore_env("HOME", self.home.as_deref());
+            restore_env("XDG_CONFIG_HOME", self.xdg_config_home.as_deref());
+            restore_env("HILAN_PASSWORD", self.hilan_password.as_deref());
+        }
+    }
+
+    fn restore_env(key: &str, value: Option<&std::ffi::OsStr>) {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    fn preserve_env() -> EnvGuard {
+        EnvGuard {
+            home: std::env::var_os("HOME"),
+            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+            hilan_password: std::env::var_os("HILAN_PASSWORD"),
+        }
+    }
+
+    fn test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hilan-config-tests-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn debug_redacts_password() {
@@ -302,5 +465,68 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.password.as_deref(), Some("oldpass"));
+    }
+
+    #[test]
+    fn load_migrates_legacy_xdg_config_and_state() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+
+        let root = test_root("migrate-xdg");
+        let home = root.join("home");
+        let xdg = root.join("xdg");
+        let legacy_root = xdg.join("hilan");
+        let legacy_state_dir = legacy_root.join("acme");
+
+        fs::create_dir_all(&legacy_state_dir).unwrap();
+        fs::write(
+            legacy_root.join("config.toml"),
+            r#"
+subdomain = "acme"
+username = "12345"
+password = "legacy-password"
+"#,
+        )
+        .unwrap();
+        fs::write(legacy_state_dir.join("types.json"), r#"{"ok":true}"#).unwrap();
+        fs::write(legacy_state_dir.join("cookies.json"), r#"{"cookies":[]}"#).unwrap();
+
+        std::env::set_var("HOME", &home);
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        std::env::remove_var("HILAN_PASSWORD");
+
+        let config = Config::load().unwrap();
+
+        assert_eq!(config.subdomain, "acme");
+        assert!(config_path().exists(), "config should be migrated to ~/.hilan");
+        assert!(
+            subdomain_dir("acme").join("types.json").exists(),
+            "subdomain state should be migrated to ~/.hilan/acme"
+        );
+        assert!(
+            subdomain_dir("acme").join("cookies.json").exists(),
+            "cookie state should be migrated to ~/.hilan/acme"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn get_password_ignores_empty_hilan_password() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+
+        std::env::set_var("HILAN_PASSWORD", "");
+
+        let config = Config {
+            subdomain: format!("acme-{}", std::process::id()),
+            username: format!("user-{}", std::process::id()),
+            password: Some("fallback-password".to_string()),
+            payslip_folder: None,
+            payslip_format: None,
+        };
+
+        let password = config.get_password().unwrap();
+        assert_eq!(password.expose_secret(), "fallback-password");
     }
 }
