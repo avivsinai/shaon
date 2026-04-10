@@ -1,6 +1,6 @@
 {
   "name": "hilan",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Rust CLI and Claude Code skill for Hilan (חילן) / Hilanet attendance, reports, payslips, and salary lookup.",
   "author": {
     "name": "Aviv Sinai",
