@@ -1,0 +1,16 @@
+[default.extend-words]
+# Hebrew transliterations and domain-specific terms
+hilan = "hilan"
+hilanet = "hilanet"
+orgid = "orgid"
+aspx = "aspx"
+asmx = "asmx"
+
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "target/",
+    "tests/fixtures/",
+    ".claude/",
+    ".agent-mail/",
+]
