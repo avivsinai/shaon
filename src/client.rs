@@ -265,8 +265,11 @@ impl HilanClient {
         let serialized = {
             let store = self.cookie_store.lock().unwrap();
             let mut plaintext = Vec::new();
-            if cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut plaintext)
-                .is_err()
+            if cookie_store::serde::json::save_incl_expired_and_nonpersistent(
+                &store,
+                &mut plaintext,
+            )
+            .is_err()
             {
                 return;
             }
@@ -295,7 +298,10 @@ impl HilanClient {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = fs::set_permissions(&cookie_path, fs::Permissions::from_mode(0o600));
             }
-            tracing::debug!("saved encrypted session cookies to {}", cookie_path.display());
+            tracing::debug!(
+                "saved encrypted session cookies to {}",
+                cookie_path.display()
+            );
         }
     }
 
@@ -979,8 +985,8 @@ fn load_cookie_store(config: &Config, cookie_path: &Path) -> Result<cookie_store
 }
 
 fn encrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| anyhow!("build AES-256-GCM cipher: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| anyhow!("build AES-256-GCM cipher: {e}"))?;
 
     let mut nonce_bytes = [0_u8; COOKIE_NONCE_LEN];
     let mut rng = rand::rngs::OsRng;
@@ -1002,8 +1008,8 @@ fn decrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], encrypted: &[u8]) -> Result<V
         bail!("encrypted cookie blob shorter than nonce");
     }
 
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| anyhow!("build AES-256-GCM cipher: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| anyhow!("build AES-256-GCM cipher: {e}"))?;
     let (nonce_bytes, ciphertext) = encrypted.split_at(COOKIE_NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
 
