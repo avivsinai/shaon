@@ -1,6 +1,6 @@
 {
   "name": "hilan",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Rust CLI and agent skill for Hilan attendance, reports, payslips, and salary lookup.",
   "author": {
     "name": "Aviv Sinai",
