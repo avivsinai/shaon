@@ -1,12 +1,14 @@
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use hilan::core::{AttendanceProvider, AttendanceType as CoreAttendanceType, ProviderError};
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use zeroize::Zeroize;
 
-use hilan::{api, attendance, client, config, ontology, reports};
+use hilan::{
+    api, attendance, client, config, ontology, provider::HilanProvider, reports, use_cases,
+};
 
 use attendance::is_time_pattern;
 use client::HilanClient;
@@ -21,7 +23,7 @@ struct OverviewResponse {
     user: UserInfo,
     month: String,
     summary: MonthSummary,
-    attendance_types: Vec<ontology::AttendanceType>,
+    attendance_types: Vec<CoreAttendanceType>,
     error_days: Vec<ErrorDay>,
     missing_days: Vec<String>,
     suggested_actions: Vec<SuggestedAction>,
@@ -496,13 +498,16 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Errors { month } => {
-            client.ensure_authenticated().await?;
             let month = parse_month_or_current(month.as_deref())?;
-            let cal = attendance::read_calendar(&mut client, month).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let cal = provider
+                .month_calendar(month)
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&cal)?;
             } else {
-                attendance::print_errors(&cal);
+                use_cases::print_error_days(&cal);
             }
         }
         Commands::Fix {
@@ -658,7 +663,8 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Overview { month, detailed } => {
-            run_overview(&mut client, &subdomain, month.as_deref(), detailed, json).await?;
+            let mut provider = HilanProvider::from_client(client);
+            run_overview(&mut provider, month.as_deref(), detailed, json).await?;
         }
         Commands::AutoFill {
             month,
@@ -849,132 +855,99 @@ fn format_number(value: u64) -> String {
 // ---------------------------------------------------------------------------
 
 async fn run_overview(
-    client: &mut HilanClient,
-    subdomain: &str,
+    provider: &mut impl AttendanceProvider,
     month_arg: Option<&str>,
     verbose: bool,
     json: bool,
 ) -> Result<()> {
-    client.ensure_authenticated().await?;
-    let bootstrap = api::bootstrap(client).await?;
     let month = parse_month_or_current(month_arg)?;
-    let cal = attendance::read_calendar(client, month).await?;
-    let attendance_types = load_or_sync_ontology(client, subdomain).await?;
-
     let today = Local::now().date_naive();
-    let is_current_month = month.year() == today.year() && month.month() == today.month();
-    let is_past = |d: &attendance::CalendarDay| !(is_current_month && d.date > today);
+    let overview = use_cases::build_overview(provider, month, today)
+        .await
+        .map_err(provider_error)?;
+    let month_str = overview.month.format("%Y-%m").to_string();
 
-    let error_days: Vec<&attendance::CalendarDay> =
-        cal.days.iter().filter(|d| d.has_error).collect();
-    let error_tasks_by_date: BTreeMap<NaiveDate, api::ErrorTask> = if error_days.is_empty() {
-        BTreeMap::new()
-    } else {
-        match api::get_error_tasks(client).await {
-            Ok(tasks) => tasks.into_iter().map(|task| (task.date, task)).collect(),
-            Err(err) => {
-                tracing::debug!("error task lookup failed: {err}");
-                BTreeMap::new()
-            }
-        }
-    };
-
-    let reported_count = cal.days.iter().filter(|d| d.is_reported()).count() as u32;
-
-    let missing_days: Vec<&attendance::CalendarDay> = cal
-        .days
+    let error_day_details: Vec<ErrorDay> = overview
+        .error_days
         .iter()
-        .filter(|d| d.is_work_day() && !d.is_reported() && !d.has_error && is_past(d))
-        .collect();
-
-    let total_work_days = cal
-        .days
-        .iter()
-        .filter(|d| d.is_work_day() && is_past(d))
-        .count() as u32;
-
-    let month_str = month.format("%Y-%m").to_string();
-
-    let error_day_details: Vec<ErrorDay> = error_days
-        .iter()
-        .map(|d| ErrorDay {
-            date: d.date.format("%Y-%m-%d").to_string(),
-            day_name: d.day_name.clone(),
-            error_message: d
+        .map(|entry| ErrorDay {
+            date: entry.day.date.format("%Y-%m-%d").to_string(),
+            day_name: entry.day.day_name.clone(),
+            error_message: entry
+                .day
                 .error_message
                 .clone()
                 .unwrap_or_else(|| "missing report".to_string()),
-            fix_params: error_tasks_by_date.get(&d.date).map(|task| ErrorFixParams {
-                report_id: task.report_id.clone(),
-                error_type: task.error_type.clone(),
-            }),
+            fix_params: entry
+                .fix_target
+                .as_ref()
+                .and_then(error_fix_params_from_target),
         })
         .collect();
 
-    let missing_day_strings: Vec<String> = missing_days
+    let missing_day_strings: Vec<String> = overview
+        .missing_days
         .iter()
-        .map(|d| d.date.format("%Y-%m-%d").to_string())
+        .map(|date| date.format("%Y-%m-%d").to_string())
         .collect();
 
-    let mut suggested_actions = Vec::new();
-
-    if !error_day_details.is_empty() {
-        let count = error_day_details.len();
-        let fixable_days: Vec<serde_json::Value> = error_day_details
-            .iter()
-            .filter_map(|day| {
-                day.fix_params.as_ref().map(|params| {
-                    serde_json::json!({
-                        "date": day.date,
-                        "report_id": params.report_id,
-                        "error_type": params.error_type,
-                    })
-                })
-            })
-            .collect();
-        suggested_actions.push(SuggestedAction {
-            kind: "fix_errors".to_string(),
-            reason: format!("{count} day(s) have attendance errors"),
-            params: serde_json::json!({
-                "month": month_str,
-                "count": count,
-                "fixable_days": fixable_days,
-            }),
-            safety: "dry_run_default".to_string(),
-        });
-    }
-
-    if !missing_day_strings.is_empty() {
-        let count = missing_day_strings.len();
-        let first = &missing_day_strings[0];
-        let last = missing_day_strings.last().unwrap();
-        suggested_actions.push(SuggestedAction {
-            kind: "fill_missing".to_string(),
-            reason: format!("{count} work day(s) have no attendance report"),
-            params: serde_json::json!({
-                "from": first,
-                "to": last,
-                "count": count,
-            }),
-            safety: "dry_run_default".to_string(),
-        });
-    }
+    let suggested_actions: Vec<SuggestedAction> = overview
+        .suggested_actions
+        .iter()
+        .map(|action| match action {
+            use_cases::SuggestedActionPlan::FixErrors {
+                month,
+                count,
+                fixable_targets,
+            } => SuggestedAction {
+                kind: "fix_errors".to_string(),
+                reason: format!("{count} day(s) have attendance errors"),
+                params: serde_json::json!({
+                    "month": month.format("%Y-%m").to_string(),
+                    "count": count,
+                    "fixable_days": fixable_targets
+                        .iter()
+                        .filter_map(|target| {
+                            error_fix_params_from_target(target).map(|params| {
+                                serde_json::json!({
+                                    "date": target.date.format("%Y-%m-%d").to_string(),
+                                    "report_id": params.report_id,
+                                    "error_type": params.error_type,
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                }),
+                safety: "dry_run_default".to_string(),
+            },
+            use_cases::SuggestedActionPlan::FillMissing { from, to, count } => SuggestedAction {
+                kind: "fill_missing".to_string(),
+                reason: format!("{count} work day(s) have no attendance report"),
+                params: serde_json::json!({
+                    "from": from.format("%Y-%m-%d").to_string(),
+                    "to": to.format("%Y-%m-%d").to_string(),
+                    "count": count,
+                }),
+                safety: "dry_run_default".to_string(),
+            },
+        })
+        .collect();
 
     let response = OverviewResponse {
         user: UserInfo {
-            user_id: bootstrap.user_id,
-            employee_id: bootstrap.employee_id.to_string(),
-            name: bootstrap.name,
-            is_manager: bootstrap.is_manager,
+            user_id: overview.identity.user_id.clone(),
+            employee_id: overview.identity.employee_id.clone(),
+            name: overview.identity.display_name.clone(),
+            is_manager: overview.identity.is_manager,
         },
         month: month_str,
         summary: MonthSummary {
-            total_work_days,
-            reported: reported_count,
-            missing: missing_days.len() as u32,
-            errors: error_days.len() as u32,
+            total_work_days: overview.summary.total_work_days,
+            reported: overview.summary.reported,
+            missing: overview.summary.missing,
+            errors: overview.summary.errors,
         },
-        attendance_types,
+        attendance_types: overview.attendance_types.clone(),
         error_days: error_day_details,
         missing_days: missing_day_strings,
         suggested_actions,
@@ -984,7 +957,7 @@ async fn run_overview(
         if verbose {
             // Include per-day data only behind --verbose
             let mut value = serde_json::to_value(&response)?;
-            value["days"] = serde_json::to_value(&cal.days)?;
+            value["days"] = serde_json::to_value(&overview.calendar.days)?;
             println!("{}", serde_json::to_string_pretty(&value)?);
         } else {
             print_json(&response)?;
@@ -993,7 +966,7 @@ async fn run_overview(
         print_overview_human(&response);
         if verbose {
             println!();
-            attendance::print_calendar(&cal);
+            print_calendar_verbose(&overview.calendar);
         }
     }
 
@@ -1063,16 +1036,52 @@ fn print_overview_human(ctx: &OverviewResponse) {
     }
 }
 
-async fn load_or_sync_ontology(
-    client: &mut HilanClient,
-    subdomain: &str,
-) -> Result<Vec<ontology::AttendanceType>> {
-    // Use load_or_sync which respects 24h TTL cache freshness
-    match ontology::OrgOntology::load_or_sync(client, subdomain).await {
-        Ok(ont) => Ok(ont.types),
-        Err(_) => {
-            // Non-fatal: overview/auto-fill are still useful without types
-            Ok(Vec::new())
-        }
+fn error_fix_params_from_target(target: &hilan::core::FixTarget) -> Option<ErrorFixParams> {
+    let report_id = target.metadata.get("report_id").cloned().or_else(|| {
+        target
+            .provider_ref
+            .split_once(':')
+            .map(|(report_id, _)| report_id.to_string())
+    });
+    let error_type = target.metadata.get("error_type").cloned().or_else(|| {
+        target
+            .provider_ref
+            .split_once(':')
+            .map(|(_, error_type)| error_type.to_string())
+    });
+
+    match (report_id, error_type) {
+        (Some(report_id), Some(error_type)) => Some(ErrorFixParams {
+            report_id,
+            error_type,
+        }),
+        _ => None,
     }
+}
+
+fn print_calendar_verbose(calendar: &hilan::core::MonthCalendar) {
+    println!(
+        "Calendar {} (employee {})",
+        calendar.month.format("%Y-%m"),
+        calendar.employee_id
+    );
+    println!("Date        Day    Entry  Exit   Type             Hours  Error");
+    println!("----------  -----  -----  -----  ---------------  -----  -----");
+
+    for day in &calendar.days {
+        println!(
+            "{:<10}  {:<5}  {:<5}  {:<5}  {:<15}  {:<5}  {}",
+            day.date.format("%Y-%m-%d"),
+            day.day_name,
+            day.entry_time.as_deref().unwrap_or(""),
+            day.exit_time.as_deref().unwrap_or(""),
+            day.attendance_type.as_deref().unwrap_or(""),
+            day.total_hours.as_deref().unwrap_or(""),
+            if day.has_error { "yes" } else { "" },
+        );
+    }
+}
+
+fn provider_error(err: ProviderError) -> anyhow::Error {
+    anyhow::anyhow!("{err}")
 }
