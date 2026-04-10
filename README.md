@@ -1,39 +1,93 @@
 # hilan
 
-Claude Code plugin and Rust CLI for Hilan (חילן) / Hilanet automation.
+[![CI](https://github.com/avivsinai/hilan/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/hilan/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust: 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 
-## Status
+Unofficial Rust CLI for Hilan / Hilanet automation.
 
-Version `0.3.0` implements:
+`hilan` logs into Hilanet, replays the legacy ASP.NET WebForms flows that still
+power attendance reporting, and talks directly to the newer ASMX JSON endpoints
+for data like absences and bootstrap metadata. The current release focuses on
+day-to-day employee workflows: attendance status, error inspection, safe write
+previews, payslips, and salary summaries.
 
-- `auth`
-- `sync-types`
-- `types`
-- `status`
-- `errors`
-- `report`
-- `sheet`
-- `corrections`
-- `absences`
-- `payslip`
-- `salary`
+## Why This Exists
+
+Hilanet exposes useful functionality, but much of it still lives behind brittle
+browser flows. This project makes those flows scriptable without pretending the
+underlying protocol is simple:
+
+- Full ASP.NET form replay for attendance pages and error-wizard flows
+- Direct ASMX JSON calls where Hilan exposes machine-friendly endpoints
+- Dry-run-by-default write commands so reporting changes are inspectable before
+  they are sent
+
+For the protocol map and reverse-engineering notes, see [PROTOCOL.md](PROTOCOL.md).
+
+## What Works Today
+
+Version `0.3.0` ships these commands:
+
+- Auth and setup: `auth`, `sync-types`, `types`
+- Attendance read flows: `status`, `errors`, `report`, `sheet`, `corrections`, `absences`
+- Payroll and personal-file flows: `payslip`, `salary`
+- Attendance write flows: `clock-in`, `clock-out`, `fill`, `fix`
+
+## Safety Model
+
+All write commands are safe by default.
+
 - `clock-in`
 - `clock-out`
 - `fill`
 - `fix`
 
-The write commands are intentionally safe by default: `clock-in`, `clock-out`, `fill`, and `fix`
-run as dry-runs unless `--execute` is passed.
+These commands print the reconstructed request payload and do not submit
+anything until `--execute` is passed.
 
-## Prerequisites
+## Installation
 
-- Rust toolchain with `cargo` and `rustc`
-- Network access to `https://*.hilan.co.il`
-- A Hilan subdomain, username, and password
+### Build From Source
+
+```bash
+git clone https://github.com/avivsinai/hilan.git
+cd hilan
+cargo build --release
+```
+
+### Install With Cargo
+
+```bash
+cargo install --path .
+```
+
+### Use The Local Wrapper
+
+For local development, the repo includes a small wrapper that builds and caches
+the release binary under `~/.cache/hilan/<version>/hilan`:
+
+```bash
+./scripts/run.sh --help
+```
+
+If you want a stable local command name during development:
+
+```bash
+mkdir -p ~/bin
+ln -sf "$PWD/scripts/run.sh" ~/bin/hilan
+```
 
 ## Configuration
 
-Create `~/.config/hilan/config.toml`:
+`hilan` reads a TOML config file from the platform-specific config directory.
+
+| Platform | Config path |
+| --- | --- |
+| macOS | `~/Library/Application Support/com.hilan.hilan/config.toml` |
+| Linux and fallback | `~/.config/hilan/config.toml` |
+
+Example:
 
 ```toml
 subdomain = "YOUR_COMPANY"
@@ -45,91 +99,110 @@ payslip_folder = "/Users/you/Downloads/payslips"
 payslip_format = "%Y-%m.pdf"
 ```
 
-The `subdomain` is the part before `.hilan.co.il`.
+Notes:
 
-## Running The CLI
-
-Use the wrapper script:
-
-```bash
-plugins/hilan/scripts/run.sh --help
-```
-
-On first run it:
-
-- checks that Rust is installed
-- builds the CLI from `plugins/hilan/cli/Cargo.toml`
-- caches the release binary under `~/.cache/hilan/<version>/hilan`
-
-Optional convenience install:
-
-```bash
-mkdir -p ~/bin
-ln -sf "$PWD/plugins/hilan/scripts/run.sh" ~/bin/hilan
-```
+- `subdomain` is the part before `.hilan.co.il`
+- the password is currently read from the config file directly, so keep the
+  file user-readable only
+- CAPTCHA is not bypassed; if Hilan asks for one, solve it in the browser first
 
 ## Quick Start
 
 ```bash
 # Verify credentials
-plugins/hilan/scripts/run.sh auth
+./scripts/run.sh auth
 
 # Cache attendance types for symbolic --type values
-plugins/hilan/scripts/run.sh sync-types
+./scripts/run.sh sync-types
 
-# Show this month's attendance status
-plugins/hilan/scripts/run.sh status
+# Show the current month's attendance status
+./scripts/run.sh status
 
 # Preview a clock-in payload without submitting it
-plugins/hilan/scripts/run.sh clock-in
+./scripts/run.sh clock-in
 
 # Actually submit a clock-in
-plugins/hilan/scripts/run.sh clock-in --execute
+./scripts/run.sh clock-in --execute
 
 # Download the previous month's payslip
-plugins/hilan/scripts/run.sh payslip
+./scripts/run.sh payslip
 
-# Show the analyzed attendance sheet
-plugins/hilan/scripts/run.sh sheet
+# Show recent salary totals
+./scripts/run.sh salary --months 3
 ```
 
 ## Command Reference
+
+### Setup And Discovery
 
 ```bash
 hilan auth
 hilan sync-types
 hilan types
+```
 
+### Attendance Reads
+
+```bash
 hilan status [--month YYYY-MM]
 hilan errors [--month YYYY-MM]
 hilan report <REPORT_NAME>
 hilan sheet
 hilan corrections
 hilan absences
+```
 
+### Payroll
+
+```bash
 hilan payslip [--month YYYY-MM] [--output PATH]
 hilan salary [--months N]
+```
 
+### Attendance Writes
+
+```bash
 hilan clock-in [--type TYPE] [--dry-run | --execute]
 hilan clock-out [--dry-run | --execute]
 hilan fill --from YYYY-MM-DD --to YYYY-MM-DD [--type TYPE] [--hours HH:MM-HH:MM] [--dry-run | --execute]
 hilan fix YYYY-MM-DD [--type TYPE] [--hours HH:MM-HH:MM] [--report-id UUID] [--error-type N] [--dry-run | --execute]
 ```
 
-## Notes
+## Operational Notes
 
-- `sync-types` reads the attendance calendar and caches the local type ontology under `~/.config/hilan/<subdomain>/types.json`.
-- `status` and `errors` load the requested attendance month by replaying the full ASP.NET form when month navigation is needed.
-- `clock-in`, `clock-out`, `fill`, and `fix` replay the full attendance form payload and print the exact request preview before any live submission.
-- `sheet` reads `HoursAnalysis.aspx` and prints the parsed HTML table.
-- `corrections` reads `HoursReportLog.aspx` and prints the parsed HTML table.
-- `absences` currently exposes the initial absence symbols data, not full absence submission.
-- `payslip` validates PDF magic bytes before writing the file.
-- `salary` posts the date range to `SalaryAllSummary.aspx` and falls back to ASP.NET hidden-field replay when required.
-- CAPTCHA is not bypassed. If Hilan requests a CAPTCHA, solve it in the browser first and retry.
+- `sync-types` caches attendance types under the per-subdomain config directory
+- `status` and `errors` navigate months by replaying the full ASP.NET form
+- `sheet` reads `HoursAnalysis.aspx`
+- `corrections` reads `HoursReportLog.aspx`
+- `absences` currently exposes initial symbol data only
+- `payslip` validates PDF magic bytes before writing a file
+- `salary` posts a date-range state payload to `SalaryAllSummary.aspx`
+
+## Development
+
+The repo is intentionally small:
+
+- [`src/client.rs`](src/client.rs) contains the HTTP/session layer
+- [`src/attendance.rs`](src/attendance.rs) contains calendar parsing and write replay
+- [`src/main.rs`](src/main.rs) contains the CLI surface
+- [`src/ontology.rs`](src/ontology.rs) contains attendance-type caching
+- [`src/reports.rs`](src/reports.rs) contains report table parsing
+
+Local checks:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+```
+
+Fixtures for parser and protocol tests live under [`tests/fixtures`](tests/fixtures).
 
 ## Prior Art
 
 - [zigius/hilan-bot](https://github.com/zigius/hilan-bot)
 - [talsalmona/hilan](https://github.com/talsalmona/hilan)
-- `/Users/aviv.s/workspace/dev-browser` was useful as documentation inspiration and for future endpoint discovery, not as a runtime dependency
+
+## License
+
+MIT. See [LICENSE](LICENSE).
