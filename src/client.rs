@@ -479,8 +479,7 @@ impl HilanClient {
 /// Looks for `<form id="aspnetForm">` first; falls back to the first `<form>` if not found.
 /// Extracts hidden inputs, text inputs, checkboxes, selects, and textareas.
 /// Skips `input[type=submit]` (buttons are added explicitly by the caller).
-#[allow(dead_code)] // shared attendance/WebForms helper
-pub(crate) fn parse_aspx_form_fields(html: &str) -> HashMap<String, String> {
+pub fn parse_aspx_form_fields(html: &str) -> HashMap<String, String> {
     let document = Html::parse_document(html);
     let mut fields = HashMap::new();
 

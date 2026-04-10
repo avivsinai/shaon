@@ -10,6 +10,14 @@ authors = ["Aviv Sinai <aviv.s@taboola.com>"]
 keywords = ["hilan", "hilanet", "attendance", "hr", "cli"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "hilan"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hilan"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"] }
@@ -23,6 +31,10 @@ scraper = "0.22"
 directories = "6"
 chrono = { version = "0.4", features = ["serde"] }
 urlencoding = "2"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
 
 [profile.release]
 lto = "thin"
