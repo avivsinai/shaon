@@ -1,11 +1,12 @@
-pub mod api;
-pub mod app;
-pub mod attendance;
-pub mod client;
-pub mod config;
-pub mod core;
-pub mod mcp;
-pub mod ontology;
-pub mod provider;
-pub mod reports;
-pub mod use_cases;
+pub use hilan_mcp as mcp;
+pub use hr_core as core;
+pub use hr_core::use_cases;
+pub use provider_hilan::{
+    api, attendance, build_authenticated_provider, build_provider, client, config, ontology,
+    provider, reports, Config, HilanProvider,
+};
+
+pub mod app {
+    pub use hilan_cli as cli;
+    pub use hilan_mcp as mcp;
+}

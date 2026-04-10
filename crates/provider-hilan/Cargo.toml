@@ -1,0 +1,34 @@
+[package]
+name = "provider-hilan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Hilan provider implementation on top of hr-core"
+
+[dependencies]
+aes-gcm.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+cookie_store.workspace = true
+hr-core = { path = "../hr-core" }
+keyring.workspace = true
+rand.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+reqwest_cookie_store.workspace = true
+scraper.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+urlencoding.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

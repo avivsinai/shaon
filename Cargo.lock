@@ -766,33 +766,60 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hilan"
 version = "0.4.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "assert_cmd",
  "async-trait",
  "chrono",
- "clap",
- "clap_complete",
- "cookie_store 0.21.1",
- "keyring",
+ "hilan-cli",
+ "hilan-mcp",
+ "hr-core",
  "predicates",
- "rand 0.8.5",
- "regex",
- "reqwest",
- "reqwest_cookie_store",
- "rmcp",
- "rpassword",
- "schemars 0.8.22",
- "scraper",
- "secrecy",
- "serde",
- "serde_json",
+ "provider-hilan",
  "tokio",
  "toml",
- "tracing",
+]
+
+[[package]]
+name = "hilan-cli"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "hilan-mcp",
+ "hr-core",
+ "provider-hilan",
+ "rpassword",
+ "serde",
+ "serde_json",
  "tracing-subscriber",
- "urlencoding",
  "zeroize",
+]
+
+[[package]]
+name = "hilan-mcp"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hr-core",
+ "provider-hilan",
+ "rmcp",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hr-core"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -1456,6 +1483,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "provider-hilan"
+version = "0.4.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "cookie_store 0.21.1",
+ "hr-core",
+ "keyring",
+ "rand 0.8.5",
+ "regex",
+ "reqwest",
+ "reqwest_cookie_store",
+ "scraper",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "urlencoding",
+ "zeroize",
 ]
 
 [[package]]

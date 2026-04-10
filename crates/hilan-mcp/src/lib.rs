@@ -1,20 +1,17 @@
 use anyhow::Result;
 use chrono::{Datelike, Local, NaiveDate};
+use hr_core::use_cases;
+use hr_core::{
+    AttendanceChange, AttendanceProvider, FixTarget, ProviderError, ReportProvider, ReportSpec,
+    SalaryProvider, WriteMode, WritePreview,
+};
+use provider_hilan::{Config, HilanProvider};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::Deserialize;
-
-use crate::core::{
-    AttendanceChange, AttendanceProvider, FixTarget, ProviderError, ReportProvider, ReportSpec,
-    SalaryProvider, WriteMode, WritePreview,
-};
-use crate::provider::HilanProvider;
-use crate::use_cases;
-
-use super::{build_provider, load_config};
 
 const SHEET_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursAnalysis.aspx";
 const CORRECTIONS_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursReportLog.aspx";
@@ -145,8 +142,8 @@ pub async fn serve_stdio() -> Result<()> {
 
 async fn new_provider() -> Result<HilanProvider, ToolError> {
     let config =
-        load_config().map_err(|e| ToolError::new("config_error", format!("config error: {e}")))?;
-    build_provider(config)
+        Config::load().map_err(|e| ToolError::new("config_error", format!("config error: {e}")))?;
+    provider_hilan::build_provider(config)
         .map_err(|e| ToolError::new("provider_init_failed", format!("provider error: {e}")))
 }
 
@@ -357,7 +354,7 @@ impl HilanMcpServer {
     #[tool(description = "List available attendance types from the provider cache or live sync.")]
     async fn hilan_types(&self) -> String {
         json_or_error(|| async {
-            let subdomain = load_config()
+            let subdomain = Config::load()
                 .map_err(|e| ToolError::new("config_error", format!("config error: {e}")))?
                 .subdomain;
             let mut provider = new_provider().await?;

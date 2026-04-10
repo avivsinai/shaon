@@ -1,17 +1,17 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{Datelike, NaiveDate};
+use hr_core::{
+    AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, DocumentDownload,
+    FixTarget, MonthCalendar, PayslipProvider, ProviderCapabilities, ProviderError, ReportProvider,
+    ReportSpec, ReportTable, SalaryProvider, SalarySummary, UserIdentity, WriteMode, WritePreview,
+};
 use std::path::Path;
 
 use crate::api;
 use crate::attendance::{self, AttendanceSubmit};
 use crate::client::HilanClient;
 use crate::config::Config;
-use crate::core::{
-    AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, DocumentDownload,
-    FixTarget, MonthCalendar, PayslipProvider, ProviderCapabilities, ProviderError, ReportProvider,
-    ReportSpec, ReportTable, SalaryProvider, SalarySummary, UserIdentity, WriteMode, WritePreview,
-};
 use crate::ontology;
 use crate::reports;
 
@@ -127,9 +127,7 @@ impl AttendanceProvider for HilanProvider {
             .map_err(|err| Self::provider_error("calendar_read_failed", err))
     }
 
-    async fn attendance_types(
-        &mut self,
-    ) -> Result<Vec<crate::core::AttendanceType>, ProviderError> {
+    async fn attendance_types(&mut self) -> Result<Vec<hr_core::AttendanceType>, ProviderError> {
         let subdomain = self.client.config().subdomain.clone();
         ontology::OrgOntology::load_or_sync(&mut self.client, &subdomain)
             .await

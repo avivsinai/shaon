@@ -1,12 +1,69 @@
-[package]
-name = "hilan"
+[workspace]
+members = [
+    ".",
+    "crates/hr-core",
+    "crates/provider-hilan",
+    "crates/hilan-cli",
+    "crates/hilan-mcp",
+]
+
+[workspace.package]
 version = "0.4.0"
 edition = "2021"
 rust-version = "1.80"
-description = "CLI for Hilan attendance reporting and payslip retrieval"
 license = "MIT"
 repository = "https://github.com/avivsinai/hilan"
 authors = ["Aviv Sinai <avivsinai@users.noreply.github.com>"]
+
+[workspace.dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+assert_cmd = "2"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+cookie_store = "0.21"
+keyring = { version = "3", features = ["apple-native", "linux-native"] }
+predicates = "3"
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "charset", "http2"] }
+reqwest_cookie_store = "0.8"
+rpassword = "7"
+rmcp = { version = "1.3", features = ["server", "transport-io"] }
+schemars = "0.8"
+scraper = "0.22"
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+urlencoding = "2"
+zeroize = "1"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+rust_2018_idioms = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+similar_names = "allow"
+
+[package]
+name = "hilan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "CLI for Hilan attendance reporting and payslip retrieval"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 keywords = ["hilan", "hilanet", "attendance", "hr", "cli"]
 categories = ["command-line-utilities"]
 
@@ -19,46 +76,23 @@ name = "hilan"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "charset", "http2"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "1"
-anyhow = "1"
-async-trait = "0.1"
-aes-gcm = "0.10"
-regex = "1"
-rand = "0.8"
-scraper = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
-rmcp = { version = "1.3", features = ["server", "transport-io"] }
-schemars = "0.8"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-urlencoding = "2"
-reqwest_cookie_store = "0.8"
-cookie_store = "0.21"
-keyring = { version = "3", features = ["apple-native", "linux-native"] }
-secrecy = { version = "0.10", features = ["serde"] }
-zeroize = "1"
-rpassword = "7"
+anyhow.workspace = true
+chrono.workspace = true
+hr-core = { path = "crates/hr-core" }
+hilan-cli = { path = "crates/hilan-cli" }
+hilan-mcp = { path = "crates/hilan-mcp" }
+provider-hilan = { path = "crates/provider-hilan" }
+tokio.workspace = true
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
+async-trait.workspace = true
+assert_cmd.workspace = true
+chrono.workspace = true
+predicates.workspace = true
+toml.workspace = true
 
-[lints.rust]
-unsafe_code = "warn"
-rust_2018_idioms = "warn"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-cast_possible_truncation = "allow"
-needless_pass_by_value = "allow"
-too_many_arguments = "allow"
-similar_names = "allow"
+[lints]
+workspace = true
 
 [profile.release]
 lto = "thin"
