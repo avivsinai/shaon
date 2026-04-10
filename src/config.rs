@@ -71,20 +71,26 @@ impl Config {
 
     /// Retrieve the password: keychain first, then legacy config file fallback.
     pub fn get_password(&self) -> Result<SecretString> {
-        let entry = keyring_entry(&self.subdomain, &self.username)?;
+        // 1. Try environment variable first (CI, scripts, testing)
+        if let Ok(pw) = std::env::var("HILAN_PASSWORD") {
+            return Ok(SecretString::from(pw));
+        }
 
-        match entry.get_password() {
-            Ok(pw) => return Ok(SecretString::from(pw)),
-            Err(keyring::Error::NoEntry) => {}
-            Err(keyring::Error::PlatformFailure(_)) => {
-                eprintln!("warning: keychain unavailable, falling back to config file");
-            }
+        // 2. Try OS keychain
+        match keyring_entry(&self.subdomain, &self.username) {
+            Ok(entry) => match entry.get_password() {
+                Ok(pw) => return Ok(SecretString::from(pw)),
+                Err(keyring::Error::NoEntry) => {}
+                Err(e) => {
+                    tracing::debug!("keychain lookup failed: {e}");
+                }
+            },
             Err(e) => {
-                eprintln!("warning: keychain error ({e}), falling back to config file");
+                tracing::debug!("keychain entry creation failed: {e}");
             }
         }
 
-        // Fallback to legacy plaintext password
+        // 3. Fall back to config file password (legacy)
         match &self.password {
             Some(pw) => {
                 eprintln!(
@@ -94,7 +100,8 @@ impl Config {
                 Ok(SecretString::from(pw.clone()))
             }
             None => anyhow::bail!(
-                "No password found. Run `hilan auth` to store credentials in the OS keychain."
+                "No password found. Set HILAN_PASSWORD env var, run `hilan auth`, \
+                 or add password to ~/.hilan/config.toml"
             ),
         }
     }
@@ -121,13 +128,22 @@ impl Config {
         Ok(())
     }
 
-    /// Store a new password in the OS keychain.
+    /// Store a new password in the OS keychain. Verifies the write succeeded.
     pub fn store_password_in_keychain(&self, password: &str) -> Result<()> {
         let entry = keyring_entry(&self.subdomain, &self.username)?;
         entry
             .set_password(password)
             .context("store password in OS keychain")?;
-        Ok(())
+
+        // Verify the password was actually persisted
+        match entry.get_password() {
+            Ok(stored) if stored == password => Ok(()),
+            Ok(_) => anyhow::bail!("keychain stored a different value than expected"),
+            Err(e) => anyhow::bail!(
+                "keychain write appeared to succeed but read-back failed: {e}. \
+                 Try setting HILAN_PASSWORD env var or adding password to ~/.hilan/config.toml"
+            ),
+        }
     }
 
     /// Write the current config back to disk (without the password field).
