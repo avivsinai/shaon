@@ -641,11 +641,7 @@ impl HilanClient {
     /// with `Content-Type: application/json` and body `{}`.
     /// Retries on transient errors and re-authenticates on session expiry.
     /// These are read-only JSON-RPC calls, safe to retry.
-    pub async fn asmx_call<T: serde::de::DeserializeOwned>(
-        &mut self,
-        service: &str,
-        method: &str,
-    ) -> Result<T> {
+    pub async fn asmx_call(&mut self, service: &str, method: &str) -> Result<String> {
         let url = format!(
             "{}/Hilannetv2/Services/Public/WS/{}.asmx/{}",
             self.base_url, service, method
@@ -662,9 +658,7 @@ impl HilanClient {
         if !status.is_success() {
             bail!("{service}/{method} returned HTTP {status}: {text}");
         }
-        let parsed: T = serde_json::from_str(&text)
-            .with_context(|| format!("parse JSON from {service}/{method}"))?;
-        Ok(parsed)
+        Ok(text)
     }
 }
 

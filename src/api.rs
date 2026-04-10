@@ -45,10 +45,20 @@ pub struct AbsencesInitialData {
 // Internal response wrappers (match Hilan JSON shapes)
 // ---------------------------------------------------------------------------
 
-/// The `d` wrapper that Hilan ASMX endpoints return.
+/// The `d` wrapper that Hilan ASMX endpoints historically return.
+/// Some endpoints now return the payload directly without the `d` wrapper.
 #[derive(Deserialize)]
 struct AsmxWrapper<T> {
     d: T,
+}
+
+/// Deserialize an ASMX response that may or may not have the `d` wrapper.
+fn parse_asmx_response<T: serde::de::DeserializeOwned>(text: &str) -> serde_json::Result<T> {
+    // Try with wrapper first, then fall back to direct deserialization.
+    if let Ok(wrapper) = serde_json::from_str::<AsmxWrapper<T>>(text) {
+        return Ok(wrapper.d);
+    }
+    serde_json::from_str::<T>(text)
 }
 
 #[derive(Deserialize)]
@@ -82,13 +92,13 @@ struct PrincipalUserRaw {
 /// Calls `HEmployeeStripApiapi.asmx/GetData` and extracts identity fields
 /// from the `PrincipalUser` object in the response.
 pub async fn bootstrap(client: &mut HilanClient) -> Result<BootstrapInfo> {
-    // Hilan ASMX endpoints wrap their payload in { "d": ... }
-    let wrapper: AsmxWrapper<GetDataResponse> = client
+    let text: String = client
         .asmx_call("HEmployeeStripApiapi", "GetData")
         .await
         .context("bootstrap: GetData")?;
 
-    let data = wrapper.d;
+    let data: GetDataResponse =
+        parse_asmx_response(&text).context("parse JSON from HEmployeeStripApiapi/GetData")?;
     let user = data.principal_user;
 
     // OrganizationId can appear at root level or inside PrincipalUser
@@ -110,22 +120,22 @@ pub async fn bootstrap(client: &mut HilanClient) -> Result<BootstrapInfo> {
 ///
 /// Calls `HHomeTasksApiapi.asmx/GetTasksCount`.
 pub async fn get_tasks_count(client: &mut HilanClient) -> Result<TasksCount> {
-    let wrapper: AsmxWrapper<TasksCount> = client
+    let text: String = client
         .asmx_call("HHomeTasksApiapi", "GetTasksCount")
         .await
         .context("get_tasks_count")?;
 
-    Ok(wrapper.d)
+    parse_asmx_response(&text).context("parse JSON from HHomeTasksApiapi/GetTasksCount")
 }
 
 /// Fetch absences initial data (symbols / attendance-type list).
 ///
 /// Calls `HAbsencesApiapi.asmx/GetInitialData`.
 pub async fn get_absences_initial(client: &mut HilanClient) -> Result<AbsencesInitialData> {
-    let wrapper: AsmxWrapper<AbsencesInitialData> = client
+    let text: String = client
         .asmx_call("HAbsencesApiapi", "GetInitialData")
         .await
         .context("get_absences_initial")?;
 
-    Ok(wrapper.d)
+    parse_asmx_response(&text).context("parse JSON from HAbsencesApiapi/GetInitialData")
 }
