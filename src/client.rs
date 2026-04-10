@@ -72,7 +72,7 @@ impl HilanClient {
             let file = fs::File::open(&cookie_path)
                 .with_context(|| format!("open {}", cookie_path.display()))?;
             let reader = std::io::BufReader::new(file);
-            match cookie_store::CookieStore::load_json(reader) {
+            match cookie_store::serde::json::load(reader) {
                 Ok(store) => {
                     tracing::debug!("loaded session cookies from {}", cookie_path.display());
                     store
@@ -248,10 +248,9 @@ impl HilanClient {
         let cookie_path = cookie_dir.join("cookies.json");
         let store = self.cookie_store.lock().unwrap();
         if let Ok(mut file) = fs::File::create(&cookie_path) {
-            // save_incl_expired_and_nonpersistent_json includes session cookies
-            // (no Expires attribute) which are critical for Hilan auth
-            if store
-                .save_incl_expired_and_nonpersistent_json(&mut file)
+            // Include session cookies (no Expires) which are critical for Hilan auth.
+            // Use the serde module free function (non-deprecated).
+            if cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut file)
                 .is_ok()
             {
                 drop(file);
