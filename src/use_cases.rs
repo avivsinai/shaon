@@ -1,9 +1,10 @@
 use chrono::{Datelike, NaiveDate};
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 use crate::core::{
-    AttendanceProvider, AttendanceType, CalendarDay, FixTarget, MonthCalendar, ProviderError,
-    UserIdentity,
+    AttendanceChange, AttendanceProvider, AttendanceType, CalendarDay, FixTarget, MonthCalendar,
+    ProviderError, UserIdentity, WriteMode, WritePreview,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,64 @@ pub struct OverviewData {
     pub error_days: Vec<OverviewErrorDay>,
     pub missing_days: Vec<NaiveDate>,
     pub suggested_actions: Vec<SuggestedActionPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAttendanceType {
+    pub code: String,
+    pub display: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FillRangeOptions {
+    pub attendance_type_code: Option<String>,
+    pub hours: Option<(String, String)>,
+    pub include_weekends: bool,
+    pub mode: WriteMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoFillOptions {
+    pub type_code: Option<String>,
+    pub type_display: String,
+    pub hours: Option<(String, String)>,
+    pub include_weekends: bool,
+    pub mode: WriteMode,
+    pub max_days: u32,
+    pub today: NaiveDate,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AutoFillDayResult {
+    pub date: String,
+    pub attendance_type: String,
+    pub hours: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SkippedDay {
+    pub date: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AutoFillSummary {
+    pub total_candidates: u32,
+    pub filled: u32,
+    pub skipped: u32,
+    pub failed: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AutoFillResult {
+    pub month: String,
+    pub mode: String,
+    pub attendance_type: String,
+    pub filled: Vec<AutoFillDayResult>,
+    pub skipped: Vec<SkippedDay>,
+    pub summary: AutoFillSummary,
 }
 
 pub async fn build_overview<P: AttendanceProvider>(
@@ -127,6 +186,251 @@ pub async fn build_overview<P: AttendanceProvider>(
     })
 }
 
+pub async fn fill_range<P: AttendanceProvider>(
+    provider: &mut P,
+    from: NaiveDate,
+    to: NaiveDate,
+    options: FillRangeOptions,
+) -> Result<Vec<WritePreview>, ProviderError> {
+    if from > to {
+        return Err(ProviderError::new(
+            "invalid_fill_range",
+            "--from must be before or equal to --to",
+        ));
+    }
+
+    if options.attendance_type_code.is_none() && options.hours.is_none() {
+        return Err(ProviderError::new(
+            "invalid_fill_request",
+            "fill requires at least one of attendance_type_code or hours",
+        ));
+    }
+
+    let mut previews = Vec::new();
+    let mut current = from;
+    while current <= to {
+        if options.include_weekends || !is_weekend(current) {
+            let change = fill_change(
+                current,
+                options.attendance_type_code.clone(),
+                options.hours.clone(),
+            );
+            previews.push(provider.submit_day(&change, options.mode).await?);
+        }
+        current = current.succ_opt().expect("valid next date");
+    }
+
+    Ok(previews)
+}
+
+pub async fn fix_day<P: AttendanceProvider>(
+    provider: &mut P,
+    target: &FixTarget,
+    attendance_type_code: Option<String>,
+    hours: Option<(String, String)>,
+    mode: WriteMode,
+) -> Result<WritePreview, ProviderError> {
+    if attendance_type_code.is_none() && hours.is_none() {
+        return Err(ProviderError::new(
+            "invalid_fix_request",
+            "fix requires at least one of attendance_type_code or hours",
+        ));
+    }
+
+    let (entry_time, exit_time, clear_entry, clear_exit) = match hours {
+        Some((entry, exit)) => (Some(entry), Some(exit), false, false),
+        None => (None, None, false, false),
+    };
+
+    let change = AttendanceChange {
+        date: target.date,
+        attendance_type_code,
+        use_default_attendance_type: false,
+        entry_time,
+        exit_time,
+        comment: None,
+        clear_entry,
+        clear_exit,
+        clear_comment: false,
+    };
+
+    provider.fix_day(target, &change, mode).await
+}
+
+pub async fn auto_fill<P: AttendanceProvider>(
+    provider: &mut P,
+    calendar: &MonthCalendar,
+    options: AutoFillOptions,
+) -> Result<AutoFillResult, ProviderError> {
+    let hours_display = options
+        .hours
+        .as_ref()
+        .map(|(entry, exit)| format!("{entry}-{exit}"));
+    let mut candidates = Vec::new();
+    let mut skipped = Vec::new();
+
+    for day in &calendar.days {
+        let date_str = day.date.format("%Y-%m-%d").to_string();
+        let day_label = day.date.format("%a").to_string();
+        let date_display = format!("{date_str} {day_label}");
+
+        if day.date > options.today {
+            skipped.push(SkippedDay {
+                date: date_display,
+                reason: "future".to_string(),
+            });
+            continue;
+        }
+        if day.has_error {
+            skipped.push(SkippedDay {
+                date: date_display,
+                reason: "has_error".to_string(),
+            });
+            continue;
+        }
+        if day.is_reported() && !is_day_partial(day) && !is_day_missing(day) {
+            skipped.push(SkippedDay {
+                date: date_display,
+                reason: "already_filled".to_string(),
+            });
+            continue;
+        }
+        if is_day_partial(day) {
+            skipped.push(SkippedDay {
+                date: date_display,
+                reason: "partial_data".to_string(),
+            });
+            continue;
+        }
+        if !options.include_weekends && is_weekend(day.date) {
+            skipped.push(SkippedDay {
+                date: date_display,
+                reason: "weekend".to_string(),
+            });
+            continue;
+        }
+
+        candidates.push((date_display, auto_fill_change(day.date, &options)));
+    }
+
+    let candidate_count = candidates.len() as u32;
+    if matches!(options.mode, WriteMode::Execute) && candidate_count > options.max_days {
+        return Err(ProviderError::new(
+            "auto_fill_limit_exceeded",
+            format!(
+                "{candidate_count} days exceeds safety limit of {}",
+                options.max_days
+            ),
+        ));
+    }
+
+    let mut filled = Vec::new();
+    for (date, change) in &candidates {
+        let (status, error) = if matches!(options.mode, WriteMode::Execute) {
+            match provider.submit_day(change, WriteMode::Execute).await {
+                Ok(_) => ("success".to_string(), None),
+                Err(err) => ("failed".to_string(), Some(err.to_string())),
+            }
+        } else {
+            ("would_fill".to_string(), None)
+        };
+
+        filled.push(AutoFillDayResult {
+            date: date.clone(),
+            attendance_type: options.type_display.clone(),
+            hours: hours_display.clone(),
+            status,
+            error,
+        });
+    }
+
+    let failed = filled.iter().filter(|day| day.status == "failed").count() as u32;
+    let filled_ok = filled.iter().filter(|day| day.status != "failed").count() as u32;
+
+    Ok(AutoFillResult {
+        month: calendar.month.format("%Y-%m").to_string(),
+        mode: if matches!(options.mode, WriteMode::Execute) {
+            "executed".to_string()
+        } else {
+            "dry_run".to_string()
+        },
+        attendance_type: options.type_display,
+        filled,
+        skipped: skipped.clone(),
+        summary: AutoFillSummary {
+            total_candidates: candidate_count,
+            filled: filled_ok,
+            skipped: skipped.len() as u32,
+            failed,
+        },
+    })
+}
+
+pub async fn resolve_attendance_type<P: AttendanceProvider>(
+    provider: &mut P,
+    requested: Option<&str>,
+) -> Result<Option<ResolvedAttendanceType>, ProviderError> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+
+    if requested.chars().all(|ch| ch.is_ascii_digit()) {
+        return Ok(Some(ResolvedAttendanceType {
+            code: requested.to_string(),
+            display: requested.to_string(),
+        }));
+    }
+
+    let requested_lower = requested.to_lowercase();
+    let types = provider.attendance_types().await?;
+    types
+        .into_iter()
+        .find(|attendance_type| {
+            attendance_type.code.to_lowercase() == requested_lower
+                || attendance_type.name_he.to_lowercase() == requested_lower
+                || attendance_type
+                    .name_en
+                    .as_deref()
+                    .is_some_and(|name| name.to_lowercase() == requested_lower)
+        })
+        .map(|attendance_type| ResolvedAttendanceType {
+            display: attendance_type
+                .name_en
+                .unwrap_or(attendance_type.name_he.clone()),
+            code: attendance_type.code,
+        })
+        .ok_or_else(|| {
+            ProviderError::new(
+                "unknown_attendance_type",
+                format!("Unknown attendance type '{requested}'"),
+            )
+        })
+        .map(Some)
+}
+
+pub async fn describe_attendance_types<P: AttendanceProvider>(
+    provider: &mut P,
+) -> Result<String, ProviderError> {
+    let types = provider.attendance_types().await?;
+    if types.is_empty() {
+        return Ok("No attendance types available.".to_string());
+    }
+
+    let mut out = String::from("Available attendance types:\n");
+    for attendance_type in types {
+        let en = attendance_type
+            .name_en
+            .as_deref()
+            .map(|name| format!(" ({name})"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  {} -- {}{}\n",
+            attendance_type.code, attendance_type.name_he, en
+        ));
+    }
+    Ok(out)
+}
+
 pub fn error_days(calendar: &MonthCalendar) -> Vec<&CalendarDay> {
     calendar.days.iter().filter(|day| day.has_error).collect()
 }
@@ -167,6 +471,67 @@ pub fn print_error_days(calendar: &MonthCalendar) {
     }
 }
 
+pub fn print_auto_fill(result: &AutoFillResult) {
+    let mode_tag = if result.mode == "dry_run" {
+        " [DRY RUN]"
+    } else {
+        ""
+    };
+    println!("Auto-fill {}{}", result.month, mode_tag);
+    println!();
+
+    for day in &result.filled {
+        let hours_part = day
+            .hours
+            .as_deref()
+            .map(|hours| format!(" {hours}"))
+            .unwrap_or_default();
+        let status_part = match day.status.as_str() {
+            "would_fill" => " [would fill]".to_string(),
+            "success" => " [filled]".to_string(),
+            "failed" => format!(
+                " [FAILED: {}]",
+                day.error.as_deref().unwrap_or("unknown error")
+            ),
+            other => format!(" [{other}]"),
+        };
+        println!(
+            "  {} \u{2014} {}{}{}",
+            day.date, day.attendance_type, hours_part, status_part
+        );
+    }
+
+    if result
+        .skipped
+        .iter()
+        .any(|day| day.reason == "partial_data")
+    {
+        println!();
+        println!("Skipped (partial data):");
+        for day in result
+            .skipped
+            .iter()
+            .filter(|day| day.reason == "partial_data")
+        {
+            println!("  {} \u{2014} skipped (partial data)", day.date);
+        }
+    }
+
+    println!();
+    if result.mode == "dry_run" {
+        println!(
+            "Summary: {} days to fill, {} skipped",
+            result.summary.total_candidates, result.summary.skipped,
+        );
+        println!("Run with --execute to submit.");
+    } else {
+        println!(
+            "Summary: {} filled, {} failed, {} skipped",
+            result.summary.filled, result.summary.failed, result.summary.skipped,
+        );
+    }
+}
+
 async fn load_attendance_types<P: AttendanceProvider>(provider: &mut P) -> Vec<AttendanceType> {
     match provider.attendance_types().await {
         Ok(types) => types,
@@ -188,4 +553,64 @@ async fn load_fix_targets<P: AttendanceProvider>(
             Vec::new()
         }
     }
+}
+
+fn fill_change(
+    date: NaiveDate,
+    attendance_type_code: Option<String>,
+    hours: Option<(String, String)>,
+) -> AttendanceChange {
+    let (entry_time, exit_time, clear_entry, clear_exit) = match hours {
+        Some((entry, exit)) => (Some(entry), Some(exit), false, false),
+        None => (None, None, true, true),
+    };
+
+    AttendanceChange {
+        date,
+        use_default_attendance_type: attendance_type_code.is_none() && entry_time.is_some(),
+        attendance_type_code,
+        entry_time,
+        exit_time,
+        comment: None,
+        clear_entry,
+        clear_exit,
+        clear_comment: true,
+    }
+}
+
+fn auto_fill_change(date: NaiveDate, options: &AutoFillOptions) -> AttendanceChange {
+    let (entry_time, exit_time, clear_entry, clear_exit) = match &options.hours {
+        Some((entry, exit)) => (Some(entry.clone()), Some(exit.clone()), false, false),
+        None => (None, None, true, true),
+    };
+
+    AttendanceChange {
+        date,
+        use_default_attendance_type: options.type_code.is_none() && entry_time.is_some(),
+        attendance_type_code: options.type_code.clone(),
+        entry_time,
+        exit_time,
+        comment: None,
+        clear_entry,
+        clear_exit,
+        clear_comment: true,
+    }
+}
+
+fn is_day_missing(day: &CalendarDay) -> bool {
+    day.entry_time.is_none()
+        && day.exit_time.is_none()
+        && day.attendance_type.is_none()
+        && day.total_hours.is_none()
+}
+
+fn is_day_partial(day: &CalendarDay) -> bool {
+    if is_day_missing(day) {
+        return false;
+    }
+    day.entry_time.is_some() != day.exit_time.is_some()
+}
+
+fn is_weekend(date: NaiveDate) -> bool {
+    matches!(date.weekday(), chrono::Weekday::Fri | chrono::Weekday::Sat)
 }

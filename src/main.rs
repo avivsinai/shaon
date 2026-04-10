@@ -1,7 +1,10 @@
 use anyhow::{bail, Context, Result};
-use chrono::{Datelike, Duration, Local, NaiveDate};
+use chrono::{Datelike, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use hilan::core::{AttendanceProvider, AttendanceType as CoreAttendanceType, ProviderError};
+use hilan::core::{
+    AttendanceProvider, AttendanceType as CoreAttendanceType, FixTarget as CoreFixTarget,
+    ProviderError, WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
+};
 use serde::Serialize;
 use std::path::PathBuf;
 use zeroize::Zeroize;
@@ -108,6 +111,14 @@ impl WriteMode {
     fn should_execute(&self) -> bool {
         self.execute
     }
+
+    fn provider_mode(&self) -> CoreWriteMode {
+        if self.execute {
+            CoreWriteMode::Execute
+        } else {
+            CoreWriteMode::DryRun
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -128,6 +139,44 @@ impl<'a> WriteOutput<'a> {
                 "dry_run"
             },
             preview,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ProviderWriteOutput<'a> {
+    action: &'a str,
+    mode: &'a str,
+    executed: bool,
+    summary: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button_value: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    employee_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_display: Option<&'a str>,
+}
+
+impl<'a> ProviderWriteOutput<'a> {
+    fn new(action: &'a str, preview: &'a CoreWritePreview) -> Self {
+        Self {
+            action,
+            mode: if preview.executed {
+                "executed"
+            } else {
+                "dry_run"
+            },
+            executed: preview.executed,
+            summary: &preview.summary,
+            url: preview_debug_field(preview, "url"),
+            button_name: preview_debug_field(preview, "button_name"),
+            button_value: preview_debug_field(preview, "button_value"),
+            employee_id: preview_debug_field(preview, "employee_id"),
+            payload_display: preview_debug_field(preview, "payload_display"),
         }
     }
 }
@@ -438,63 +487,39 @@ async fn main() -> Result<()> {
             include_weekends,
             write_mode,
         } => {
-            let execute = write_mode.should_execute();
             let from_date = parse_date(&from)?;
             let to_date = parse_date(&to)?;
-            if from_date > to_date {
-                bail!("--from must be before or equal to --to");
-            }
-
-            if attendance_type.is_some() {
-                client.ensure_authenticated().await?;
-            }
-            let type_code =
-                resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
-                    .await?;
             let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
+            let mut provider = HilanProvider::from_client(client);
+            let type_code =
+                use_cases::resolve_attendance_type(&mut provider, attendance_type.as_deref())
+                    .await
+                    .map_err(provider_error)?
+                    .map(|resolved| resolved.code);
+            let previews = use_cases::fill_range(
+                &mut provider,
+                from_date,
+                to_date,
+                use_cases::FillRangeOptions {
+                    attendance_type_code: type_code,
+                    hours: hours_range,
+                    include_weekends,
+                    mode: write_mode.provider_mode(),
+                },
+            )
+            .await
+            .map_err(provider_error)?;
 
-            if type_code.is_none() && hours_range.is_none() {
-                bail!("fill requires at least one of --type or --hours");
-            }
-
-            let days = dates_inclusive(from_date, to_date);
-            let mut json_outputs: Vec<serde_json::Value> = if json {
-                Vec::with_capacity(days.len())
-            } else {
-                Vec::new()
-            };
-            for day in days {
-                if !include_weekends
-                    && matches!(day.weekday(), chrono::Weekday::Fri | chrono::Weekday::Sat)
-                {
-                    eprintln!("Skipping {} ({})", day, day.weekday());
-                    continue;
-                }
-                let (entry_time, exit_time, clear_entry, clear_exit) = match &hours_range {
-                    Some((entry, exit)) => (Some(entry.clone()), Some(exit.clone()), false, false),
-                    None => (None, None, true, true),
-                };
-
-                let submit = attendance::AttendanceSubmit {
-                    date: day,
-                    attendance_type_code: type_code.clone(),
-                    entry_time,
-                    exit_time,
-                    comment: None,
-                    clear_entry,
-                    clear_exit,
-                    clear_comment: true,
-                    default_work_day: type_code.is_none() && hours_range.is_some(),
-                };
-                let preview = attendance::submit_day(&mut client, &submit, execute).await?;
-                if json {
-                    json_outputs.push(serde_json::to_value(WriteOutput::new("fill", &preview))?);
-                } else {
-                    print_submit_preview("fill", &preview);
-                }
-            }
             if json {
-                print_json(&json_outputs)?;
+                let outputs: Vec<ProviderWriteOutput<'_>> = previews
+                    .iter()
+                    .map(|preview| ProviderWriteOutput::new("fill", preview))
+                    .collect();
+                print_json(&outputs)?;
+            } else {
+                for preview in &previews {
+                    print_provider_preview("fill", preview);
+                }
             }
         }
         Commands::Errors { month } => {
@@ -518,43 +543,36 @@ async fn main() -> Result<()> {
             error_type,
             write_mode,
         } => {
-            let execute = write_mode.should_execute();
             let date = parse_date(&day)?;
-            if attendance_type.is_some() {
-                client.ensure_authenticated().await?;
-            }
-            let type_code =
-                resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
-                    .await?;
             let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
-
-            if type_code.is_none() && hours_range.is_none() {
-                bail!("fix requires at least one of --type or --hours");
-            }
-
-            let (entry_time, exit_time, clear_entry, clear_exit) = match hours_range {
-                Some((entry, exit)) => (Some(entry), Some(exit), false, false),
-                None => (None, None, false, false),
-            };
-
-            let submit = attendance::AttendanceSubmit {
+            let mut provider = HilanProvider::from_client(client);
+            let type_code =
+                use_cases::resolve_attendance_type(&mut provider, attendance_type.as_deref())
+                    .await
+                    .map_err(provider_error)?
+                    .map(|resolved| resolved.code);
+            let target = CoreFixTarget {
                 date,
-                attendance_type_code: type_code,
-                entry_time,
-                exit_time,
-                comment: None,
-                clear_entry,
-                clear_exit,
-                clear_comment: false,
-                default_work_day: false,
+                issue_kind: None,
+                provider_ref: format!("{report_id}:{error_type}"),
+                metadata: std::collections::BTreeMap::from([
+                    ("report_id".to_string(), report_id),
+                    ("error_type".to_string(), error_type),
+                ]),
             };
-            let preview =
-                attendance::fix_error_day(&mut client, &submit, &report_id, &error_type, execute)
-                    .await?;
+            let preview = use_cases::fix_day(
+                &mut provider,
+                &target,
+                type_code,
+                hours_range,
+                write_mode.provider_mode(),
+            )
+            .await
+            .map_err(provider_error)?;
             if json {
-                print_json(&WriteOutput::new("fix", &preview))?;
+                print_json(&ProviderWriteOutput::new("fix", &preview))?;
             } else {
-                print_submit_preview("fix", &preview);
+                print_provider_preview("fix", &preview);
             }
         }
         Commands::Status { month } => {
@@ -674,63 +692,53 @@ async fn main() -> Result<()> {
             max_days,
             write_mode,
         } => {
-            let execute = write_mode.should_execute();
             let month_date = parse_month_or_current(month.as_deref())?;
             let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
+            let mut provider = HilanProvider::from_client(client);
 
-            // Require --type or --hours — do NOT infer from most-common
             if r#type.is_none() && hours_range.is_none() {
-                let ont_path = ontology::ontology_path(&subdomain);
                 let mut msg = String::from("auto-fill requires --type or --hours.\n");
-                if ont_path.exists() {
-                    let ontology = ontology::OrgOntology::load(&ont_path)?;
-                    msg.push_str("Available attendance types:\n");
-                    for t in &ontology.types {
-                        let en = t
-                            .name_en
-                            .as_deref()
-                            .map(|s| format!(" ({s})"))
-                            .unwrap_or_default();
-                        msg.push_str(&format!("  {} -- {}{}\n", t.code, t.name_he, en));
+                match use_cases::describe_attendance_types(&mut provider).await {
+                    Ok(help) => msg.push_str(&help),
+                    Err(_) => {
+                        msg.push_str(
+                            "Use `hilan types` to inspect available types, or pass --type <code>.",
+                        );
                     }
-                } else {
-                    msg.push_str(
-                        "Run `hilan sync-types` to see available types, or pass --type <code>.",
-                    );
                 }
                 bail!("{msg}");
             }
 
-            client.ensure_authenticated().await?;
-
-            // Auto-sync ontology if cache is missing and --type is given
-            if r#type.is_some() && !ontology::ontology_path(&subdomain).exists() {
-                eprintln!("Ontology cache missing -- syncing attendance types...");
-                ontology::sync_from_calendar(&mut client, &subdomain).await?;
-            }
-
-            let cal = attendance::read_calendar(&mut client, month_date).await?;
-            let (type_code, type_display) =
-                attendance::resolve_auto_fill_type(&subdomain, r#type.as_deref())?;
-
-            let result = attendance::auto_fill(
-                &mut client,
+            let resolved_type =
+                use_cases::resolve_attendance_type(&mut provider, r#type.as_deref())
+                    .await
+                    .map_err(provider_error)?;
+            let cal = provider
+                .month_calendar(month_date)
+                .await
+                .map_err(provider_error)?;
+            let result = use_cases::auto_fill(
+                &mut provider,
                 &cal,
-                attendance::AutoFillOpts {
-                    type_code,
-                    type_display: &type_display,
-                    hours: hours_range.as_ref(),
+                use_cases::AutoFillOptions {
+                    type_code: resolved_type.as_ref().map(|resolved| resolved.code.clone()),
+                    type_display: resolved_type
+                        .map(|resolved| resolved.display)
+                        .unwrap_or_default(),
+                    hours: hours_range,
                     include_weekends,
-                    execute,
+                    mode: write_mode.provider_mode(),
                     max_days,
+                    today: Local::now().date_naive(),
                 },
             )
-            .await?;
+            .await
+            .map_err(provider_error)?;
 
             if json {
                 print_json(&result)?;
             } else {
-                attendance::print_auto_fill(&result);
+                use_cases::print_auto_fill(&result);
             }
         }
         Commands::Serve => unreachable!("handled above"),
@@ -795,18 +803,7 @@ async fn resolve_attendance_type_code(
     };
 
     let ontology = ontology::OrgOntology::load_or_sync(client, subdomain).await?;
-
     Ok(Some(ontology.validate_type(requested)?.code.clone()))
-}
-
-fn dates_inclusive(from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
-    let mut dates = Vec::new();
-    let mut current = from;
-    while current <= to {
-        dates.push(current);
-        current += Duration::days(1);
-    }
-    dates
 }
 
 fn current_local_time_hhmm() -> String {
@@ -829,6 +826,40 @@ fn print_submit_preview(action: &str, preview: &attendance::SubmitPreview) {
     println!("Employee ID: {}", preview.employee_id);
     println!("Button: {} = {}", preview.button_name, preview.button_value);
     println!("{}", preview.payload_display);
+}
+
+fn print_provider_preview(action: &str, preview: &CoreWritePreview) {
+    let mode = if preview.executed {
+        "EXECUTED"
+    } else {
+        "DRY RUN"
+    };
+    println!("{action} [{mode}]");
+    if let Some(url) = preview_debug_field(preview, "url") {
+        println!("Target URL: {url}");
+    }
+    if let Some(employee_id) = preview_debug_field(preview, "employee_id") {
+        println!("Employee ID: {employee_id}");
+    }
+    if let (Some(button_name), Some(button_value)) = (
+        preview_debug_field(preview, "button_name"),
+        preview_debug_field(preview, "button_value"),
+    ) {
+        println!("Button: {button_name} = {button_value}");
+    }
+    if let Some(payload_display) = preview_debug_field(preview, "payload_display") {
+        println!("{payload_display}");
+    } else {
+        println!("{}", preview.summary);
+    }
+}
+
+fn preview_debug_field<'a>(preview: &'a CoreWritePreview, key: &str) -> Option<&'a str> {
+    preview
+        .provider_debug
+        .as_ref()
+        .and_then(|debug| debug.get(key))
+        .and_then(serde_json::Value::as_str)
 }
 
 fn current_month_start() -> NaiveDate {

@@ -62,7 +62,7 @@ impl HilanProvider {
             clear_entry: change.clear_entry,
             clear_exit: change.clear_exit,
             clear_comment: change.clear_comment,
-            default_work_day: false,
+            default_work_day: change.use_default_attendance_type,
         }
     }
 
@@ -251,6 +251,7 @@ mod tests {
         let change = AttendanceChange {
             date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
             attendance_type_code: Some("0".to_string()),
+            use_default_attendance_type: false,
             entry_time: Some("09:00".to_string()),
             exit_time: Some("18:00".to_string()),
             comment: Some("office".to_string()),
