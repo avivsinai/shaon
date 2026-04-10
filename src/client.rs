@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Datelike, Local, NaiveDate};
 use regex::Regex;
-use reqwest::cookie::Jar;
+use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,10 @@ pub struct HilanClient {
     config: Config,
     org_id: Option<String>,
     logged_in: bool,
+    cookie_store: Arc<CookieStoreMutex>,
 }
+
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 #[derive(Debug, Serialize)]
 pub struct PayslipDownload {
@@ -61,9 +64,32 @@ struct LoginResponse {
 
 impl HilanClient {
     pub fn new(config: Config) -> Result<Self> {
-        let jar = Arc::new(Jar::default());
+        // Load persisted cookies if available
+        let cookie_path = crate::config::config_dir()
+            .join(&config.subdomain)
+            .join("cookies.json");
+        let cookie_store = if cookie_path.exists() {
+            let file = fs::File::open(&cookie_path)
+                .with_context(|| format!("open {}", cookie_path.display()))?;
+            let reader = std::io::BufReader::new(file);
+            match cookie_store::serde::json::load(reader) {
+                Ok(store) => {
+                    tracing::debug!("loaded session cookies from {}", cookie_path.display());
+                    store
+                }
+                Err(e) => {
+                    tracing::debug!("stale cookie file, starting fresh: {e}");
+                    cookie_store::CookieStore::default()
+                }
+            }
+        } else {
+            cookie_store::CookieStore::default()
+        };
+        let cookie_store = Arc::new(CookieStoreMutex::new(cookie_store));
+
         let client = reqwest::Client::builder()
-            .cookie_provider(jar)
+            .cookie_provider(cookie_store.clone())
+            .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(60))
             .use_rustls_tls()
@@ -83,12 +109,20 @@ impl HilanClient {
         }
         let base_url = format!("https://{}.hilan.co.il", config.subdomain);
 
+        // Check if we have existing session cookies (skip login if so)
+        let has_cookies = {
+            let store = cookie_store.lock().unwrap();
+            let has = store.iter_any().next().is_some();
+            has
+        };
+
         Ok(Self {
             client,
             base_url,
             config,
             org_id: None,
-            logged_in: false,
+            logged_in: has_cookies,
+            cookie_store,
         })
     }
 
@@ -191,6 +225,7 @@ impl HilanClient {
         }
 
         self.logged_in = true;
+        self.save_cookies();
         let masked_user = if self.config.username.len() > 4 {
             format!(
                 "***{}",
@@ -201,6 +236,27 @@ impl HilanClient {
         };
         tracing::info!("Logged in as {} (org: {})", masked_user, org_id);
         Ok(())
+    }
+
+    /// Persist session cookies to disk for reuse across CLI invocations.
+    fn save_cookies(&self) {
+        let cookie_dir = crate::config::config_dir().join(&self.config.subdomain);
+        if fs::create_dir_all(&cookie_dir).is_err() {
+            return;
+        }
+        let cookie_path = cookie_dir.join("cookies.json");
+        let store = self.cookie_store.lock().unwrap();
+        if let Ok(mut file) = fs::File::create(&cookie_path) {
+            if cookie_store::serde::json::save(&store, &mut file).is_ok() {
+                drop(file);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&cookie_path, fs::Permissions::from_mode(0o600));
+                }
+                tracing::debug!("saved session cookies to {}", cookie_path.display());
+            }
+        }
     }
 
     pub async fn payslip(

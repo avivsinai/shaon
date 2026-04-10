@@ -35,6 +35,8 @@ schemars = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 urlencoding = "2"
+reqwest_cookie_store = "0.8"
+cookie_store = "0.21"
 keyring = { version = "3", features = ["apple-native", "linux-native"] }
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = "1"
