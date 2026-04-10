@@ -13,61 +13,58 @@ See `@PROTOCOL.md` for endpoint details. See `@skills/hilan/SKILL.md` for CLI co
 ## Build & run
 
 ```bash
-scripts/run.sh <subcommand> [args]   # smart-rebuild wrapper (caches + codesigns on macOS)
-cargo build --release                # direct build
-cargo clippy --all-targets -- -D warnings  # lint (must pass clean)
-cargo test --all-targets             # run all tests
-cargo fmt --check                    # format check
+cargo build -p hilan --release       # build the CLI binary
+cargo test --workspace --all-targets  # run all tests across workspace
+cargo clippy --workspace --all-targets -- -D warnings  # lint
+cargo fmt --all -- --check            # format check
+scripts/run.sh <subcommand> [args]    # smart-rebuild wrapper (caches + codesigns on macOS)
 ```
 
 Requires Rust 1.80+ (edition 2021).
 
-## Architecture
+## Workspace architecture
 
-Lib/bin split — `src/lib.rs` re-exports all modules, `src/main.rs` is CLI dispatch only.
+Multi-crate workspace with provider abstraction:
 
-- `lib.rs` — public module re-exports
-- `main.rs` — clap subcommands (18 commands), `WriteMode` struct, async dispatch via tokio
-- `client.rs` — `HilanClient` wrapping reqwest with cookie jar; WebForms form replay + ASMX JSON calls; login with keychain credential lookup; retry with exponential backoff; session expiry detection
-- `attendance.rs` — calendar read/write, month navigation, submit preview, auto-fill, `CalendarDay` struct
-- `ontology.rs` — attendance type cache (JSON with 24h TTL), lazy auto-sync on first symbolic type use
-- `api.rs` — bootstrap call to extract user/employee/org IDs
-- `reports.rs` — HTML table parsing for error/missing/absence reports
-- `config.rs` — config loading with keychain integration via `keyring` crate; password stored as `secrecy::SecretString`
-- `mcp.rs` — MCP server (stdio transport) exposing 12 tools via `rmcp` 1.3
+```
+crates/
+├── hr-core/          — Provider-agnostic traits, DTOs, use-cases (no HTTP/Hilan deps)
+├── provider-hilan/   — Hilan implementation: HTTP client, session, parsing, config
+├── hilan-cli/        — CLI frontend (clap commands, rendering)
+└── hilan-mcp/        — MCP server frontend (rmcp tools)
+```
 
-## Key dependencies
+Root `src/` is a thin compatibility facade re-exporting the workspace crates.
 
-`clap` 4 (CLI), `reqwest` 0.12 (HTTP + cookies + rustls), `tokio` (async), `serde`/`serde_json` (serialization), `scraper` (HTML parsing), `keyring` (OS keychain), `secrecy`/`zeroize` (credential safety), `urlencoding`, `clap_complete` (shell completions), `tracing`/`tracing-subscriber` (structured logging), `rmcp` 1.3 (MCP server), `schemars` (JSON schema for MCP tools)
+### hr-core (generic layer)
+- `AttendanceProvider` trait — identity, calendar, types, submit, fix
+- `SalaryProvider`, `PayslipProvider`, `ReportProvider`, `AbsenceProvider` — optional capabilities
+- Domain DTOs: `CalendarDay`, `MonthCalendar`, `AttendanceType`, `AttendanceChange`, `WritePreview`, `FixTarget`, `SalarySummary`
+- Use-cases: `build_overview`, `fill_range`, `auto_fill`, `resolve_attendance_type` — provider-agnostic orchestration
+
+### provider-hilan (Hilan adapter)
+- `HilanProvider` implements all core traits
+- `HilanClient` — reqwest with cookie jar, session reuse, retry, encrypted cookie persistence
+- ASP.NET form replay + ASMX JSON calls
+- Config at `~/.hilan/config.toml`, keychain via `keyring` crate
+
+### hilan-cli + hilan-mcp (frontends)
+- CLI: 19 clap subcommands, `--json` output, `--verbose`/`--quiet`
+- MCP: 12 tools via rmcp 1.3 stdio transport, dry-run default
 
 ## Safety model
 
-All write commands (`clock-in`, `clock-out`, `fill`, `fix`) default to **dry-run**. The `--execute` flag is required for live submission. `fill` skips weekends (Fri/Sat) unless `--include-weekends` is set. `clock-in` preserves existing exit time and comment data.
-
-## Output modes
-
-All commands support `--json` for machine-parseable JSON output. Human-readable tables are the default. Status/diagnostic messages go to stderr via `tracing`, data to stdout. Use `--verbose` for debug output, `--quiet` to suppress all diagnostics.
-
-## MCP server
-
-`hilan serve` starts an MCP server on stdio transport (JSON-RPC). Exposes 12 tools (8 read, 4 write with dry-run default). Each tool call creates a fresh authenticated client. Register in Claude Desktop or any MCP client:
-```json
-{ "mcpServers": { "hilan": { "command": "hilan", "args": ["serve"] } } }
-```
+All write commands default to **dry-run**. `--execute` required for live submission. `fill`/`auto-fill` skip weekends (Fri/Sat) unless `--include-weekends`. `auto-fill` has `--max-days` safety cap (default 10).
 
 ## Adding a new command
 
-1. Add subcommand variant to `Commands` enum in `main.rs`
-2. Add clap fields (use `WriteMode` struct for any write operation)
-3. Implement handler — use `client.get_aspx_form()` / `client.post_aspx_form()` for WebForms, `client.asmx_call()` for JSON API
-4. Add `--json` branch using the `print_json` helper
-5. Add `#[derive(Serialize)]` to any new output structs
-6. Wire into the `match` in `main()`
-
-## Plugin packaging
-
-`.claude-plugin/plugin.json` defines this as a Claude Code plugin. `scripts/run.sh` reads version from there. Keep `Cargo.toml` version and `plugin.json` version in sync. Skills live in `skills/hilan/SKILL.md` with symlinks from `.claude/skills/` and `.agents/skills/`.
+1. Add use-case in `crates/hr-core/src/use_cases.rs` if it's provider-agnostic
+2. Add trait method in hr-core if needed
+3. Implement in `crates/provider-hilan/src/provider.rs`
+4. Add CLI command in `crates/hilan-cli/src/lib.rs`
+5. Add MCP tool in `crates/hilan-mcp/src/lib.rs` if appropriate
+6. Add `--json` support and tests
 
 ## Credentials
 
-Credentials are stored in the OS keychain (`hilan-cli` service). Run `hilan auth` to set up. Legacy plaintext `config.toml` passwords are supported with migration via `hilan auth --migrate`. Binary must be codesigned on macOS for silent keychain access (`scripts/run.sh` handles this).
+Stored in OS keychain (`hilan-cli` service). Session cookies encrypted at rest (AES-256-GCM, random DEK in keychain). Binary must be codesigned with stable identifier (`com.avivsinai.hilan`) for silent macOS keychain access.
