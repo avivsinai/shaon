@@ -23,6 +23,25 @@ pub struct OrgOntology {
 }
 
 impl OrgOntology {
+    /// Load from cache if fresh (< 24h), otherwise sync from server.
+    pub async fn load_or_sync(client: &mut HilanClient, subdomain: &str) -> Result<Self> {
+        let path = ontology_path(subdomain);
+        if path.exists() {
+            let ontology = Self::load(&path)?;
+            let age = Utc::now() - ontology.fetched_at;
+            if age < chrono::Duration::hours(24) {
+                return Ok(ontology);
+            }
+            eprintln!(
+                "Ontology cache is {} hours old, refreshing...",
+                age.num_hours()
+            );
+        } else {
+            eprintln!("No cached types found, syncing from server...");
+        }
+        sync_from_calendar(client, subdomain).await
+    }
+
     /// Deserialize from a JSON file.
     pub fn load(path: &Path) -> Result<Self> {
         let content =
@@ -33,7 +52,6 @@ impl OrgOntology {
     }
 
     /// Serialize to a JSON file, creating parent directories as needed.
-    #[allow(dead_code)] // used once SyncTypes endpoint is implemented
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)
