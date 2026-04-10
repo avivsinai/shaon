@@ -363,7 +363,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::SyncTypes => {
-            client.login().await?;
+            client.ensure_authenticated().await?;
             let ont = ontology::sync_from_calendar(&mut client, &subdomain).await?;
             if json {
                 print_json(&ont)?;
@@ -377,7 +377,7 @@ async fn main() -> Result<()> {
         } => {
             let execute = write_mode.should_execute();
             if attendance_type.is_some() {
-                client.login().await?;
+                client.ensure_authenticated().await?;
             }
             let type_code =
                 resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
@@ -436,7 +436,7 @@ async fn main() -> Result<()> {
             }
 
             if attendance_type.is_some() {
-                client.login().await?;
+                client.ensure_authenticated().await?;
             }
             let type_code =
                 resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
@@ -488,7 +488,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Errors { month } => {
-            client.login().await?;
+            client.ensure_authenticated().await?;
             let month = parse_month_or_current(month.as_deref())?;
             let cal = attendance::read_calendar(&mut client, month).await?;
             if json {
@@ -508,7 +508,7 @@ async fn main() -> Result<()> {
             let execute = write_mode.should_execute();
             let date = parse_date(&day)?;
             if attendance_type.is_some() {
-                client.login().await?;
+                client.ensure_authenticated().await?;
             }
             let type_code =
                 resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
@@ -545,7 +545,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Status { month } => {
-            client.login().await?;
+            client.ensure_authenticated().await?;
             let month = parse_month_or_current(month.as_deref())?;
             let cal = attendance::read_calendar(&mut client, month).await?;
             if json {
@@ -589,7 +589,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Report { name } => {
-            client.login().await?;
+            client.ensure_authenticated().await?;
             let table = reports::fetch_report(&mut client, &name).await?;
             if json {
                 print_json(&table)?;
@@ -598,7 +598,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Absences => {
-            client.login().await?;
+            client.ensure_authenticated().await?;
             let data = api::get_absences_initial(&mut client).await?;
             if json {
                 print_json(&data)?;
@@ -618,7 +618,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Sheet => {
-            client.login().await?;
+            client.ensure_authenticated().await?;
             let table = reports::fetch_table_from_url(&mut client, reports::SHEET_URL_PATH).await?;
             if json {
                 print_json(&table)?;
@@ -627,7 +627,7 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Corrections => {
-            client.login().await?;
+            client.ensure_authenticated().await?;
             let table =
                 reports::fetch_table_from_url(&mut client, reports::CORRECTIONS_URL_PATH).await?;
             if json {
@@ -687,7 +687,7 @@ async fn main() -> Result<()> {
                 bail!("{msg}");
             }
 
-            client.login().await?;
+            client.ensure_authenticated().await?;
 
             // Auto-sync ontology if cache is missing and --type is given
             if r#type.is_some() && !ontology::ontology_path(&subdomain).exists() {
@@ -847,7 +847,7 @@ async fn run_overview(
     verbose: bool,
     json: bool,
 ) -> Result<()> {
-    client.login().await?;
+    client.ensure_authenticated().await?;
     let bootstrap = api::bootstrap(client).await?;
     let month = parse_month_or_current(month_arg)?;
     let cal = attendance::read_calendar(client, month).await?;
