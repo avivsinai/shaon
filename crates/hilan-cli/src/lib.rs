@@ -1,17 +1,17 @@
-use crate::core::{
+use anyhow::{bail, Context, Result};
+use chrono::{Datelike, Local, NaiveDate};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use hr_core::{
     AttendanceProvider, AttendanceType as CoreAttendanceType, FixTarget as CoreFixTarget,
     PayslipProvider, ProviderError, ReportProvider, ReportSpec, SalaryProvider,
     WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
 };
-use anyhow::{bail, Context, Result};
-use chrono::{Datelike, Local, NaiveDate};
-use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use std::path::PathBuf;
 use zeroize::Zeroize;
 
-use super::{build_provider, load_config};
-use crate::{attendance, client, ontology, provider::HilanProvider, use_cases};
+use hr_core::use_cases;
+use provider_hilan::{attendance, client, ontology, Config, HilanProvider};
 
 use attendance::is_time_pattern;
 use client::HilanClient;
@@ -78,7 +78,7 @@ const CORRECTIONS_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursReportLog.asp
 #[command(
     name = "hilan",
     version,
-    long_version = env!("HILAN_LONG_VERSION"),
+        long_version = option_env!("HILAN_LONG_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
     about = "Hilan attendance & payslip CLI"
 )]
 struct Cli {
@@ -382,7 +382,7 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
 
-    let config = match load_config() {
+    let config = match Config::load() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -391,7 +391,7 @@ pub async fn run() -> Result<()> {
     };
 
     let subdomain = config.subdomain.clone();
-    let mut client = build_provider(config)?.into_inner();
+    let mut client = provider_hilan::build_provider(config)?.into_inner();
     let json = cli.json;
 
     match cli.command {
@@ -756,7 +756,7 @@ pub async fn run() -> Result<()> {
 }
 
 async fn run_mcp_server() -> Result<()> {
-    super::mcp::serve_stdio().await
+    hilan_mcp::serve_stdio().await
 }
 
 fn parse_month_or_previous(month: Option<&str>) -> Result<NaiveDate> {
@@ -1070,7 +1070,7 @@ fn print_overview_human(ctx: &OverviewResponse) {
     }
 }
 
-fn error_fix_params_from_target(target: &crate::core::FixTarget) -> Option<ErrorFixParams> {
+fn error_fix_params_from_target(target: &hr_core::FixTarget) -> Option<ErrorFixParams> {
     let provider_ref_parts = target.provider_ref.split_once(':');
     let report_id = target
         .metadata
@@ -1092,7 +1092,7 @@ fn error_fix_params_from_target(target: &crate::core::FixTarget) -> Option<Error
     }
 }
 
-fn print_calendar_verbose(calendar: &crate::core::MonthCalendar) {
+fn print_calendar_verbose(calendar: &hr_core::MonthCalendar) {
     println!(
         "Calendar {} (employee {})",
         calendar.month.format("%Y-%m"),

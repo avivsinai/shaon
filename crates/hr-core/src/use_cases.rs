@@ -2,7 +2,7 @@ use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-use crate::core::{
+use crate::{
     AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, AttendanceType,
     CalendarDay, FixTarget, MonthCalendar, ProviderError, ReportTable, UserIdentity, WriteMode,
     WritePreview,
