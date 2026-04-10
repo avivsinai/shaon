@@ -47,34 +47,22 @@ determine_install_dir() {
     return
   fi
 
-  if [[ -d /usr/local/bin && -w /usr/local/bin ]]; then
-    printf '%s\n' "/usr/local/bin"
+  if [[ -d "$HOME/.local/bin" ]]; then
+    printf '%s\n' "$HOME/.local/bin"
     return
   fi
 
-  if [[ ! -e /usr/local/bin && -d /usr/local && -w /usr/local ]]; then
-    printf '%s\n' "/usr/local/bin"
+  if [[ -d "$HOME/bin" ]]; then
+    printf '%s\n' "$HOME/bin"
+    return
+  fi
+
+  if [[ -d "$HOME/.cargo/bin" ]]; then
+    printf '%s\n' "$HOME/.cargo/bin"
     return
   fi
 
   printf '%s\n' "$HOME/.local/bin"
-}
-
-normalize_version() {
-  local value="$1"
-  if [[ "$value" == "latest" ]]; then
-    printf '%s\n' "$value"
-  elif [[ "$value" == v* ]]; then
-    printf '%s\n' "$value"
-  else
-    printf 'v%s\n' "$value"
-  fi
-}
-
-resolve_latest_version() {
-  curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | head -n1
 }
 
 detect_asset() {
@@ -119,8 +107,7 @@ verify_checksum() {
 
   line="$(grep "[[:space:]]${asset}\$" "$checksums_file" || true)"
   if [[ -z "$line" ]]; then
-    warn "Warning: checksum entry not found for ${asset}; skipping verification."
-    return
+    die "Error: checksum entry not found for ${asset}"
   fi
 
   expected="$(printf '%s\n' "$line" | awk '{print $1}')"
@@ -130,8 +117,7 @@ verify_checksum() {
   elif command -v shasum >/dev/null 2>&1; then
     actual="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
   else
-    warn "Warning: no SHA-256 tool found; skipping verification."
-    return
+    die "Error: no SHA-256 verification tool found (need sha256sum or shasum)"
   fi
 
   if [[ "$expected" != "$actual" ]]; then
@@ -146,21 +132,26 @@ require_command install
 info "=== Hilan Installer ==="
 
 INSTALL_DIR="$(determine_install_dir)"
-TAG="$(normalize_version "$VERSION")"
-if [[ "$TAG" == "latest" ]]; then
-  info "Fetching latest release..."
-  TAG="$(resolve_latest_version)"
-  [[ -n "$TAG" ]] || die "Error: could not determine the latest release tag."
-fi
-
 ASSET="$(detect_asset)"
 CHECKSUMS_ASSET="SHA256SUMS.txt"
-ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
-CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/${CHECKSUMS_ASSET}"
+if [[ "$VERSION" == "latest" ]]; then
+  VERSION_LABEL="latest"
+  ASSET_URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+  CHECKSUMS_URL="https://github.com/${REPO}/releases/latest/download/${CHECKSUMS_ASSET}"
+else
+  TAG="$VERSION"
+  if [[ "$TAG" != v* ]]; then
+    TAG="v${TAG}"
+  fi
+  VERSION_LABEL="$TAG"
+  ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+  CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/${CHECKSUMS_ASSET}"
+fi
 
-printf 'Version: %s\n' "$TAG"
+printf 'Version: %s\n' "$VERSION_LABEL"
+printf 'Platform: %s / %s\n' "$(uname -s)" "$(uname -m)"
 printf 'Asset:   %s\n' "$ASSET"
-printf 'Target:  %s\n' "$INSTALL_DIR/hilan"
+printf 'Install: %s\n' "$INSTALL_DIR/hilan"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -170,11 +161,10 @@ if ! curl -fsSL "$ASSET_URL" -o "$TMP_DIR/$ASSET"; then
   die "Error: failed to download ${ASSET}. Check https://github.com/${REPO}/releases for available assets."
 fi
 
-if curl -fsSL "$CHECKSUMS_URL" -o "$TMP_DIR/$CHECKSUMS_ASSET"; then
-  verify_checksum "$ASSET" "$TMP_DIR/$CHECKSUMS_ASSET" "$TMP_DIR/$ASSET"
-else
-  warn "Warning: could not download ${CHECKSUMS_ASSET}; skipping verification."
-fi
+curl -fsSL "$CHECKSUMS_URL" -o "$TMP_DIR/$CHECKSUMS_ASSET" \
+  || die "Error: failed to download ${CHECKSUMS_ASSET} for checksum verification."
+verify_checksum "$ASSET" "$TMP_DIR/$CHECKSUMS_ASSET" "$TMP_DIR/$ASSET"
+info "Checksum verification passed."
 
 info "Extracting archive..."
 tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
@@ -194,6 +184,16 @@ if path_contains "$INSTALL_DIR"; then
   printf 'Available as: hilan\n'
 else
   warn "Warning: ${INSTALL_DIR} is not in your PATH."
-  printf 'Add it to your shell profile:\n'
+  if [[ -n "${ZSH_VERSION:-}" || -f "$HOME/.zshrc" ]]; then
+    printf 'Add this to ~/.zshrc:\n'
+  else
+    printf 'Add this to ~/.bashrc:\n'
+  fi
   printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+  printf 'Direct path: %s/hilan\n' "$INSTALL_DIR"
 fi
+
+printf '\nNext steps:\n'
+printf '  hilan auth\n'
+printf '  hilan sync-types\n'
+printf '  hilan status\n'
