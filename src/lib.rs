@@ -1,4 +1,5 @@
 pub mod api;
+pub mod app;
 pub mod attendance;
 pub mod client;
 pub mod config;
