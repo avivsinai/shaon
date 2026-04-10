@@ -13,7 +13,7 @@ use std::time::Duration;
 use zeroize::Zeroize;
 
 static ORG_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    // Match OrgId in both plain JSON ("OrgId":"4606") and escaped JSON (\"OrgId\":\"4606\")
+    // Match OrgId in both plain JSON ("OrgId":"1234") and escaped JSON (\"OrgId\":\"1234\")
     Regex::new(r#"\\?"OrgId\\?"[:\s]*\\?"(\d+)\\?""#).expect("invalid OrgId regex")
 });
 
@@ -1109,14 +1109,14 @@ mod tests {
         std::env::set_var("HOME", &home);
 
         let (base_url, handle, recorded) = spawn_test_server(vec![http_response(
-            r#"<script>window.bootstrap={"OrgId":"4606"}</script>"#,
+            r#"<script>window.bootstrap={"OrgId":"1234"}</script>"#,
             "text/html; charset=utf-8",
         )]);
 
         let mut client = build_test_client(base_url, true);
         client.ensure_authenticated().await.unwrap();
 
-        assert_eq!(client.org_id.as_deref(), Some("4606"));
+        assert_eq!(client.org_id.as_deref(), Some("1234"));
         let requests = recorded.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, "GET");
@@ -1136,7 +1136,7 @@ mod tests {
 
         let (base_url, handle, recorded) = spawn_test_server(vec![
             http_response(
-                r#"<script>window.bootstrap={"OrgId":"4606"}</script>"#,
+                r#"<script>window.bootstrap={"OrgId":"1234"}</script>"#,
                 "text/html; charset=utf-8",
             ),
             http_response(
@@ -1159,7 +1159,7 @@ mod tests {
         );
         assert!(requests[1].body.contains("username=12345"));
         assert!(requests[1].body.contains("password=s3cret"));
-        assert!(requests[1].body.contains("orgId=4606"));
+        assert!(requests[1].body.contains("orgId=1234"));
 
         drop(requests);
         handle.join().unwrap();

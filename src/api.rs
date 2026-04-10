@@ -159,9 +159,9 @@ mod tests {
 
         let data: GetDataResponse = serde_json::from_str(text).expect("parse GetData fixture");
 
-        assert_eq!(data.principal_user.user_id, "460627");
-        assert_eq!(data.principal_user.employee_id, 27);
-        assert_eq!(data.organization_id.as_deref(), Some("4606"));
+        assert_eq!(data.principal_user.user_id, "999999");
+        assert_eq!(data.principal_user.employee_id, 99);
+        assert_eq!(data.organization_id.as_deref(), Some("1234"));
     }
 
     #[test]
