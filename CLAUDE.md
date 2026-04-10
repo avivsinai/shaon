@@ -27,17 +27,18 @@ Requires Rust 1.80+ (edition 2021).
 Lib/bin split — `src/lib.rs` re-exports all modules, `src/main.rs` is CLI dispatch only.
 
 - `lib.rs` — public module re-exports
-- `main.rs` — clap subcommands (15 commands), `WriteMode` struct, async dispatch via tokio
-- `client.rs` — `HilanClient` wrapping reqwest with cookie jar; WebForms form replay + ASMX JSON calls; login with keychain credential lookup
-- `attendance.rs` — calendar read/write, month navigation, submit preview, `CalendarDay` struct
-- `ontology.rs` — attendance type cache (JSON with 24h TTL), case-insensitive lookup
+- `main.rs` — clap subcommands (18 commands), `WriteMode` struct, async dispatch via tokio
+- `client.rs` — `HilanClient` wrapping reqwest with cookie jar; WebForms form replay + ASMX JSON calls; login with keychain credential lookup; retry with exponential backoff; session expiry detection
+- `attendance.rs` — calendar read/write, month navigation, submit preview, auto-fill, `CalendarDay` struct
+- `ontology.rs` — attendance type cache (JSON with 24h TTL), lazy auto-sync on first symbolic type use
 - `api.rs` — bootstrap call to extract user/employee/org IDs
 - `reports.rs` — HTML table parsing for error/missing/absence reports
 - `config.rs` — config loading with keychain integration via `keyring` crate; password stored as `secrecy::SecretString`
+- `mcp.rs` — MCP server (stdio transport) exposing 12 tools via `rmcp` 1.3
 
 ## Key dependencies
 
-`clap` 4 (CLI), `reqwest` 0.12 (HTTP + cookies + rustls), `tokio` (async), `serde`/`serde_json` (serialization), `scraper` (HTML parsing), `keyring` (OS keychain), `secrecy`/`zeroize` (credential safety), `urlencoding`, `clap_complete` (shell completions)
+`clap` 4 (CLI), `reqwest` 0.12 (HTTP + cookies + rustls), `tokio` (async), `serde`/`serde_json` (serialization), `scraper` (HTML parsing), `keyring` (OS keychain), `secrecy`/`zeroize` (credential safety), `urlencoding`, `clap_complete` (shell completions), `tracing`/`tracing-subscriber` (structured logging), `rmcp` 1.3 (MCP server), `schemars` (JSON schema for MCP tools)
 
 ## Safety model
 
@@ -45,7 +46,14 @@ All write commands (`clock-in`, `clock-out`, `fill`, `fix`) default to **dry-run
 
 ## Output modes
 
-All commands support `--json` for machine-parseable JSON output. Human-readable tables are the default. Status/diagnostic messages go to stderr, data to stdout.
+All commands support `--json` for machine-parseable JSON output. Human-readable tables are the default. Status/diagnostic messages go to stderr via `tracing`, data to stdout. Use `--verbose` for debug output, `--quiet` to suppress all diagnostics.
+
+## MCP server
+
+`hilan serve` starts an MCP server on stdio transport (JSON-RPC). Exposes 12 tools (8 read, 4 write with dry-run default). Each tool call creates a fresh authenticated client. Register in Claude Desktop or any MCP client:
+```json
+{ "mcpServers": { "hilan": { "command": "hilan", "args": ["serve"] } } }
+```
 
 ## Adding a new command
 
