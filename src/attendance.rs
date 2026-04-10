@@ -48,7 +48,7 @@ pub struct SubmitPreview {
 }
 
 /// Fetch and parse the attendance calendar for a given month.
-pub async fn read_calendar(client: &HilanClient, month: NaiveDate) -> Result<MonthCalendar> {
+pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result<MonthCalendar> {
     let url = format!(
         "{}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true",
         client.base_url
@@ -73,6 +73,7 @@ pub async fn read_calendar(client: &HilanClient, month: NaiveDate) -> Result<Mon
                 &[("ctl00$mp$currentMonth", requested_month.as_str())],
                 "ctl00$mp$RefreshPeriod",
                 "דיווח תקופתי",
+                true, // read-only navigation, safe to retry
             )
             .await
             .with_context(|| format!("refresh attendance calendar to {}", month.format("%Y-%m")))?;
@@ -753,6 +754,7 @@ async fn replay_submit(
                 &override_refs,
                 &button_name,
                 button_value,
+                false, // state-changing write — must NOT be retried
             )
             .await
             .with_context(|| format!("submit attendance form for {}", submit.date))?;
