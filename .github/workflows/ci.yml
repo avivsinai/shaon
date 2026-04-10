@@ -36,6 +36,27 @@ jobs:
           diff -rq skills/hilan .claude/skills/hilan
           diff -rq skills/hilan .agents/skills/hilan
 
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: crate-ci/typos@b1ae8e1e31e0ed77573a20764982c695afdf45e0 # v1.32.0
+        with:
+          config: typos.toml
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: EmbarkStudios/cargo-deny-action@34899fc7ba81ca6268d5947a7a16b4649013fea1 # v2.0.11
+        with:
+          command: check
+          arguments: --all-features
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
