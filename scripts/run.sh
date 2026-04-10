@@ -2,9 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MANIFEST_PATH="$PLUGIN_DIR/Cargo.toml"
-PLUGIN_JSON="$PLUGIN_DIR/.claude-plugin/plugin.json"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MANIFEST_PATH="$ROOT_DIR/Cargo.toml"
 
 cache_root() {
     if [ -n "${XDG_CACHE_HOME:-}" ]; then
@@ -37,10 +36,17 @@ require_rust() {
     exit 1
 }
 
-plugin_version() {
-    grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_JSON" \
-        | head -1 \
-        | sed 's/.*"\([^"]*\)"$/\1/'
+package_version() {
+    awk '
+        BEGIN { in_package = 0 }
+        /^\[package\]/ { in_package = 1; next }
+        /^\[/ { in_package = 0 }
+        in_package && $1 == "version" {
+            gsub(/"/, "", $3)
+            print $3
+            exit
+        }
+    ' "$MANIFEST_PATH"
 }
 
 needs_rebuild() {
@@ -50,11 +56,11 @@ needs_rebuild() {
         return 0
     fi
 
-    if [ "$MANIFEST_PATH" -nt "$bin_path" ] || [ "$PLUGIN_DIR/Cargo.lock" -nt "$bin_path" ]; then
+    if [ "$MANIFEST_PATH" -nt "$bin_path" ] || [ "$ROOT_DIR/Cargo.lock" -nt "$bin_path" ]; then
         return 0
     fi
 
-    if find "$PLUGIN_DIR/src" -type f -newer "$bin_path" -print -quit | grep -q .; then
+    if find "$ROOT_DIR/src" -type f -newer "$bin_path" -print -quit | grep -q .; then
         return 0
     fi
 
@@ -63,9 +69,9 @@ needs_rebuild() {
 
 require_rust
 
-VERSION="$(plugin_version)"
+VERSION="$(package_version)"
 if [ -z "$VERSION" ]; then
-    echo "[hilan] ERROR: Could not read version from $PLUGIN_JSON" >&2
+    echo "[hilan] ERROR: Could not read version from $MANIFEST_PATH" >&2
     exit 1
 fi
 
