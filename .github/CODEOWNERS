@@ -2,6 +2,6 @@
 * @avivsinai
 
 # Security-sensitive files
-src/config.rs @avivsinai
-src/mcp.rs @avivsinai
+crates/provider-hilan/src/config.rs @avivsinai
+crates/hilan-mcp/src/lib.rs @avivsinai
 .github/workflows/ @avivsinai

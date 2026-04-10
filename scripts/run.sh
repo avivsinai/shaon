@@ -83,7 +83,7 @@ BIN_PATH="$VERSION_DIR/hilan"
 if needs_rebuild "$BIN_PATH"; then
     echo "[hilan] Building hilan v${VERSION}..." >&2
     mkdir -p "$VERSION_DIR"
-    CARGO_TARGET_DIR="$TARGET_DIR" cargo build --release --manifest-path "$MANIFEST_PATH"
+    CARGO_TARGET_DIR="$TARGET_DIR" cargo build -p hilan --release --manifest-path "$MANIFEST_PATH"
 
     SOURCE_BIN="$TARGET_DIR/release/hilan"
     if [ ! -x "$SOURCE_BIN" ]; then
