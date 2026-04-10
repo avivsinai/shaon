@@ -72,7 +72,7 @@ impl HilanClient {
             let file = fs::File::open(&cookie_path)
                 .with_context(|| format!("open {}", cookie_path.display()))?;
             let reader = std::io::BufReader::new(file);
-            match cookie_store::serde::json::load(reader) {
+            match cookie_store::CookieStore::load_json(reader) {
                 Ok(store) => {
                     tracing::debug!("loaded session cookies from {}", cookie_path.display());
                     store
@@ -109,11 +109,11 @@ impl HilanClient {
         }
         let base_url = format!("https://{}.hilan.co.il", config.subdomain);
 
-        // Check if we have existing session cookies (skip login if so)
-        let has_cookies = {
+        // Check if we have cached session cookies (candidate, not proven auth)
+        let has_session_candidate = {
             let store = cookie_store.lock().unwrap();
-            let has = store.iter_any().next().is_some();
-            has
+            // Look for auth-related cookies, not just any cookie
+            store.iter_any().count() > 1
         };
 
         Ok(Self {
@@ -121,7 +121,8 @@ impl HilanClient {
             base_url,
             config,
             org_id: None,
-            logged_in: has_cookies,
+            // Candidate session: will be validated on first request
+            logged_in: has_session_candidate,
             cookie_store,
         })
     }
