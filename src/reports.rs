@@ -30,7 +30,7 @@ pub struct ReportTable {
 }
 
 /// Fetch a named report and parse its HTML table.
-pub async fn fetch_report(client: &HilanClient, report_name: &str) -> Result<ReportTable> {
+pub async fn fetch_report(client: &mut HilanClient, report_name: &str) -> Result<ReportTable> {
     let url = format!(
         "{}/Hilannetv2/Reports/repAttendanceviewerGeneric.aspx?reportName={}",
         client.base_url, report_name
@@ -40,7 +40,7 @@ pub async fn fetch_report(client: &HilanClient, report_name: &str) -> Result<Rep
 }
 
 /// Fetch a direct HTML table page by absolute or base-relative URL.
-pub async fn fetch_table_from_url(client: &HilanClient, url: &str) -> Result<ReportTable> {
+pub async fn fetch_table_from_url(client: &mut HilanClient, url: &str) -> Result<ReportTable> {
     let url = if url.starts_with("http://") || url.starts_with("https://") {
         url.to_string()
     } else {

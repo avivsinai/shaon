@@ -19,6 +19,7 @@ pub struct HilanClient {
     pub(crate) base_url: String,
     config: Config,
     org_id: Option<String>,
+    logged_in: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,6 +72,7 @@ impl HilanClient {
             base_url,
             config,
             org_id: None,
+            logged_in: false,
         })
     }
 
@@ -109,7 +111,11 @@ impl HilanClient {
     }
 
     /// Log in to Hilan. Fetches OrgId first if not already known.
+    /// Subsequent calls are no-ops while the session is alive.
     pub async fn login(&mut self) -> Result<()> {
+        if self.logged_in {
+            return Ok(());
+        }
         if self.org_id.is_none() {
             self.fetch_org_id().await?;
         }
@@ -167,6 +173,7 @@ impl HilanClient {
             }
         }
 
+        self.logged_in = true;
         eprintln!(
             "Logged in successfully as {} (org: {})",
             self.config.username, org_id
@@ -277,7 +284,7 @@ impl HilanClient {
     }
 
     async fn post_salary_page(
-        &self,
+        &mut self,
         url: &str,
         date_picker_state: &str,
         hidden_fields: &[(String, String)],
@@ -317,7 +324,7 @@ impl HilanClient {
         Ok(text)
     }
 
-    async fn fetch_salary_hidden_fields(&self, url: &str) -> Result<Vec<(String, String)>> {
+    async fn fetch_salary_hidden_fields(&mut self, url: &str) -> Result<Vec<(String, String)>> {
         let resp = self
             .client
             .get(url)
@@ -389,25 +396,64 @@ impl HilanClient {
         })
     }
 
-    /// GET an .aspx page, parse ALL form fields from `<form id="aspnetForm">`, return (html, fields).
-    #[allow(dead_code)] // shared attendance/WebForms helper
-    pub async fn get_aspx_form(&self, url: &str) -> Result<(String, HashMap<String, String>)> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?;
+    /// Send an HTTP request with retry on transient errors and
+    /// automatic re-authentication on session expiry.
+    ///
+    /// `build_request` is called on each attempt to produce a fresh `RequestBuilder`
+    /// (since `send()` consumes it). Returns `(StatusCode, response_body)`.
+    async fn send_with_retry(
+        &mut self,
+        label: &str,
+        build_request: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+    ) -> Result<(reqwest::StatusCode, String)> {
+        const MAX_RETRIES: u32 = 3;
+        let mut attempt = 0u32;
+        loop {
+            let result = build_request(&self.client)
+                .send()
+                .await
+                .with_context(|| label.to_string());
 
-        let status = resp.status();
-        let html = resp
-            .text()
-            .await
-            .with_context(|| format!("read body from {url}"))?;
+            match result {
+                Err(e) if attempt < MAX_RETRIES && is_transient(&e) => {
+                    attempt += 1;
+                    retry_backoff(attempt, MAX_RETRIES).await;
+                }
+                Err(e) => return Err(e),
+                Ok(resp) => {
+                    if is_login_redirect(&resp) {
+                        self.logged_in = false;
+                        self.login().await?;
+                        attempt += 1;
+                        continue;
+                    }
+                    let status = resp.status();
+                    if is_transient_status(status) && attempt < MAX_RETRIES {
+                        attempt += 1;
+                        retry_backoff(attempt, MAX_RETRIES).await;
+                        continue;
+                    }
+                    let body = resp
+                        .text()
+                        .await
+                        .with_context(|| format!("read body from {label}"))?;
+                    return Ok((status, body));
+                }
+            }
+        }
+    }
+
+    /// GET an .aspx page, parse ALL form fields from `<form id="aspnetForm">`, return (html, fields).
+    ///
+    /// Retries on transient errors and re-authenticates on session expiry.
+    #[allow(dead_code)] // shared attendance/WebForms helper
+    pub async fn get_aspx_form(&mut self, url: &str) -> Result<(String, HashMap<String, String>)> {
+        let (status, html) = self
+            .send_with_retry(&format!("GET {url}"), |c| c.get(url))
+            .await?;
         if !status.is_success() {
             bail!("GET {url} returned HTTP {status}");
         }
-
         let fields = parse_aspx_form_fields(&html);
         Ok((html, fields))
     }
@@ -416,42 +462,29 @@ impl HilanClient {
     ///
     /// Starts with `base_fields`, applies `overrides` (replacing existing keys or adding new ones),
     /// then adds the submit button field. POSTs as `application/x-www-form-urlencoded`.
+    /// Retries on transient errors and re-authenticates on session expiry.
     #[allow(dead_code)] // shared attendance/WebForms helper
     pub async fn post_aspx_form(
-        &self,
+        &mut self,
         url: &str,
         base_fields: &HashMap<String, String>,
         overrides: &[(&str, &str)],
         button_name: &str,
         button_value: &str,
     ) -> Result<String> {
-        let mut fields: HashMap<String, String> = base_fields.clone();
-
+        let mut merged: HashMap<String, String> = base_fields.clone();
         for &(key, value) in overrides {
-            fields.insert(key.to_string(), value.to_string());
+            merged.insert(key.to_string(), value.to_string());
         }
+        merged.insert(button_name.to_string(), button_value.to_string());
+        let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
 
-        fields.insert(button_name.to_string(), button_value.to_string());
-
-        let form_pairs: Vec<(String, String)> = fields.into_iter().collect();
-
-        let resp = self
-            .client
-            .post(url)
-            .form(&form_pairs)
-            .send()
-            .await
-            .with_context(|| format!("POST {url}"))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .with_context(|| format!("read body from POST {url}"))?;
+        let (status, text) = self
+            .send_with_retry(&format!("POST {url}"), |c| c.post(url).form(&form_pairs))
+            .await?;
         if !status.is_success() {
             bail!("POST {url} returned HTTP {status}");
         }
-
         Ok(text)
     }
 
@@ -459,8 +492,9 @@ impl HilanClient {
     ///
     /// `POST /Hilannetv2/Services/Public/WS/{service}.asmx/{method}`
     /// with `Content-Type: application/json` and body `{}`.
+    /// Retries on transient errors and re-authenticates on session expiry.
     pub async fn asmx_call<T: serde::de::DeserializeOwned>(
-        &self,
+        &mut self,
         service: &str,
         method: &str,
     ) -> Result<T> {
@@ -469,24 +503,16 @@ impl HilanClient {
             self.base_url, service, method
         );
 
-        let resp = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .body("{}")
-            .send()
-            .await
-            .with_context(|| format!("POST {url}"))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .with_context(|| format!("read body from {url}"))?;
+        let (status, text) = self
+            .send_with_retry(&format!("POST {url}"), |c| {
+                c.post(&url)
+                    .header("Content-Type", "application/json")
+                    .body("{}")
+            })
+            .await?;
         if !status.is_success() {
             bail!("{service}/{method} returned HTTP {status}: {text}");
         }
-
         let parsed: T = serde_json::from_str(&text)
             .with_context(|| format!("parse JSON from {service}/{method}"))?;
         Ok(parsed)
@@ -705,6 +731,47 @@ fn percent_diff(previous: u64, current: u64) -> Option<f64> {
 #[allow(dead_code)] // login now uses reqwest::form(); kept as utility
 fn urlencode(s: &str) -> String {
     urlencoding::encode(s).into_owned()
+}
+
+/// Check whether an error is transient (connection reset, timeout, etc.)
+/// and therefore worth retrying.
+fn is_transient(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(req_err) = cause.downcast_ref::<reqwest::Error>() {
+            if req_err.is_timeout() || req_err.is_connect() || req_err.is_request() {
+                return true;
+            }
+        }
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io_err.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::TimedOut
+            );
+        }
+    }
+    false
+}
+
+/// Check whether an HTTP status code is a transient server error.
+fn is_transient_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 500 | 502 | 503)
+}
+
+/// Detect whether a response was redirected to the Hilan login page,
+/// indicating session expiry. Checks the final URL after redirect following.
+fn is_login_redirect(resp: &reqwest::Response) -> bool {
+    let url = resp.url().as_str().to_lowercase();
+    url.contains("/login") || url.contains("/signin") || url.contains("/logon")
+}
+
+/// Sleep with exponential backoff: 500ms, 1s, 2s, ...
+async fn retry_backoff(attempt: u32, max_retries: u32) {
+    let delay = Duration::from_millis(500 * 2u64.pow(attempt - 1));
+    eprintln!("Retrying in {delay:?} (attempt {attempt}/{max_retries})");
+    tokio::time::sleep(delay).await;
 }
 
 #[cfg(test)]
