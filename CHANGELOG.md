@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-10
 ### Added
 
 - **Workspace architecture**: split into `hr-core` (generic traits/DTOs), `provider-hilan`, `hilan-cli`, `hilan-mcp`
@@ -50,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Subdomain validation prevents URL manipulation
 - Username masked in logs (PII protection)
 - Gitleaks + cargo-deny in CI
+
 
 ## [0.4.0] - 2026-04-10
 
