@@ -326,6 +326,22 @@ impl HilanClient {
 
         self.ensure_authenticated().await?;
 
+        match crate::api::get_salary_initial(self).await {
+            Ok(data) => match self.salary_summary_from_initial_data(&data, months) {
+                Ok(summary) => return Ok(summary),
+                Err(err) => {
+                    tracing::debug!("salary ASMX data insufficient, falling back to HTML: {err}");
+                }
+            },
+            Err(err) => {
+                tracing::debug!("salary ASMX request failed, falling back to HTML: {err}");
+            }
+        }
+
+        self.salary_from_html(months).await
+    }
+
+    async fn salary_from_html(&mut self, months: u32) -> Result<SalarySummary> {
         let latest_month = previous_month_start(Local::now().date_naive());
         let oldest_month = shift_month(latest_month, -((months - 1) as i32));
         let month_range = month_range(oldest_month, months);
@@ -369,6 +385,67 @@ impl HilanClient {
         };
 
         self.parse_salary_summary(&html, month_range)
+    }
+
+    fn salary_summary_from_initial_data(
+        &self,
+        data: &crate::api::SalaryInitialData,
+        months: u32,
+    ) -> Result<SalarySummary> {
+        let requested = months as usize;
+        if data.table_data.len() < requested {
+            bail!(
+                "salary ASMX response has {} rows, need {requested}",
+                data.table_data.len()
+            );
+        }
+
+        let selected_months = parse_selected_salary_months(data)?;
+        if selected_months.len() != data.table_data.len() {
+            bail!(
+                "salary ASMX response has {} selected months but {} table rows",
+                selected_months.len(),
+                data.table_data.len()
+            );
+        }
+        if selected_months.len() < requested {
+            bail!(
+                "salary ASMX response has {} selected months, need {requested}",
+                selected_months.len()
+            );
+        }
+
+        let label = data
+            .table_columns
+            .iter()
+            .find(|column| column.name == "Bruto")
+            .map(|column| column.display_name.clone())
+            .unwrap_or_else(|| "Bruto".to_string());
+
+        let months_slice = &selected_months[selected_months.len() - requested..];
+        let rows_slice = &data.table_data[data.table_data.len() - requested..];
+        let entries: Vec<SalaryEntry> = months_slice
+            .iter()
+            .cloned()
+            .zip(rows_slice.iter())
+            .map(|(month, row)| {
+                Ok(SalaryEntry {
+                    month,
+                    amount: salary_amount(row, "Bruto")?,
+                })
+            })
+            .collect::<Result<_>>()?;
+
+        let percent_diff = entries
+            .windows(2)
+            .last()
+            .and_then(|pair| percent_diff(pair[0].amount, pair[1].amount));
+
+        Ok(SalarySummary {
+            label,
+            entries,
+            percent_diff,
+        })
     }
 
     fn resolve_payslip_path(&self, month: NaiveDate, output: Option<&Path>) -> PathBuf {
@@ -833,6 +910,47 @@ fn extract_amount(cell: &str) -> Option<u64> {
     }
 }
 
+fn parse_selected_salary_months(data: &crate::api::SalaryInitialData) -> Result<Vec<NaiveDate>> {
+    let raw_months: Vec<&str> = if data.selected_dates.is_empty() {
+        data.selected_single_date
+            .iter()
+            .map(String::as_str)
+            .collect()
+    } else {
+        data.selected_dates.iter().map(String::as_str).collect()
+    };
+
+    if raw_months.is_empty() {
+        bail!("salary ASMX response did not include selected months");
+    }
+
+    raw_months
+        .into_iter()
+        .map(parse_salary_month_token)
+        .collect()
+}
+
+fn parse_salary_month_token(token: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(&format!("01/{token}"), "%d/%m/%Y")
+        .with_context(|| format!("parse salary month token {token}"))
+}
+
+fn salary_amount(row: &BTreeMap<String, serde_json::Value>, key: &str) -> Result<u64> {
+    let value = row
+        .get(key)
+        .with_context(|| format!("salary ASMX row missing {key}"))?;
+
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .or_else(|| number.as_f64().map(|value| value.round() as u64))
+            .with_context(|| format!("salary ASMX {key} is not a finite amount")),
+        serde_json::Value::String(text) => extract_amount(text)
+            .with_context(|| format!("salary ASMX {key} string did not contain digits")),
+        other => bail!("salary ASMX {key} has unsupported value type: {other}"),
+    }
+}
+
 pub fn previous_month_start(today: NaiveDate) -> NaiveDate {
     shift_month(today.with_day(1).unwrap(), -1)
 }
@@ -1018,14 +1136,14 @@ mod tests {
                 let mut parts = request_line.split_whitespace();
                 let method = parts.next().unwrap_or_default().to_string();
                 let path = parts.next().unwrap_or_default().to_string();
-                let body = String::from_utf8_lossy(&buffer[body_start..body_start + content_length])
-                    .to_string();
+                let body =
+                    String::from_utf8_lossy(&buffer[body_start..body_start + content_length])
+                        .to_string();
 
-                recorded_clone.lock().unwrap().push(RecordedRequest {
-                    method,
-                    path,
-                    body,
-                });
+                recorded_clone
+                    .lock()
+                    .unwrap()
+                    .push(RecordedRequest { method, path, body });
 
                 stream.write_all(response.as_bytes()).unwrap();
                 stream.flush().unwrap();
@@ -1066,6 +1184,29 @@ mod tests {
         assert!(diff.abs() < f64::EPSILON, "expected 0.0, got {diff}");
     }
 
+    #[test]
+    fn salary_summary_from_initial_data_uses_bruto_column() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/asmx/salary-GetInitialData-full.json"
+        ));
+        let data = crate::api::parse_salary_initial_data(text).expect("parse salary fixture");
+
+        let client = build_test_client("http://127.0.0.1:1".to_string(), true);
+        let summary = client
+            .salary_summary_from_initial_data(&data, 1)
+            .expect("build salary summary");
+
+        assert_eq!(summary.label, "ברוטו");
+        assert_eq!(summary.entries.len(), 1);
+        assert_eq!(
+            summary.entries[0].month,
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+        );
+        assert_eq!(summary.entries[0].amount, 12_345);
+        assert!(summary.percent_diff.is_none());
+    }
+
     // -- urlencode -------------------------------------------------------------
 
     #[test]
@@ -1097,6 +1238,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn ensure_authenticated_reuses_candidate_session_without_network() {
         let _env_guard = crate::config::test_env_lock().lock().unwrap();
@@ -1111,6 +1253,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn login_validates_credentials_even_with_candidate_session() {
         let _env_guard = crate::config::test_env_lock().lock().unwrap();

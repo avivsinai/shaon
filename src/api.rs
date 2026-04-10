@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::client::HilanClient;
 
@@ -39,6 +40,26 @@ pub struct AbsenceSymbol {
 pub struct AbsencesInitialData {
     #[serde(rename = "Symbols")]
     pub symbols: Vec<AbsenceSymbol>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SalaryTableColumn {
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "DisplayName")]
+    pub display_name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SalaryInitialData {
+    #[serde(rename = "SelectedDates", default)]
+    pub selected_dates: Vec<String>,
+    #[serde(rename = "SelectedSingleDate")]
+    pub selected_single_date: Option<String>,
+    #[serde(rename = "TableColumns", default)]
+    pub table_columns: Vec<SalaryTableColumn>,
+    #[serde(rename = "TableData", default)]
+    pub table_data: Vec<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +126,10 @@ fn parse_absences_initial_data(text: &str) -> serde_json::Result<AbsencesInitial
     serde_json::from_str(text)
 }
 
+pub(crate) fn parse_salary_initial_data(text: &str) -> serde_json::Result<SalaryInitialData> {
+    serde_json::from_str(text)
+}
+
 // ---------------------------------------------------------------------------
 // Public API functions
 // ---------------------------------------------------------------------------
@@ -144,6 +169,19 @@ pub async fn get_absences_initial(client: &mut HilanClient) -> Result<AbsencesIn
         .context("get_absences_initial")?;
 
     parse_absences_initial_data(&text).context("parse JSON from HAbsencesApiapi/GetInitialData")
+}
+
+/// Fetch salary summary initial data from the payments-and-deductions API.
+///
+/// Calls `PaymentsAndDeductionsApiapi.asmx/GetInitialData`.
+pub async fn get_salary_initial(client: &mut HilanClient) -> Result<SalaryInitialData> {
+    let text: String = client
+        .asmx_call("PaymentsAndDeductionsApiapi", "GetInitialData")
+        .await
+        .context("get_salary_initial")?;
+
+    parse_salary_initial_data(&text)
+        .context("parse JSON from PaymentsAndDeductionsApiapi/GetInitialData")
 }
 
 #[cfg(test)]
@@ -188,5 +226,38 @@ mod tests {
         let data = parse_tasks_count(text).expect("parse GetTasksCount fixture");
 
         assert_eq!(data.tasks_count, 0);
+    }
+
+    #[test]
+    fn live_salary_get_initial_data_fixture_exposes_table_data() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/asmx/salary-GetInitialData-full.json"
+        ));
+
+        let data = parse_salary_initial_data(text).expect("parse salary GetInitialData fixture");
+
+        assert_eq!(data.selected_single_date.as_deref(), Some("03/2026"));
+        assert_eq!(data.selected_dates, vec!["03/2026"]);
+        assert_eq!(data.table_data.len(), 1);
+        assert_eq!(
+            data.table_columns
+                .iter()
+                .find(|column| column.name == "Bruto")
+                .map(|column| column.display_name.as_str()),
+            Some("ברוטו")
+        );
+        assert_eq!(
+            data.table_data[0]
+                .get("Range")
+                .and_then(serde_json::Value::as_str),
+            Some("מרץ 2026")
+        );
+        assert_eq!(
+            data.table_data[0]
+                .get("Bruto")
+                .and_then(serde_json::Value::as_f64),
+            Some(12345.0)
+        );
     }
 }
