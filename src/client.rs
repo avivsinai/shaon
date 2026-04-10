@@ -247,7 +247,12 @@ impl HilanClient {
         let cookie_path = cookie_dir.join("cookies.json");
         let store = self.cookie_store.lock().unwrap();
         if let Ok(mut file) = fs::File::create(&cookie_path) {
-            if cookie_store::serde::json::save(&store, &mut file).is_ok() {
+            // save_incl_expired_and_nonpersistent_json includes session cookies
+            // (no Expires attribute) which are critical for Hilan auth
+            if store
+                .save_incl_expired_and_nonpersistent_json(&mut file)
+                .is_ok()
+            {
                 drop(file);
                 #[cfg(unix)]
                 {
