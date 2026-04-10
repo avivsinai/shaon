@@ -18,7 +18,7 @@ fn keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
         .context("create keyring entry")
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
     pub subdomain: String,
     pub username: String,
