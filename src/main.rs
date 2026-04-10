@@ -3,12 +3,7 @@ use chrono::{Datelike, Duration, Local, NaiveDate};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-mod api;
-mod attendance;
-mod client;
-mod config;
-mod ontology;
-mod reports;
+use hilan::{api, attendance, client, config, ontology, reports};
 
 use client::HilanClient;
 use config::Config;
