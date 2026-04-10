@@ -13,7 +13,7 @@ This script:
 1. Verifies you are on a clean, up-to-date main branch
 2. Creates release/vX.Y.Z branch
 3. Moves CHANGELOG.md's Unreleased section into a versioned release entry
-4. Bumps [package].version plus skill/plugin metadata
+4. Bumps [workspace.package].version plus skill/plugin metadata
 5. Runs cargo check/test/clippy/fmt release gates
 6. Commits the release bump as chore(release): vX.Y.Z
 7. Pushes the branch
@@ -194,8 +194,8 @@ PY
 # --- Bump versions ---
 
 HILAN_VERSION="$version" perl -0pi -e '
-  s/(\[package\]\n(?:[^\[]*\n)*?version = ")[^"]+(")/${1}$ENV{HILAN_VERSION}$2/s
-    or die "failed to update [package].version\n";
+  s/(\[workspace\.package\]\n(?:[^\[]*\n)*?version = ")[^"]+(")/${1}$ENV{HILAN_VERSION}$2/s
+    or die "failed to update [workspace.package].version\n";
 ' Cargo.toml
 
 update_json_version .claude-plugin/plugin.json "$version"
@@ -212,9 +212,9 @@ done < <(find skills -mindepth 2 -maxdepth 2 -name SKILL.md | sort)
 # --- Verify ---
 
 if [[ "$skip_verify" -eq 0 ]]; then
-  cargo check --all-targets
-  cargo test --all-targets
-  cargo clippy --all-targets -- -D warnings
+  cargo check --workspace --all-targets
+  cargo test --workspace --all-targets
+  cargo clippy --workspace --all-targets -- -D warnings
   cargo fmt --all -- --check
 fi
 ./scripts/check-release-version.sh "$version"

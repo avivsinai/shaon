@@ -18,10 +18,11 @@ cd "$root_dir"
 
 read_package_version() {
   awk '
-    BEGIN { in_package = 0 }
-    /^\[package\]/ { in_package = 1; next }
-    /^\[/ { in_package = 0 }
-    in_package && $1 == "version" {
+    BEGIN { in_workspace_package = 0; in_package = 0 }
+    /^\[workspace\.package\]/ { in_workspace_package = 1; in_package = 0; next }
+    /^\[package\]/ { in_package = 1; in_workspace_package = 0; next }
+    /^\[/ { in_workspace_package = 0; in_package = 0 }
+    (in_workspace_package || in_package) && $1 == "version" {
       gsub(/"/, "", $3)
       print $3
       exit

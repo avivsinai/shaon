@@ -37,7 +37,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build -p hilan --release --locked --target ${{ matrix.target }}
 
       - name: Codesign macOS binary
         if: runner.os == 'macOS'

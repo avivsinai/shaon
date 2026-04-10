@@ -13,8 +13,8 @@ Brief description of the changes.
 ## Checklist
 
 - [ ] `cargo fmt --all` applied
-- [ ] `cargo clippy --all-targets -- -D warnings` passes
-- [ ] `cargo test --all-targets` passes
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
+- [ ] `cargo test --workspace --all-targets` passes
 - [ ] New tests added (if applicable)
 - [ ] Documentation updated (if applicable)
 - [ ] No new `unsafe` code
