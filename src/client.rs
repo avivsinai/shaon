@@ -65,9 +65,7 @@ struct LoginResponse {
 impl HilanClient {
     pub fn new(config: Config) -> Result<Self> {
         // Load persisted cookies if available
-        let cookie_path = crate::config::config_dir()
-            .join(&config.subdomain)
-            .join("cookies.json");
+        let cookie_path = crate::config::subdomain_dir(&config.subdomain).join("cookies.json");
         let cookie_store = if cookie_path.exists() {
             let file = fs::File::open(&cookie_path)
                 .with_context(|| format!("open {}", cookie_path.display()))?;
@@ -251,7 +249,7 @@ impl HilanClient {
 
     /// Persist session cookies to disk for reuse across CLI invocations.
     fn save_cookies(&self) {
-        let cookie_dir = crate::config::config_dir().join(&self.config.subdomain);
+        let cookie_dir = crate::config::subdomain_dir(&self.config.subdomain);
         if fs::create_dir_all(&cookie_dir).is_err() {
             return;
         }
@@ -913,12 +911,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Mutex, OnceLock};
-
-    fn test_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use std::sync::Mutex;
 
     fn test_home_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1103,7 +1096,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_authenticated_reuses_candidate_session_without_login_post() {
-        let _env_guard = test_env_lock().lock().unwrap();
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
         let home = test_home_dir("candidate-session");
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("HOME", &home);
@@ -1129,7 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_validates_credentials_even_with_candidate_session() {
-        let _env_guard = test_env_lock().lock().unwrap();
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
         let home = test_home_dir("credential-login");
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("HOME", &home);

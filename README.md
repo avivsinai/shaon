@@ -27,9 +27,9 @@ Rust CLI for Hilan (חילן) attendance reporting, payslips, and HR automation.
 
 - **15 commands** covering attendance, reports, payslips, and salary
 - **Safe by default** — all write commands require `--execute` to submit
-- **JSON output mode** for scripting and AI agents (planned)
-- **OS keychain credential storage** (planned)
-- **MCP server mode** for AI agent integration (planned)
+- **JSON output mode** for scripting and AI agents
+- **OS keychain credential storage** with legacy plaintext migration
+- **MCP server mode** for AI agent integration
 - **Claude Code skill + plugin** for natural-language attendance automation
 - **Full ASP.NET form replay** for attendance pages and error-wizard flows
 - **Direct ASMX JSON calls** where Hilan exposes machine-friendly endpoints
@@ -156,19 +156,18 @@ All write commands are **preview-only by default**. Pass `--execute` to submit.
 
 ## Configuration
 
-`hilan` reads a TOML config file from the platform-specific config directory.
+`hilan` reads a TOML config file from:
 
-| Platform | Config path |
-|----------|-------------|
-| macOS | `~/Library/Application Support/com.hilan.hilan/config.toml` |
-| Linux / fallback | `~/.config/hilan/config.toml` |
+| Path | Purpose |
+|------|---------|
+| `~/.hilan/config.toml` | Canonical config location |
+| `~/.hilan/<subdomain>/` | Per-org state (`cookies.json`, `types.json`) |
 
 Example:
 
 ```toml
 subdomain = "YOUR_COMPANY"
 username = "YOUR_ID_NUMBER"
-password = "YOUR_PASSWORD"
 
 # optional
 payslip_folder = "/Users/you/Downloads/payslips"
@@ -178,7 +177,9 @@ payslip_format = "%Y-%m.pdf"
 Notes:
 
 - `subdomain` is the part before `.hilan.co.il`
-- The password is currently read from the config file directly; keep the file user-readable only (`chmod 600`)
+- Run `hilan auth` to store the password in the OS keychain
+- `hilan auth --migrate` moves a legacy plaintext password from config into the keychain
+- Legacy config/state under `~/.config/hilan` and, on macOS, `~/Library/Application Support/com.hilan.hilan` are migrated automatically into `~/.hilan`
 - CAPTCHA is not bypassed; if Hilan asks for one, solve it in the browser first
 
 ## Architecture
@@ -238,13 +239,13 @@ The skill triggers on keywords like "hilan", "attendance", "clock in/out",
 
 ### Scripting
 
-All commands can be used in shell scripts. A future `--json` flag will emit
-structured output for machine consumption.
+All commands can be used in shell scripts. Pass `--json` to emit structured
+output for machine consumption.
 
-### MCP Server (Planned)
+### MCP Server
 
-A Model Context Protocol server mode is planned that will expose Hilan
-operations as MCP tools for AI agent orchestration.
+Run `hilan serve` to expose Hilan operations as MCP tools for AI agent
+orchestration over stdio transport.
 
 ## Verifying Downloads
 
