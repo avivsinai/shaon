@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
 mod api;
@@ -154,11 +154,25 @@ enum Commands {
 
     /// List available attendance types (from local cache)
     Types,
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Handle completions before config loading — no credentials needed.
+    if let Commands::Completions { shell } = cli.command {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "hilan", &mut std::io::stdout());
+        return Ok(());
+    }
 
     let config = match Config::load() {
         Ok(c) => c,
@@ -380,6 +394,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Commands::Completions { .. } => unreachable!("handled above"),
     }
 
     Ok(())
