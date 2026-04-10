@@ -229,26 +229,18 @@ fn fill_dates(from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
     dates
 }
 
-fn preview_debug_field<'a>(preview: &'a WritePreview, key: &str) -> Option<&'a str> {
-    preview
-        .provider_debug
-        .as_ref()
-        .and_then(|debug| debug.get(key))
-        .and_then(serde_json::Value::as_str)
-}
-
 fn write_preview_json(action: &str, preview: &WritePreview) -> serde_json::Value {
     serde_json::json!({
         "action": action,
         "executed": preview.executed,
         "summary": preview.summary,
-        "url": preview_debug_field(preview, "url"),
-        "employee_id": preview_debug_field(preview, "employee_id"),
+        "url": preview.debug_field("url"),
+        "employee_id": preview.debug_field("employee_id"),
         "button": {
-            "name": preview_debug_field(preview, "button_name"),
-            "value": preview_debug_field(preview, "button_value"),
+            "name": preview.debug_field("button_name"),
+            "value": preview.debug_field("button_value"),
         },
-        "payload_display": preview_debug_field(preview, "payload_display"),
+        "payload_display": preview.debug_field("payload_display"),
     })
 }
 
@@ -354,10 +346,8 @@ impl HilanMcpServer {
     #[tool(description = "List available attendance types from the provider cache or live sync.")]
     async fn hilan_types(&self) -> String {
         json_or_error(|| async {
-            let subdomain = Config::load()
-                .map_err(|e| ToolError::new("config_error", format!("config error: {e}")))?
-                .subdomain;
             let mut provider = new_provider().await?;
+            let subdomain = provider.client().config().subdomain.clone();
             let types = provider.attendance_types().await.map_err(ToolError::from)?;
             let types: Vec<serde_json::Value> = types
                 .iter()
@@ -478,7 +468,7 @@ impl HilanMcpServer {
                     serde_json::json!({
                         "date": date.format("%Y-%m-%d").to_string(),
                         "executed": preview.executed,
-                        "employee_id": preview_debug_field(preview, "employee_id"),
+                        "employee_id": preview.debug_field("employee_id"),
                     })
                 })
                 .collect();

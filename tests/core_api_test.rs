@@ -1,9 +1,9 @@
 use chrono::NaiveDate;
 use hilan::core::{
     AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, AttendanceType,
-    CalendarDay, DocumentDownload, FixTarget, MonthCalendar, PayslipProvider, ProviderCapabilities,
-    ProviderError, ReportProvider, ReportSpec, ReportTable, SalaryEntry, SalaryProvider,
-    SalarySummary, UserIdentity, WriteMode, WritePreview,
+    CalendarDay, DocumentDownload, FixTarget, MonthCalendar, PayslipProvider, ProviderError,
+    ReportProvider, ReportSpec, ReportTable, SalaryEntry, SalaryProvider, SalarySummary,
+    UserIdentity, WriteMode, WritePreview,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -195,21 +195,4 @@ async fn core_traits_are_usable_from_library_consumers() {
         .await
         .expect("report");
     assert_eq!(report.name, "errors");
-}
-
-#[test]
-fn provider_capabilities_can_describe_frontend_support() {
-    let caps = ProviderCapabilities {
-        attendance_read: true,
-        attendance_write: true,
-        fix_errors: true,
-        salary_summary: false,
-        payslips: false,
-        reports: false,
-        attendance_types: true,
-    };
-
-    assert!(caps.attendance_read);
-    assert!(caps.fix_errors);
-    assert!(!caps.salary_summary);
 }

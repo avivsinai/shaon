@@ -1045,14 +1045,6 @@ fn percent_diff(previous: u64, current: u64) -> Option<f64> {
     }
 }
 
-/// Percent-encode a string for use in URL query parameters / form bodies.
-///
-/// Delegates to the `urlencoding` crate which handles non-ASCII correctly.
-#[allow(dead_code)] // login now uses reqwest::form(); kept as utility
-fn urlencode(s: &str) -> String {
-    urlencoding::encode(s).into_owned()
-}
-
 /// Check whether an error is transient (connection reset, timeout, etc.)
 /// and therefore worth retrying.
 fn is_transient(err: &anyhow::Error) -> bool {
@@ -1308,37 +1300,6 @@ mod tests {
 
         let decrypted = decrypt_cookie_blob(&key, &encrypted).expect("decrypt cookies");
         assert_eq!(decrypted, plaintext);
-    }
-
-    // -- urlencode -------------------------------------------------------------
-
-    #[test]
-    fn test_urlencode_ascii() {
-        assert_eq!(urlencode("hello"), "hello");
-    }
-
-    #[test]
-    fn test_urlencode_spaces() {
-        // urlencoding::encode uses %20 for spaces (RFC 3986).
-        assert_eq!(urlencode("a b"), "a%20b");
-    }
-
-    #[test]
-    fn test_urlencode_special_chars() {
-        let encoded = urlencode("p@ss&w=rd!");
-        assert!(!encoded.contains('@'));
-        assert!(!encoded.contains('&'));
-        assert!(!encoded.contains('='));
-    }
-
-    #[test]
-    fn test_urlencode_non_ascii() {
-        // Hebrew letter Alef (U+05D0) should be percent-encoded.
-        let encoded = urlencode("א");
-        assert!(
-            encoded.starts_with('%'),
-            "non-ASCII should be encoded: {encoded}"
-        );
     }
 
     #[allow(clippy::await_holding_lock)]

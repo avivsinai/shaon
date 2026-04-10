@@ -92,6 +92,15 @@ pub struct WritePreview {
     pub provider_debug: Option<serde_json::Value>,
 }
 
+impl WritePreview {
+    pub fn debug_field(&self, key: &str) -> Option<&str> {
+        self.provider_debug
+            .as_ref()
+            .and_then(|debug| debug.get(key))
+            .and_then(serde_json::Value::as_str)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FixTarget {
     pub date: NaiveDate,
@@ -133,17 +142,6 @@ pub struct ReportTable {
     pub rows: Vec<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct ProviderCapabilities {
-    pub attendance_read: bool,
-    pub attendance_write: bool,
-    pub fix_errors: bool,
-    pub salary_summary: bool,
-    pub payslips: bool,
-    pub reports: bool,
-    pub attendance_types: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderError {
     pub code: Cow<'static, str>,
@@ -180,6 +178,10 @@ impl fmt::Display for ProviderError {
 }
 
 impl Error for ProviderError {}
+
+pub fn is_weekend(date: NaiveDate) -> bool {
+    matches!(date.weekday(), chrono::Weekday::Fri | chrono::Weekday::Sat)
+}
 
 #[async_trait]
 pub trait AttendanceProvider: Send {

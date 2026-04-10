@@ -210,7 +210,7 @@ pub async fn fill_range<P: AttendanceProvider>(
     let mut previews = Vec::new();
     let mut current = from;
     while current <= to {
-        if options.include_weekends || !is_weekend(current) {
+        if options.include_weekends || !crate::is_weekend(current) {
             let change = fill_change(
                 current,
                 options.attendance_type_code.clone(),
@@ -303,7 +303,7 @@ pub async fn auto_fill<P: AttendanceProvider>(
             });
             continue;
         }
-        if !options.include_weekends && is_weekend(day.date) {
+        if !options.include_weekends && crate::is_weekend(day.date) {
             skipped.push(SkippedDay {
                 date: date_display,
                 reason: "weekend".to_string(),
@@ -347,6 +347,7 @@ pub async fn auto_fill<P: AttendanceProvider>(
 
     let failed = filled.iter().filter(|day| day.status == "failed").count() as u32;
     let filled_ok = filled.iter().filter(|day| day.status != "failed").count() as u32;
+    let skipped_count = skipped.len() as u32;
 
     Ok(AutoFillResult {
         month: calendar.month.format("%Y-%m").to_string(),
@@ -357,11 +358,11 @@ pub async fn auto_fill<P: AttendanceProvider>(
         },
         attendance_type: options.type_display,
         filled,
-        skipped: skipped.clone(),
+        skipped,
         summary: AutoFillSummary {
             total_candidates: candidate_count,
             filled: filled_ok,
-            skipped: skipped.len() as u32,
+            skipped: skipped_count,
             failed,
         },
     })
@@ -795,8 +796,4 @@ fn is_day_partial(day: &CalendarDay) -> bool {
         return false;
     }
     day.entry_time.is_some() != day.exit_time.is_some()
-}
-
-fn is_weekend(date: NaiveDate) -> bool {
-    matches!(date.weekday(), chrono::Weekday::Fri | chrono::Weekday::Sat)
 }

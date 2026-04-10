@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use chrono::{Datelike, NaiveDate};
 use hr_core::{
     AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, DocumentDownload,
-    FixTarget, MonthCalendar, PayslipProvider, ProviderCapabilities, ProviderError, ReportProvider,
-    ReportSpec, ReportTable, SalaryProvider, SalarySummary, UserIdentity, WriteMode, WritePreview,
+    FixTarget, MonthCalendar, PayslipProvider, ProviderError, ReportProvider, ReportSpec,
+    ReportTable, SalaryProvider, SalarySummary, UserIdentity, WriteMode, WritePreview,
 };
 use std::path::Path;
 
@@ -38,18 +38,6 @@ impl HilanProvider {
 
     pub fn into_inner(self) -> HilanClient {
         self.client
-    }
-
-    pub fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            attendance_read: true,
-            attendance_write: true,
-            fix_errors: true,
-            salary_summary: true,
-            payslips: true,
-            reports: true,
-            attendance_types: true,
-        }
     }
 
     fn change_to_submit(change: &AttendanceChange) -> AttendanceSubmit {

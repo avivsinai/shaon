@@ -213,7 +213,6 @@ pub fn config_dir() -> PathBuf {
 }
 
 /// Returns `~/.hilan/{subdomain}/` for per-org state (cookies, ontology cache).
-#[allow(dead_code)] // used in later phases
 pub fn subdomain_dir(subdomain: &str) -> PathBuf {
     config_dir().join(subdomain)
 }
