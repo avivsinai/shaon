@@ -1,17 +1,16 @@
 {
-  "name": "hilan",
+  "name": "shaon",
   "version": "0.5.0",
   "description": "Rust CLI and agent skill for Hilan attendance, reports, payslips, and salary lookup.",
   "author": {
     "name": "Aviv Sinai",
     "url": "https://github.com/avivsinai"
   },
-  "repository": "https://github.com/avivsinai/hilan",
+  "repository": "https://github.com/avivsinai/shaon",
   "license": "MIT",
   "skills": "./skills/",
   "keywords": [
-    "hilan",
-    "hilanet",
+    "shaon",
     "attendance",
     "presence",
     "payslip",
@@ -19,8 +18,8 @@
     "automation"
   ],
   "interface": {
-    "displayName": "Hilan CLI",
-    "shortDescription": "Automate Hilanet HR system - attendance, payslips, reports",
+    "displayName": "Shaon CLI",
+    "shortDescription": "Automate Hilanet HR system with Shaon - attendance, payslips, reports",
     "category": "Developer Tools"
   }
 }

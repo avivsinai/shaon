@@ -29,12 +29,12 @@ jobs:
 
       - name: Validate symlinks
         run: |
-          test -L .claude/skills/hilan
-          test -L .agents/skills/hilan
-          test "$(readlink .claude/skills/hilan)" = "../../skills/hilan"
-          test "$(readlink .agents/skills/hilan)" = "../../skills/hilan"
-          diff -rq skills/hilan .claude/skills/hilan
-          diff -rq skills/hilan .agents/skills/hilan
+          test -L .claude/skills/shaon
+          test -L .agents/skills/shaon
+          test "$(readlink .claude/skills/shaon)" = "../../skills/shaon"
+          test "$(readlink .agents/skills/shaon)" = "../../skills/shaon"
+          diff -rq skills/shaon .claude/skills/shaon
+          diff -rq skills/shaon .agents/skills/shaon
 
   typos:
     name: Typos

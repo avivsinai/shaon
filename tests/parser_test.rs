@@ -1,4 +1,4 @@
-use hilan::config::Config;
+use shaon::config::Config;
 
 /// Verify that Config rejects a TOML blob missing required fields.
 #[test]
@@ -49,7 +49,7 @@ fn parse_aspx_form_fields_extracts_hidden_inputs() {
         </form>
         </body></html>
     "#;
-    let fields = hilan::client::parse_aspx_form_fields(html);
+    let fields = shaon::client::parse_aspx_form_fields(html);
     assert_eq!(
         fields.get("__VIEWSTATE").map(String::as_str),
         Some("abc123")
@@ -77,6 +77,6 @@ fn parse_aspx_form_fields_extracts_select() {
         </form>
         </body></html>
     "#;
-    let fields = hilan::client::parse_aspx_form_fields(html);
+    let fields = shaon::client::parse_aspx_form_fields(html);
     assert_eq!(fields.get("dropdown").map(String::as_str), Some("b"));
 }

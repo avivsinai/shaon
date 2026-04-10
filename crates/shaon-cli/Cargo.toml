@@ -1,19 +1,19 @@
 [package]
-name = "hilan-cli"
+name = "shaon-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "CLI frontend for the Hilan provider stack"
+description = "CLI frontend for the Shaon provider stack"
 
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
-hilan-mcp = { path = "../hilan-mcp" }
+shaon-mcp = { path = "../shaon-mcp" }
 hr-core = { path = "../hr-core" }
 provider-hilan = { path = "../provider-hilan" }
 rpassword.workspace = true

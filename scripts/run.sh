@@ -7,9 +7,9 @@ MANIFEST_PATH="$ROOT_DIR/Cargo.toml"
 
 cache_root() {
     if [ -n "${XDG_CACHE_HOME:-}" ]; then
-        printf '%s/hilan\n' "$XDG_CACHE_HOME"
+        printf '%s/shaon\n' "$XDG_CACHE_HOME"
     else
-        printf '%s/.cache/hilan\n' "$HOME"
+        printf '%s/.cache/shaon\n' "$HOME"
     fi
 }
 
@@ -18,19 +18,19 @@ require_rust() {
         return 0
     fi
 
-    echo "[hilan] Rust toolchain not found (need both cargo and rustc)." >&2
+    echo "[shaon] Rust toolchain not found (need both cargo and rustc)." >&2
     case "$(uname -s)" in
         Darwin)
-            echo "[hilan] Install Rust with one of:" >&2
-            echo "[hilan]   brew install rust" >&2
-            echo "[hilan]   or curl https://sh.rustup.rs -sSf | sh" >&2
+            echo "[shaon] Install Rust with one of:" >&2
+            echo "[shaon]   brew install rust" >&2
+            echo "[shaon]   or curl https://sh.rustup.rs -sSf | sh" >&2
             ;;
         Linux)
-            echo "[hilan] Install Rust with:" >&2
-            echo "[hilan]   curl https://sh.rustup.rs -sSf | sh" >&2
+            echo "[shaon] Install Rust with:" >&2
+            echo "[shaon]   curl https://sh.rustup.rs -sSf | sh" >&2
             ;;
         *)
-            echo "[hilan] Install Rust from https://www.rust-lang.org/tools/install" >&2
+            echo "[shaon] Install Rust from https://www.rust-lang.org/tools/install" >&2
             ;;
     esac
     exit 1
@@ -71,23 +71,23 @@ require_rust
 
 VERSION="$(package_version)"
 if [ -z "$VERSION" ]; then
-    echo "[hilan] ERROR: Could not read version from $MANIFEST_PATH" >&2
+    echo "[shaon] ERROR: Could not read version from $MANIFEST_PATH" >&2
     exit 1
 fi
 
 CACHE_DIR="$(cache_root)"
 VERSION_DIR="$CACHE_DIR/$VERSION"
 TARGET_DIR="$CACHE_DIR/target"
-BIN_PATH="$VERSION_DIR/hilan"
+BIN_PATH="$VERSION_DIR/shaon"
 
 if needs_rebuild "$BIN_PATH"; then
-    echo "[hilan] Building hilan v${VERSION}..." >&2
+    echo "[shaon] Building shaon v${VERSION}..." >&2
     mkdir -p "$VERSION_DIR"
-    CARGO_TARGET_DIR="$TARGET_DIR" cargo build -p hilan --release --manifest-path "$MANIFEST_PATH"
+    CARGO_TARGET_DIR="$TARGET_DIR" cargo build -p shaon --release --manifest-path "$MANIFEST_PATH"
 
-    SOURCE_BIN="$TARGET_DIR/release/hilan"
+    SOURCE_BIN="$TARGET_DIR/release/shaon"
     if [ ! -x "$SOURCE_BIN" ]; then
-        echo "[hilan] ERROR: build finished but binary not found at $SOURCE_BIN" >&2
+        echo "[shaon] ERROR: build finished but binary not found at $SOURCE_BIN" >&2
         exit 1
     fi
 
@@ -97,11 +97,11 @@ if needs_rebuild "$BIN_PATH"; then
     # Ad-hoc codesign on macOS so the keyring crate can access the Keychain
     # without triggering a system prompt on every invocation.
     if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1; then
-        codesign -s - -f --identifier "com.avivsinai.hilan" "$BIN_PATH.tmp" 2>/dev/null || true
+        codesign -s - -f --identifier "com.avivsinai.shaon" "$BIN_PATH.tmp" 2>/dev/null || true
     fi
 
     mv "$BIN_PATH.tmp" "$BIN_PATH"
-    echo "[hilan] Cached binary at $BIN_PATH" >&2
+    echo "[shaon] Cached binary at $BIN_PATH" >&2
 fi
 
 exec "$BIN_PATH" "$@"

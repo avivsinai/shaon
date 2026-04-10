@@ -1,12 +1,12 @@
 name: Bug Report
-description: Report a bug in hilan
+description: Report a bug in shaon
 labels: ["bug"]
 body:
   - type: input
     id: version
     attributes:
-      label: hilan version
-      placeholder: "hilan 1.0.0"
+      label: shaon version
+      placeholder: "shaon 1.0.0"
     validations:
       required: true
   - type: dropdown
@@ -38,7 +38,7 @@ body:
       label: Steps to reproduce
       description: Minimal steps to trigger the bug.
       placeholder: |
-        1. Run `hilan status --month 2026-04`
+        1. Run `shaon status --month 2026-04`
         2. ...
     validations:
       required: true

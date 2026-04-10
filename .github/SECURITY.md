@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in hilan, please report it responsibly.
+If you discover a security vulnerability in shaon, please report it responsibly.
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
@@ -19,7 +19,7 @@ You should receive a response within 48 hours. We will work with you to understa
 ## Scope
 
 This policy applies to:
-- The hilan CLI binary and all source code in this repository
+- The shaon CLI binary and all source code in this repository
 - Credential handling (keychain storage, config files)
 - Network communication with Hilan servers
 - MCP server mode
