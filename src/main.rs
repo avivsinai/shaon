@@ -3,15 +3,14 @@ use chrono::{Datelike, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use hilan::core::{
     AttendanceProvider, AttendanceType as CoreAttendanceType, FixTarget as CoreFixTarget,
-    ProviderError, WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
+    PayslipProvider, ProviderError, ReportProvider, ReportSpec, SalaryProvider,
+    WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
 };
 use serde::Serialize;
 use std::path::PathBuf;
 use zeroize::Zeroize;
 
-use hilan::{
-    api, attendance, client, config, ontology, provider::HilanProvider, reports, use_cases,
-};
+use hilan::{attendance, client, config, ontology, provider::HilanProvider, use_cases};
 
 use attendance::is_time_pattern;
 use client::HilanClient;
@@ -71,6 +70,9 @@ struct SuggestedAction {
     params: serde_json::Value,
     safety: String,
 }
+
+const SHEET_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursAnalysis.aspx";
+const CORRECTIONS_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursReportLog.aspx";
 
 #[derive(Parser)]
 #[command(
@@ -576,18 +578,25 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Status { month } => {
-            client.ensure_authenticated().await?;
             let month = parse_month_or_current(month.as_deref())?;
-            let cal = attendance::read_calendar(&mut client, month).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let cal = provider
+                .month_calendar(month)
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&cal)?;
             } else {
-                attendance::print_calendar(&cal);
+                use_cases::print_calendar(&cal);
             }
         }
         Commands::Payslip { month, output } => {
             let month = parse_month_or_previous(month.as_deref())?;
-            let download = client.payslip(month, output.as_deref()).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let download = provider
+                .download_payslip(month, output.as_deref())
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&download)?;
             } else {
@@ -600,7 +609,11 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Salary { months } => {
-            let summary = client.salary(months).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let summary = provider
+                .salary_summary(months)
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&summary)?;
             } else {
@@ -620,64 +633,59 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Report { name } => {
-            client.ensure_authenticated().await?;
-            let table = reports::fetch_report(&mut client, &name).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let table = provider
+                .report(ReportSpec::Named(name))
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&table)?;
             } else {
-                reports::print_report(&table);
+                use_cases::print_report_table(&table);
             }
         }
         Commands::Absences => {
-            client.ensure_authenticated().await?;
-            let data = api::get_absences_initial(&mut client).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let symbols = use_cases::load_absence_symbols(&mut provider)
+                .await
+                .map_err(provider_error)?;
             if json {
-                print_json(&data)?;
-            } else if data.symbols.is_empty() {
-                println!("No absence symbols found.");
+                print_json(&symbols)?;
             } else {
-                println!("{:<6}  {:<20}  Display", "ID", "Name");
-                println!("{:-<6}  {:-<20}  {:-<30}", "", "", "");
-                for sym in &data.symbols {
-                    println!(
-                        "{:<6}  {:<20}  {}",
-                        sym.id,
-                        sym.name,
-                        sym.display_name.as_deref().unwrap_or(""),
-                    );
-                }
+                use_cases::print_absence_symbols(&symbols);
             }
         }
         Commands::Sheet => {
-            client.ensure_authenticated().await?;
-            let table = reports::fetch_table_from_url(&mut client, reports::SHEET_URL_PATH).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let table = provider
+                .report(ReportSpec::Path(SHEET_REPORT_PATH.to_string()))
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&table)?;
             } else {
-                reports::print_report(&table);
+                use_cases::print_report_table(&table);
             }
         }
         Commands::Corrections => {
-            client.ensure_authenticated().await?;
-            let table =
-                reports::fetch_table_from_url(&mut client, reports::CORRECTIONS_URL_PATH).await?;
+            let mut provider = HilanProvider::from_client(client);
+            let table = provider
+                .report(ReportSpec::Path(CORRECTIONS_REPORT_PATH.to_string()))
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&table)?;
             } else {
-                reports::print_report(&table);
+                use_cases::print_report_table(&table);
             }
         }
         Commands::Types => {
-            let path = ontology::ontology_path(&subdomain);
-            if path.exists() {
-                let ont = ontology::OrgOntology::load(&path)?;
-                if json {
-                    print_json(&ont)?;
-                } else {
-                    ont.print_table();
-                }
+            let mut provider = HilanProvider::from_client(client);
+            let types = provider.attendance_types().await.map_err(provider_error)?;
+            if json {
+                print_json(&types)?;
             } else {
-                tracing::error!("No cached types. Run `hilan sync-types` or use any command with `--type` to auto-sync.");
+                use_cases::print_attendance_types(&types);
             }
         }
         Commands::Overview { month, detailed } => {

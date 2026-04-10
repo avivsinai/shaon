@@ -1,5 +1,7 @@
 use hilan::config::Config;
-use hilan::core::{AttendanceProvider, PayslipProvider, ReportProvider, SalaryProvider};
+use hilan::core::{
+    AbsenceProvider, AttendanceProvider, PayslipProvider, ReportProvider, SalaryProvider,
+};
 use hilan::provider::HilanProvider;
 
 fn test_config() -> Config {
@@ -14,7 +16,7 @@ fn test_config() -> Config {
 
 fn assert_core_traits<T>()
 where
-    T: AttendanceProvider + SalaryProvider + PayslipProvider + ReportProvider,
+    T: AttendanceProvider + SalaryProvider + PayslipProvider + ReportProvider + AbsenceProvider,
 {
 }
 

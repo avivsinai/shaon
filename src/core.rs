@@ -23,6 +23,13 @@ pub struct AttendanceType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AbsenceSymbol {
+    pub id: String,
+    pub name: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CalendarDay {
     pub date: NaiveDate,
     pub day_name: String,
@@ -199,6 +206,11 @@ pub trait SalaryProvider: Send {
 }
 
 #[async_trait]
+pub trait AbsenceProvider: Send {
+    async fn absence_symbols(&mut self) -> Result<Vec<AbsenceSymbol>, ProviderError>;
+}
+
+#[async_trait]
 pub trait PayslipProvider: Send {
     async fn download_payslip(
         &mut self,
@@ -229,6 +241,16 @@ impl From<crate::ontology::AttendanceType> for AttendanceType {
             code: value.code,
             name_he: value.name_he,
             name_en: value.name_en,
+        }
+    }
+}
+
+impl From<crate::api::AbsenceSymbol> for AbsenceSymbol {
+    fn from(value: crate::api::AbsenceSymbol) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            display_name: value.display_name,
         }
     }
 }

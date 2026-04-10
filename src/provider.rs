@@ -8,9 +8,9 @@ use crate::attendance::{self, AttendanceSubmit};
 use crate::client::HilanClient;
 use crate::config::Config;
 use crate::core::{
-    AttendanceChange, AttendanceProvider, DocumentDownload, FixTarget, MonthCalendar,
-    PayslipProvider, ProviderCapabilities, ProviderError, ReportProvider, ReportSpec, ReportTable,
-    SalaryProvider, SalarySummary, UserIdentity, WriteMode, WritePreview,
+    AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, DocumentDownload,
+    FixTarget, MonthCalendar, PayslipProvider, ProviderCapabilities, ProviderError, ReportProvider,
+    ReportSpec, ReportTable, SalaryProvider, SalarySummary, UserIdentity, WriteMode, WritePreview,
 };
 use crate::ontology;
 use crate::reports;
@@ -199,6 +199,16 @@ impl SalaryProvider for HilanProvider {
             .await
             .map(Into::into)
             .map_err(|err| Self::provider_error("salary_summary_failed", err))
+    }
+}
+
+#[async_trait]
+impl AbsenceProvider for HilanProvider {
+    async fn absence_symbols(&mut self) -> Result<Vec<AbsenceSymbol>, ProviderError> {
+        api::get_absences_initial(&mut self.client)
+            .await
+            .map(|data| data.symbols.into_iter().map(Into::into).collect())
+            .map_err(|err| Self::provider_error("absence_symbols_failed", err))
     }
 }
 
