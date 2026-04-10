@@ -163,10 +163,6 @@ fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>>
     // The grid has rows with class patterns like "RSGrid" or "ARSGrid",
     // or the calendar may use a different table structure with day cells.
 
-    // Try to find the calendar grid — look for <td> elements that contain
-    // date-like content within the main content area.
-    let td_sel = Selector::parse("td").map_err(|e| anyhow!("selector parse error: {e}"))?;
-
     // Look for elements that indicate day entries — these often have
     // specific class patterns or contain structured attendance data.
     // The calendar page may render days as table rows with columns for
@@ -181,7 +177,9 @@ fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>>
 
     for row in &rows {
         let cells: Vec<String> = row
-            .select(&td_sel)
+            .children()
+            .filter_map(ElementRef::wrap)
+            .filter(|cell| cell.value().name() == "td")
             .map(|cell| cell_visible_text(&cell))
             .collect();
 
@@ -464,6 +462,7 @@ fn cell_visible_text(cell: &ElementRef<'_>) -> String {
     let select_sel = Selector::parse("select").unwrap();
     let option_sel = Selector::parse("option[selected]").unwrap();
     let option_any_sel = Selector::parse("option").unwrap();
+    let option_value_sel = Selector::parse("option").unwrap();
 
     // If the cell contains no <select>, use the normal text extraction.
     let has_select = cell.select(&select_sel).next().is_some();
@@ -476,43 +475,71 @@ fn cell_visible_text(cell: &ElementRef<'_>) -> String {
             .join(" ");
     }
 
-    // Walk child nodes: for <select> elements, pick only the selected option text;
-    // for everything else, collect text normally.
-    let mut parts: Vec<String> = Vec::new();
-    for child in cell.children() {
-        if let Some(el) = ElementRef::wrap(child) {
-            if el.value().name() == "select" {
-                // Pick selected <option>, fall back to first <option>
-                let selected_text = el
-                    .select(&option_sel)
-                    .next()
-                    .or_else(|| el.select(&option_any_sel).next())
-                    .map(|opt| opt.text().collect::<String>());
-                if let Some(t) = selected_text {
-                    let t = t.trim().to_string();
-                    if !t.is_empty() {
-                        parts.push(t);
-                    }
-                }
-            } else {
-                // Non-select element: collect all text
-                let t: String = el
-                    .text()
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if !t.is_empty() {
-                    parts.push(t);
+    fn normalized_ov<'a>(value: Option<&'a str>) -> Option<&'a str> {
+        value.filter(|ov| !ov.chars().all(char::is_whitespace))
+    }
+
+    fn collect_visible_parts(
+        element: &ElementRef<'_>,
+        inherited_ov: Option<&str>,
+        option_sel: &Selector,
+        option_any_sel: &Selector,
+        option_value_sel: &Selector,
+        parts: &mut Vec<String>,
+    ) {
+        let current_ov = normalized_ov(element.value().attr("ov")).or(inherited_ov);
+
+        if element.value().name() == "select" {
+            let selected_text = element
+                .select(option_sel)
+                .next()
+                .or_else(|| {
+                    current_ov.and_then(|ov| {
+                        element
+                            .select(option_value_sel)
+                            .find(|opt| opt.value().attr("value") == Some(ov))
+                    })
+                })
+                .or_else(|| element.select(option_any_sel).next())
+                .map(|opt| opt.text().collect::<String>());
+
+            if let Some(text) = selected_text {
+                let text = text.trim();
+                if !text.is_empty() {
+                    parts.push(text.to_string());
                 }
             }
-        } else if let Some(text_node) = child.value().as_text() {
-            let t = text_node.trim();
-            if !t.is_empty() {
-                parts.push(t.to_string());
+            return;
+        }
+
+        for child in element.children() {
+            if let Some(child_el) = ElementRef::wrap(child) {
+                collect_visible_parts(
+                    &child_el,
+                    current_ov,
+                    option_sel,
+                    option_any_sel,
+                    option_value_sel,
+                    parts,
+                );
+            } else if let Some(text_node) = child.value().as_text() {
+                let text = text_node.trim();
+                if !text.is_empty() {
+                    parts.push(text.to_string());
+                }
             }
         }
     }
+
+    let mut parts = Vec::new();
+    collect_visible_parts(
+        cell,
+        None,
+        &option_sel,
+        &option_any_sel,
+        &option_value_sel,
+        &mut parts,
+    );
     parts.join(" ")
 }
 
@@ -1153,6 +1180,7 @@ pub fn print_auto_fill(result: &AutoFillResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scraper::{Html, Selector};
 
     #[test]
     fn test_extract_day_number_strict_time_strings() {
@@ -1181,5 +1209,43 @@ mod tests {
         assert_eq!(extract_day_number_strict(""), None);
         assert_eq!(extract_day_number_strict("  "), None);
         assert_eq!(extract_day_number_strict("100"), None);
+    }
+
+    #[test]
+    fn live_employee_wrapper_cell_does_not_expand_all_dropdown_options() {
+        let row = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/calendar/calendar-row0.html"
+        ));
+        let html = format!("<table><tbody>{row}</tbody></table>");
+        let document = Html::parse_document(&html);
+        let top_level_cell_sel = Selector::parse(r#"tr[id$="_row_0"] > td"#).unwrap();
+        let employee_wrapper_cell = document
+            .select(&top_level_cell_sel)
+            .nth(2)
+            .expect("employee wrapper cell");
+
+        let text = cell_visible_text(&employee_wrapper_cell);
+
+        assert_eq!(text, "work day");
+    }
+
+    #[test]
+    fn live_calendar_row_parses_default_work_day_type() {
+        let row = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/calendar/calendar-row0.html"
+        ));
+        let html = format!("<html><body><table><tbody>{row}</tbody></table></body></html>");
+        let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+
+        let days = parse_calendar_html(&html, month).expect("parse live calendar row fixture");
+        let expected_date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let day = days
+            .iter()
+            .find(|day| day.date == expected_date)
+            .expect("day 2026-04-10");
+
+        assert_eq!(day.attendance_type.as_deref(), Some("work day"));
     }
 }
