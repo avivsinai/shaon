@@ -477,6 +477,11 @@ fn extract_day_number_strict(s: &str) -> Option<u32> {
     if digits.is_empty() {
         return None;
     }
+    // Reject time strings like "09:00" or "12:30-18:00" where digits are followed by ':'
+    let remaining = trimmed[digits.len()..].chars().next();
+    if remaining == Some(':') {
+        return None;
+    }
     let num: u32 = digits.parse().ok()?;
     if (1..=31).contains(&num) {
         Some(num)
@@ -779,4 +784,38 @@ fn calendar_selected_day_value(date: NaiveDate) -> String {
     // Inferred from the captured Hilanet payload where 2026-04-10 maps to 9596.
     let epoch = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
     date.signed_duration_since(epoch).num_days().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_day_number_strict_time_strings() {
+        assert_eq!(extract_day_number_strict("09:00"), None);
+        assert_eq!(extract_day_number_strict("12:30-18:00"), None);
+        assert_eq!(extract_day_number_strict("9:00"), None);
+        assert_eq!(extract_day_number_strict("23:59"), None);
+        assert_eq!(extract_day_number_strict("0:00"), None);
+    }
+
+    #[test]
+    fn test_extract_day_number_strict_valid_days() {
+        assert_eq!(extract_day_number_strict("9"), Some(9));
+        assert_eq!(extract_day_number_strict("9 Sunday"), Some(9));
+        assert_eq!(extract_day_number_strict("31"), Some(31));
+        assert_eq!(extract_day_number_strict("1"), Some(1));
+        assert_eq!(extract_day_number_strict(" 15 "), Some(15));
+        assert_eq!(extract_day_number_strict("28"), Some(28));
+    }
+
+    #[test]
+    fn test_extract_day_number_strict_invalid() {
+        assert_eq!(extract_day_number_strict("0"), None);
+        assert_eq!(extract_day_number_strict("32"), None);
+        assert_eq!(extract_day_number_strict("abc"), None);
+        assert_eq!(extract_day_number_strict(""), None);
+        assert_eq!(extract_day_number_strict("  "), None);
+        assert_eq!(extract_day_number_strict("100"), None);
+    }
 }
