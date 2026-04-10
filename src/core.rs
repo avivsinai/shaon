@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -32,6 +32,16 @@ pub struct CalendarDay {
     pub exit_time: Option<String>,
     pub attendance_type: Option<String>,
     pub total_hours: Option<String>,
+}
+
+impl CalendarDay {
+    pub fn is_reported(&self) -> bool {
+        self.entry_time.is_some() || self.attendance_type.is_some()
+    }
+
+    pub fn is_work_day(&self) -> bool {
+        self.date.weekday().num_days_from_sunday() < 5
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

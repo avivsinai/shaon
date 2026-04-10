@@ -7,3 +7,4 @@ pub mod mcp;
 pub mod ontology;
 pub mod provider;
 pub mod reports;
+pub mod use_cases;
