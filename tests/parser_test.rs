@@ -3,7 +3,7 @@ use hilan::config::Config;
 /// Verify that Config rejects a TOML blob missing required fields.
 #[test]
 fn config_requires_mandatory_fields() {
-    let bad_toml = r#"subdomain = "demo""#; // missing username + password
+    let bad_toml = r#"subdomain = "demo""#; // missing username
     let result: Result<Config, _> = toml::from_str(bad_toml);
     assert!(result.is_err(), "Config should reject incomplete TOML");
 }
@@ -19,7 +19,7 @@ fn config_parses_valid_toml() {
     let config: Config = toml::from_str(good_toml).expect("should parse valid config");
     assert_eq!(config.subdomain, "demo");
     assert_eq!(config.username, "user123");
-    assert_eq!(config.password, "pass456");
+    assert_eq!(config.password.as_deref(), Some("pass456"));
     assert_eq!(config.payslip_fmt(), "%Y-%m.pdf");
 }
 

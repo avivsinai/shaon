@@ -3,12 +3,14 @@ use chrono::{Datelike, Local, NaiveDate};
 use regex::Regex;
 use reqwest::cookie::Jar;
 use scraper::{Html, Selector};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use zeroize::Zeroize;
 
 use crate::config::Config;
 
@@ -72,6 +74,16 @@ impl HilanClient {
         })
     }
 
+    /// Borrow the config.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Mutably borrow the config (e.g. for migration).
+    pub fn config_mut(&mut self) -> &mut Config {
+        &mut self.config
+    }
+
     /// Fetch the OrgId from the Hilanet homepage.
     pub async fn fetch_org_id(&mut self) -> Result<String> {
         let resp = self
@@ -108,9 +120,12 @@ impl HilanClient {
             self.base_url
         );
 
+        let secret = self.config.get_password()?;
+        let mut pw = secret.expose_secret().to_string();
+
         let form = [
             ("username", self.config.username.as_str()),
-            ("password", self.config.password.as_str()),
+            ("password", pw.as_str()),
             ("orgId", org_id.as_str()),
         ];
 
@@ -121,6 +136,7 @@ impl HilanClient {
             .send()
             .await
             .context("POST login request")?;
+        pw.zeroize();
 
         let login: LoginResponse = resp.json().await.context("parse login response")?;
 
