@@ -769,6 +769,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "chrono",
  "clap",
  "clap_complete",
