@@ -475,7 +475,7 @@ fn cell_visible_text(cell: &ElementRef<'_>) -> String {
             .join(" ");
     }
 
-    fn normalized_ov<'a>(value: Option<&'a str>) -> Option<&'a str> {
+    fn normalized_ov(value: Option<&str>) -> Option<&str> {
         value.filter(|ov| !ov.chars().all(char::is_whitespace))
     }
 
