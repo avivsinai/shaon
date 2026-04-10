@@ -240,7 +240,7 @@ pub async fn sync_from_calendar(client: &mut HilanClient, subdomain: &str) -> Re
         .save(&path)
         .with_context(|| format!("save ontology to {}", path.display()))?;
 
-    println!(
+    eprintln!(
         "Synced {} attendance types to {}",
         ontology.types.len(),
         path.display()
