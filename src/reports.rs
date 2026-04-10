@@ -30,7 +30,7 @@ pub struct ReportTable {
 }
 
 /// Fetch a named report and parse its HTML table.
-pub async fn fetch_report(client: &HilanClient, report_name: &str) -> Result<ReportTable> {
+pub async fn fetch_report(client: &mut HilanClient, report_name: &str) -> Result<ReportTable> {
     let url = format!(
         "{}/Hilannetv2/Reports/repAttendanceviewerGeneric.aspx?reportName={}",
         client.base_url, report_name
@@ -40,29 +40,17 @@ pub async fn fetch_report(client: &HilanClient, report_name: &str) -> Result<Rep
 }
 
 /// Fetch a direct HTML table page by absolute or base-relative URL.
-pub async fn fetch_table_from_url(client: &HilanClient, url: &str) -> Result<ReportTable> {
+pub async fn fetch_table_from_url(client: &mut HilanClient, url: &str) -> Result<ReportTable> {
     let url = if url.starts_with("http://") || url.starts_with("https://") {
         url.to_string()
     } else {
         format!("{}{}", client.base_url, url)
     };
 
-    let resp = client
-        .client
-        .get(&url)
-        .send()
+    let html = client
+        .get_text(&url)
         .await
-        .with_context(|| format!("GET {url}"))?;
-
-    let status = resp.status();
-    let html = resp
-        .text()
-        .await
-        .with_context(|| format!("read body for {url}"))?;
-
-    if !status.is_success() {
-        anyhow::bail!("{url} returned HTTP {status}");
-    }
+        .with_context(|| format!("fetch report from {url}"))?;
 
     parse_report_html(&html).with_context(|| format!("parse HTML table from {url}"))
 }
