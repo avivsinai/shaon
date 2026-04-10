@@ -27,16 +27,13 @@ struct WriteMode {
     dry_run: bool,
 
     /// Actually submit the write request to Hilan
-    #[arg(long)]
+    #[arg(long, conflicts_with = "dry_run")]
     execute: bool,
 }
 
 impl WriteMode {
-    fn should_execute(&self) -> Result<bool> {
-        if self.execute && self.dry_run {
-            bail!("Use either --execute or --dry-run, not both");
-        }
-        Ok(self.execute)
+    fn should_execute(&self) -> bool {
+        self.execute
     }
 }
 
@@ -78,6 +75,9 @@ enum Commands {
         /// Fixed hours (e.g. "09:00-18:00")
         #[arg(long)]
         hours: Option<String>,
+        /// Include Friday and Saturday (Israeli weekend) instead of skipping them
+        #[arg(long)]
+        include_weekends: bool,
 
         #[command(flatten)]
         write_mode: WriteMode,
@@ -184,7 +184,7 @@ async fn main() -> Result<()> {
             attendance_type,
             write_mode,
         } => {
-            let execute = write_mode.should_execute()?;
+            let execute = write_mode.should_execute();
             let submit = attendance::AttendanceSubmit {
                 date: Local::now().date_naive(),
                 attendance_type_code: resolve_attendance_type_code(
@@ -195,15 +195,15 @@ async fn main() -> Result<()> {
                 exit_time: None,
                 comment: None,
                 clear_entry: false,
-                clear_exit: true,
-                clear_comment: true,
+                clear_exit: false,
+                clear_comment: false,
                 default_work_day: attendance_type.is_none(),
             };
             let preview = attendance::submit_day(&mut client, &submit, execute).await?;
             print_submit_preview("clock-in", &preview);
         }
         Commands::ClockOut { write_mode } => {
-            let execute = write_mode.should_execute()?;
+            let execute = write_mode.should_execute();
             let submit = attendance::AttendanceSubmit {
                 date: Local::now().date_naive(),
                 attendance_type_code: None,
@@ -223,9 +223,10 @@ async fn main() -> Result<()> {
             to,
             attendance_type,
             hours,
+            include_weekends,
             write_mode,
         } => {
-            let execute = write_mode.should_execute()?;
+            let execute = write_mode.should_execute();
             let from_date = parse_date(&from)?;
             let to_date = parse_date(&to)?;
             if from_date > to_date {
@@ -240,6 +241,12 @@ async fn main() -> Result<()> {
             }
 
             for day in dates_inclusive(from_date, to_date) {
+                if !include_weekends
+                    && matches!(day.weekday(), chrono::Weekday::Fri | chrono::Weekday::Sat)
+                {
+                    eprintln!("Skipping {} ({})", day, day.weekday());
+                    continue;
+                }
                 let (entry_time, exit_time, clear_entry, clear_exit) = match &hours_range {
                     Some((entry, exit)) => (Some(entry.clone()), Some(exit.clone()), false, false),
                     None => (None, None, true, true),
@@ -274,7 +281,7 @@ async fn main() -> Result<()> {
             error_type,
             write_mode,
         } => {
-            let execute = write_mode.should_execute()?;
+            let execute = write_mode.should_execute();
             let date = parse_date(&day)?;
             let type_code = resolve_attendance_type_code(&subdomain, attendance_type.as_deref())?;
             let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
