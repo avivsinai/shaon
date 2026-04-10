@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use serde::Serialize;
 use std::path::PathBuf;
 
 use hilan::{api, attendance, client, config, ontology, reports};
@@ -11,6 +12,10 @@ use config::Config;
 #[derive(Parser)]
 #[command(name = "hilan", version, about = "Hilan attendance & payslip CLI")]
 struct Cli {
+    /// Output JSON instead of human-readable text
+    #[arg(global = true, long)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -29,6 +34,28 @@ struct WriteMode {
 impl WriteMode {
     fn should_execute(&self) -> bool {
         self.execute
+    }
+}
+
+#[derive(Serialize)]
+struct WriteOutput<'a> {
+    action: &'a str,
+    mode: &'a str,
+    #[serde(flatten)]
+    preview: &'a attendance::SubmitPreview,
+}
+
+impl<'a> WriteOutput<'a> {
+    fn new(action: &'a str, preview: &'a attendance::SubmitPreview) -> Self {
+        Self {
+            action,
+            mode: if preview.executed {
+                "executed"
+            } else {
+                "dry_run"
+            },
+            preview,
+        }
     }
 }
 
@@ -179,15 +206,23 @@ async fn main() -> Result<()> {
 
     let subdomain = config.subdomain.clone();
     let mut client = HilanClient::new(config)?;
+    let json = cli.json;
 
     match cli.command {
         Commands::Auth => {
             client.login().await?;
+            if json {
+                print_json(&serde_json::json!({"status": "ok"}))?;
+            }
         }
         Commands::SyncTypes => {
             client.login().await?;
             let ont = ontology::sync_from_calendar(&client, &subdomain).await?;
-            ont.print_table();
+            if json {
+                print_json(&ont)?;
+            } else {
+                ont.print_table();
+            }
         }
         Commands::ClockIn {
             attendance_type,
@@ -209,7 +244,11 @@ async fn main() -> Result<()> {
                 default_work_day: attendance_type.is_none(),
             };
             let preview = attendance::submit_day(&mut client, &submit, execute).await?;
-            print_submit_preview("clock-in", &preview);
+            if json {
+                print_json(&WriteOutput::new("clock-in", &preview))?;
+            } else {
+                print_submit_preview("clock-in", &preview);
+            }
         }
         Commands::ClockOut { write_mode } => {
             let execute = write_mode.should_execute();
@@ -225,7 +264,11 @@ async fn main() -> Result<()> {
                 default_work_day: false,
             };
             let preview = attendance::submit_day(&mut client, &submit, execute).await?;
-            print_submit_preview("clock-out", &preview);
+            if json {
+                print_json(&WriteOutput::new("clock-out", &preview))?;
+            } else {
+                print_submit_preview("clock-out", &preview);
+            }
         }
         Commands::Fill {
             from,
@@ -249,7 +292,13 @@ async fn main() -> Result<()> {
                 bail!("fill requires at least one of --type or --hours");
             }
 
-            for day in dates_inclusive(from_date, to_date) {
+            let days = dates_inclusive(from_date, to_date);
+            let mut json_outputs: Vec<serde_json::Value> = if json {
+                Vec::with_capacity(days.len())
+            } else {
+                Vec::new()
+            };
+            for day in days {
                 if !include_weekends
                     && matches!(day.weekday(), chrono::Weekday::Fri | chrono::Weekday::Sat)
                 {
@@ -273,14 +322,25 @@ async fn main() -> Result<()> {
                     default_work_day: type_code.is_none() && hours_range.is_some(),
                 };
                 let preview = attendance::submit_day(&mut client, &submit, execute).await?;
-                print_submit_preview("fill", &preview);
+                if json {
+                    json_outputs.push(serde_json::to_value(WriteOutput::new("fill", &preview))?);
+                } else {
+                    print_submit_preview("fill", &preview);
+                }
+            }
+            if json {
+                print_json(&json_outputs)?;
             }
         }
         Commands::Errors { month } => {
             client.login().await?;
             let month = parse_month_or_current(month.as_deref())?;
             let cal = attendance::read_calendar(&client, month).await?;
-            attendance::print_errors(&cal);
+            if json {
+                print_json(&cal)?;
+            } else {
+                attendance::print_errors(&cal);
+            }
         }
         Commands::Fix {
             day,
@@ -318,49 +378,71 @@ async fn main() -> Result<()> {
             let preview =
                 attendance::fix_error_day(&mut client, &submit, &report_id, &error_type, execute)
                     .await?;
-            print_submit_preview("fix", &preview);
+            if json {
+                print_json(&WriteOutput::new("fix", &preview))?;
+            } else {
+                print_submit_preview("fix", &preview);
+            }
         }
         Commands::Status { month } => {
             client.login().await?;
             let month = parse_month_or_current(month.as_deref())?;
             let cal = attendance::read_calendar(&client, month).await?;
-            attendance::print_calendar(&cal);
+            if json {
+                print_json(&cal)?;
+            } else {
+                attendance::print_calendar(&cal);
+            }
         }
         Commands::Payslip { month, output } => {
             let month = parse_month_or_previous(month.as_deref())?;
             let download = client.payslip(month, output.as_deref()).await?;
-            println!(
-                "Saved payslip for {} to {} ({} bytes)",
-                download.month.format("%Y-%m"),
-                download.path.display(),
-                download.size_bytes
-            );
+            if json {
+                print_json(&download)?;
+            } else {
+                println!(
+                    "Saved payslip for {} to {} ({} bytes)",
+                    download.month.format("%Y-%m"),
+                    download.path.display(),
+                    download.size_bytes
+                );
+            }
         }
         Commands::Salary { months } => {
             let summary = client.salary(months).await?;
-            if !summary.label.is_empty() {
-                println!("Salary row: {}", summary.label);
-            }
-            for entry in &summary.entries {
-                println!(
-                    "{}: {}",
-                    entry.month.format("%Y-%m"),
-                    format_number(entry.amount)
-                );
-            }
-            if let Some(percent_diff) = summary.percent_diff {
-                println!("Change over latest month: {:+.2}%", percent_diff);
+            if json {
+                print_json(&summary)?;
+            } else {
+                if !summary.label.is_empty() {
+                    println!("Salary row: {}", summary.label);
+                }
+                for entry in &summary.entries {
+                    println!(
+                        "{}: {}",
+                        entry.month.format("%Y-%m"),
+                        format_number(entry.amount)
+                    );
+                }
+                if let Some(percent_diff) = summary.percent_diff {
+                    println!("Change over latest month: {:+.2}%", percent_diff);
+                }
             }
         }
         Commands::Report { name } => {
             client.login().await?;
             let table = reports::fetch_report(&client, &name).await?;
-            reports::print_report(&table);
+            if json {
+                print_json(&table)?;
+            } else {
+                reports::print_report(&table);
+            }
         }
         Commands::Absences => {
             client.login().await?;
             let data = api::get_absences_initial(&client).await?;
-            if data.symbols.is_empty() {
+            if json {
+                print_json(&data)?;
+            } else if data.symbols.is_empty() {
                 println!("No absence symbols found.");
             } else {
                 println!("{:<6}  {:<20}  Display", "ID", "Name");
@@ -378,19 +460,31 @@ async fn main() -> Result<()> {
         Commands::Sheet => {
             client.login().await?;
             let table = reports::fetch_table_from_url(&client, reports::SHEET_URL_PATH).await?;
-            reports::print_report(&table);
+            if json {
+                print_json(&table)?;
+            } else {
+                reports::print_report(&table);
+            }
         }
         Commands::Corrections => {
             client.login().await?;
             let table =
                 reports::fetch_table_from_url(&client, reports::CORRECTIONS_URL_PATH).await?;
-            reports::print_report(&table);
+            if json {
+                print_json(&table)?;
+            } else {
+                reports::print_report(&table);
+            }
         }
         Commands::Types => {
             let path = ontology::ontology_path(&subdomain);
             if path.exists() {
                 let ont = ontology::OrgOntology::load(&path)?;
-                ont.print_table();
+                if json {
+                    print_json(&ont)?;
+                } else {
+                    ont.print_table();
+                }
             } else {
                 eprintln!("No cached types. Run `hilan sync-types` first.");
                 std::process::exit(1);
@@ -493,6 +587,11 @@ fn dates_inclusive(from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
 
 fn current_local_time_hhmm() -> String {
     Local::now().format("%H:%M").to_string()
+}
+
+fn print_json(value: &impl Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }
 
 fn print_submit_preview(action: &str, preview: &attendance::SubmitPreview) {

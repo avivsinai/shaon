@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::client::HilanClient;
 
@@ -10,7 +10,7 @@ use crate::client::HilanClient;
 // Data types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BootstrapInfo {
     pub user_id: String,
     pub employee_id: u32,
@@ -25,7 +25,7 @@ pub struct TasksCount {
     pub tasks_count: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AbsenceSymbol {
     #[serde(rename = "Id")]
     pub id: String,
@@ -35,7 +35,7 @@ pub struct AbsenceSymbol {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AbsencesInitialData {
     #[serde(rename = "Symbols")]
     pub symbols: Vec<AbsenceSymbol>,
