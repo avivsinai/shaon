@@ -190,7 +190,10 @@ impl HilanClient {
 
         self.logged_in = true;
         let masked_user = if self.config.username.len() > 4 {
-            format!("***{}", &self.config.username[self.config.username.len() - 4..])
+            format!(
+                "***{}",
+                &self.config.username[self.config.username.len() - 4..]
+            )
         } else {
             "***".to_string()
         };
