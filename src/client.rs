@@ -1,3 +1,5 @@
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Datelike, Local, NaiveDate};
 use regex::Regex;
@@ -7,6 +9,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -29,6 +32,8 @@ pub struct HilanClient {
 }
 
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const COOKIE_KEY_LEN: usize = 32;
+const COOKIE_NONCE_LEN: usize = 12;
 
 #[derive(Debug, Serialize)]
 pub struct PayslipDownload {
@@ -67,16 +72,17 @@ impl HilanClient {
         // Load persisted cookies if available
         let cookie_path = crate::config::subdomain_dir(&config.subdomain).join("cookies.json");
         let cookie_store = if cookie_path.exists() {
-            let file = fs::File::open(&cookie_path)
-                .with_context(|| format!("open {}", cookie_path.display()))?;
-            let reader = std::io::BufReader::new(file);
-            match cookie_store::serde::json::load(reader) {
+            match load_cookie_store(&config, &cookie_path) {
                 Ok(store) => {
                     tracing::debug!("loaded session cookies from {}", cookie_path.display());
                     store
                 }
                 Err(e) => {
-                    tracing::debug!("stale cookie file, starting fresh: {e}");
+                    tracing::debug!(
+                        "stale or undecryptable cookie file {}, starting fresh: {e}",
+                        cookie_path.display()
+                    );
+                    let _ = fs::remove_file(&cookie_path);
                     cookie_store::CookieStore::default()
                 }
             }
@@ -250,22 +256,46 @@ impl HilanClient {
         if fs::create_dir_all(&cookie_dir).is_err() {
             return;
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&cookie_dir, fs::Permissions::from_mode(0o700));
+        }
         let cookie_path = cookie_dir.join("cookies.json");
-        let store = self.cookie_store.lock().unwrap();
-        if let Ok(mut file) = fs::File::create(&cookie_path) {
-            // Include session cookies (no Expires) which are critical for Hilan auth.
-            // Use the serde module free function (non-deprecated).
-            if cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut file)
-                .is_ok()
+        let serialized = {
+            let store = self.cookie_store.lock().unwrap();
+            let mut plaintext = Vec::new();
+            if cookie_store::serde::json::save_incl_expired_and_nonpersistent(&store, &mut plaintext)
+                .is_err()
             {
-                drop(file);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(&cookie_path, fs::Permissions::from_mode(0o600));
-                }
-                tracing::debug!("saved session cookies to {}", cookie_path.display());
+                return;
             }
+            plaintext
+        };
+
+        let key = match self.config.get_or_create_session_key() {
+            Ok(key) => key,
+            Err(e) => {
+                tracing::debug!("could not load session key, skipping cookie persistence: {e}");
+                return;
+            }
+        };
+
+        let encrypted = match encrypt_cookie_blob(&key, &serialized) {
+            Ok(encrypted) => encrypted,
+            Err(e) => {
+                tracing::debug!("could not encrypt session cookies, skipping persistence: {e}");
+                return;
+            }
+        };
+
+        if fs::write(&cookie_path, encrypted).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&cookie_path, fs::Permissions::from_mode(0o600));
+            }
+            tracing::debug!("saved encrypted session cookies to {}", cookie_path.display());
         }
     }
 
@@ -936,6 +966,52 @@ fn salary_amount(row: &BTreeMap<String, serde_json::Value>, key: &str) -> Result
     }
 }
 
+fn load_cookie_store(config: &Config, cookie_path: &Path) -> Result<cookie_store::CookieStore> {
+    let encrypted =
+        fs::read(cookie_path).with_context(|| format!("read {}", cookie_path.display()))?;
+    let key = config
+        .get_session_key()?
+        .context("missing session key for persisted cookies")?;
+    let decrypted = decrypt_cookie_blob(&key, &encrypted)?;
+
+    cookie_store::serde::json::load(Cursor::new(decrypted))
+        .map_err(|e| anyhow!("deserialize decrypted cookie store JSON: {e}"))
+}
+
+fn encrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| anyhow!("build AES-256-GCM cipher: {e}"))?;
+
+    let mut nonce_bytes = [0_u8; COOKIE_NONCE_LEN];
+    let mut rng = rand::rngs::OsRng;
+    rand::RngCore::fill_bytes(&mut rng, &mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| anyhow!("encrypt cookie blob: {e}"))?;
+
+    let mut out = Vec::with_capacity(COOKIE_NONCE_LEN + ciphertext.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+fn decrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], encrypted: &[u8]) -> Result<Vec<u8>> {
+    if encrypted.len() < COOKIE_NONCE_LEN {
+        bail!("encrypted cookie blob shorter than nonce");
+    }
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| anyhow!("build AES-256-GCM cipher: {e}"))?;
+    let (nonce_bytes, ciphertext) = encrypted.split_at(COOKIE_NONCE_LEN);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| anyhow!("decrypt cookie blob: {e}"))
+}
+
 pub fn previous_month_start(today: NaiveDate) -> NaiveDate {
     shift_month(today.with_day(1).unwrap(), -1)
 }
@@ -1212,6 +1288,20 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
         );
         assert_eq!(summary.entries[0].amount, 12_345);
+    }
+
+    #[test]
+    fn cookie_encryption_round_trip() {
+        let key = [0x5a; COOKIE_KEY_LEN];
+        let plaintext = br#"{"cookies":[{"name":"HBrowserId","value":"abc123"}]}"#;
+
+        let encrypted = encrypt_cookie_blob(&key, plaintext).expect("encrypt cookies");
+
+        assert_ne!(encrypted, plaintext);
+        assert!(encrypted.len() > COOKIE_NONCE_LEN);
+
+        let decrypted = decrypt_cookie_blob(&key, &encrypted).expect("decrypt cookies");
+        assert_eq!(decrypted, plaintext);
     }
 
     // -- urlencode -------------------------------------------------------------

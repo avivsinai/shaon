@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use rand::RngCore;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -8,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const KEYRING_SERVICE: &str = "hilan-cli";
+const SESSION_KEYRING_SERVICE: &str = "hilan-session-key";
+const SESSION_KEY_LEN: usize = 32;
 
 /// Build a keyring entry with a stable target so macOS Keychain associates the
 /// item with the binary identity rather than a generic account.  The binary
@@ -16,6 +19,12 @@ const KEYRING_SERVICE: &str = "hilan-cli";
 fn keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
     let account = format!("{}/{}", subdomain, username);
     keyring::Entry::new(KEYRING_SERVICE, &account).context("create keyring entry")
+}
+
+fn session_keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
+    let account = format!("{}/{}", subdomain, username);
+    keyring::Entry::new(SESSION_KEYRING_SERVICE, &account)
+        .context("create session keyring entry")
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -148,6 +157,41 @@ impl Config {
         }
     }
 
+    /// Load the persisted cookie-encryption key from the OS keychain, if present.
+    pub fn get_session_key(&self) -> Result<Option<[u8; SESSION_KEY_LEN]>> {
+        let entry = session_keyring_entry(&self.subdomain, &self.username)?;
+        match entry.get_password() {
+            Ok(encoded) => decode_session_key(&encoded).map(Some),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!("read session key from OS keychain: {e}")),
+        }
+    }
+
+    /// Load or create the persisted cookie-encryption key in the OS keychain.
+    pub fn get_or_create_session_key(&self) -> Result<[u8; SESSION_KEY_LEN]> {
+        if let Some(existing) = self.get_session_key()? {
+            return Ok(existing);
+        }
+
+        let entry = session_keyring_entry(&self.subdomain, &self.username)?;
+        let mut key = [0_u8; SESSION_KEY_LEN];
+        let mut rng = rand::rngs::OsRng;
+        rng.fill_bytes(&mut key);
+        let encoded = encode_session_key(&key);
+
+        entry
+            .set_password(&encoded)
+            .context("store session key in OS keychain")?;
+
+        match entry.get_password() {
+            Ok(stored) if stored == encoded => Ok(key),
+            Ok(_) => anyhow::bail!("keychain stored a different session key than expected"),
+            Err(e) => anyhow::bail!(
+                "session key write appeared to succeed but read-back failed: {e}"
+            ),
+        }
+    }
+
     /// Write the current config back to disk (without the password field).
     fn save(&self) -> Result<()> {
         let path = config_path();
@@ -243,6 +287,28 @@ fn print_setup_instructions(path: &Path) {
     eprintln!("  payslip_format = \"%Y-%m.pdf\"");
     eprintln!();
     eprintln!("The subdomain is the part before .hilan.co.il in your company's Hilan URL.");
+}
+
+fn encode_session_key(key: &[u8; SESSION_KEY_LEN]) -> String {
+    key.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_session_key(encoded: &str) -> Result<[u8; SESSION_KEY_LEN]> {
+    if encoded.len() != SESSION_KEY_LEN * 2 {
+        anyhow::bail!(
+            "session key has {} hex chars, expected {}",
+            encoded.len(),
+            SESSION_KEY_LEN * 2
+        );
+    }
+
+    let mut key = [0_u8; SESSION_KEY_LEN];
+    for (idx, chunk) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(chunk).context("session key was not valid UTF-8")?;
+        key[idx] = u8::from_str_radix(text, 16)
+            .with_context(|| format!("invalid hex in session key at byte {idx}"))?;
+    }
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -360,5 +426,19 @@ mod tests {
 
         let password = config.get_password().unwrap();
         assert_eq!(password.expose_secret(), "fallback-password");
+    }
+
+    #[test]
+    fn session_key_hex_round_trip() {
+        let original = [
+            0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31,
+            0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63,
+            0x70, 0x71, 0x72, 0x73,
+        ];
+
+        let encoded = encode_session_key(&original);
+        let decoded = decode_session_key(&encoded).unwrap();
+
+        assert_eq!(decoded, original);
     }
 }
