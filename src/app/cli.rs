@@ -756,11 +756,7 @@ pub async fn run() -> Result<()> {
 }
 
 async fn run_mcp_server() -> Result<()> {
-    use rmcp::ServiceExt;
-    let server = crate::mcp::HilanMcpServer::new();
-    let transport = rmcp::transport::io::stdio();
-    server.serve(transport).await?.waiting().await?;
-    Ok(())
+    super::mcp::serve_stdio().await
 }
 
 fn parse_month_or_previous(month: Option<&str>) -> Result<NaiveDate> {
