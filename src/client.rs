@@ -12,8 +12,10 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use zeroize::Zeroize;
 
-static ORG_ID_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#""OrgId":"(\d+)""#).expect("invalid OrgId regex"));
+static ORG_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // Match OrgId in both plain JSON ("OrgId":"4606") and escaped JSON (\"OrgId\":\"4606\")
+    Regex::new(r#"\\?"OrgId\\?"[:\s]*\\?"(\d+)\\?""#).expect("invalid OrgId regex")
+});
 
 use crate::config::Config;
 

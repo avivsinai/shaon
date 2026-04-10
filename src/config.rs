@@ -209,7 +209,7 @@ fn print_setup_instructions(path: &Path) {
     eprintln!("Create {} with:", path.display());
     eprintln!();
     eprintln!("  subdomain = \"YOUR_COMPANY\"");
-    eprintln!("  username  = \"YOUR_ID_NUMBER\"");
+    eprintln!("  username  = \"YOUR_EMPLOYEE_ID\"   # e.g. \"27\" — the ID you use to log in to Hilan");
     eprintln!();
     eprintln!("Then run `hilan auth` to store your password in the OS keychain.");
     eprintln!();
