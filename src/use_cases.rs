@@ -3,8 +3,9 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 use crate::core::{
-    AttendanceChange, AttendanceProvider, AttendanceType, CalendarDay, FixTarget, MonthCalendar,
-    ProviderError, UserIdentity, WriteMode, WritePreview,
+    AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, AttendanceType,
+    CalendarDay, FixTarget, MonthCalendar, ProviderError, ReportTable, UserIdentity, WriteMode,
+    WritePreview,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -530,6 +531,191 @@ pub fn print_auto_fill(result: &AutoFillResult) {
             result.summary.filled, result.summary.failed, result.summary.skipped,
         );
     }
+}
+
+pub fn print_calendar(calendar: &MonthCalendar) {
+    println!(
+        "Attendance for {} (employee {})",
+        calendar.month.format("%Y-%m"),
+        calendar.employee_id
+    );
+    println!();
+
+    let date_w = 10;
+    let day_w = 5;
+    let entry_w = 5;
+    let exit_w = 5;
+    let type_w = 15;
+    let hours_w = 5;
+    let status_w = 6;
+
+    println!(
+        "{:<date_w$}  {:<day_w$}  {:<entry_w$}  {:<exit_w$}  {:<type_w$}  {:<hours_w$}  {:<status_w$}",
+        "Date", "Day", "Entry", "Exit", "Type", "Hours", "Status",
+    );
+    println!(
+        "{:-<date_w$}  {:-<day_w$}  {:-<entry_w$}  {:-<exit_w$}  {:-<type_w$}  {:-<hours_w$}  {:-<status_w$}",
+        "", "", "", "", "", "", "",
+    );
+
+    for day in &calendar.days {
+        let entry = day.entry_time.as_deref().unwrap_or("-");
+        let exit = day.exit_time.as_deref().unwrap_or("-");
+        let attendance_type = day.attendance_type.as_deref().unwrap_or("-");
+        let hours = day.total_hours.as_deref().unwrap_or("-");
+        let status = if day.has_error {
+            "x"
+        } else if day.is_reported() {
+            "ok"
+        } else {
+            "?"
+        };
+
+        println!(
+            "{:<date_w$}  {:<day_w$}  {:<entry_w$}  {:<exit_w$}  {:<type_w$}  {:<hours_w$}  {:<status_w$}",
+            day.date.format("%Y-%m-%d"),
+            day.day_name,
+            entry,
+            exit,
+            attendance_type,
+            hours,
+            status,
+        );
+    }
+
+    let total = calendar.days.len();
+    let errors = calendar.days.iter().filter(|day| day.has_error).count();
+    let reported = calendar.days.iter().filter(|day| day.is_reported()).count();
+    let missing = total.saturating_sub(reported).saturating_sub(errors);
+
+    println!();
+    println!("{total} days: {reported} reported, {errors} errors, {missing} missing");
+}
+
+pub fn print_attendance_types(types: &[AttendanceType]) {
+    if types.is_empty() {
+        println!("No attendance types found.");
+        return;
+    }
+
+    let code_w = types
+        .iter()
+        .map(|item| item.code.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let he_w = types
+        .iter()
+        .map(|item| item.name_he.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
+    let en_w = types
+        .iter()
+        .map(|item| item.name_en.as_deref().map_or(0, str::len))
+        .max()
+        .unwrap_or(7)
+        .max(7);
+
+    println!(
+        "{:<code_w$}  {:<he_w$}  {:<en_w$}",
+        "Code", "Hebrew", "English",
+    );
+    println!("{:-<code_w$}  {:-<he_w$}  {:-<en_w$}", "", "", "",);
+    for item in types {
+        println!(
+            "{:<code_w$}  {:<he_w$}  {:<en_w$}",
+            item.code,
+            item.name_he,
+            item.name_en.as_deref().unwrap_or(""),
+        );
+    }
+}
+
+pub fn print_absence_symbols(symbols: &[AbsenceSymbol]) {
+    if symbols.is_empty() {
+        println!("No absence symbols found.");
+        return;
+    }
+
+    println!("{:<6}  {:<20}  Display", "ID", "Name");
+    println!("{:-<6}  {:-<20}  {:-<30}", "", "", "");
+    for symbol in symbols {
+        println!(
+            "{:<6}  {:<20}  {}",
+            symbol.id,
+            symbol.name,
+            symbol.display_name.as_deref().unwrap_or(""),
+        );
+    }
+}
+
+pub fn print_report_table(table: &ReportTable) {
+    if table.headers.is_empty() && table.rows.is_empty() {
+        println!("(empty report - no data rows found)");
+        return;
+    }
+
+    let col_count = table
+        .headers
+        .len()
+        .max(table.rows.iter().map(|row| row.len()).max().unwrap_or(0));
+
+    if col_count == 0 {
+        println!("(empty report - no columns found)");
+        return;
+    }
+
+    let mut widths = vec![0usize; col_count];
+    for (index, header) in table.headers.iter().enumerate() {
+        widths[index] = widths[index].max(header.chars().count());
+    }
+    for row in &table.rows {
+        for (index, cell) in row.iter().enumerate() {
+            if index < col_count {
+                widths[index] = widths[index].max(cell.chars().count());
+            }
+        }
+    }
+    for width in &mut widths {
+        *width = (*width).clamp(2, 40);
+    }
+
+    if !table.headers.is_empty() {
+        let header_line: Vec<String> = (0..col_count)
+            .map(|index| {
+                let value = table.headers.get(index).map(String::as_str).unwrap_or("");
+                pad_or_truncate(value, widths[index])
+            })
+            .collect();
+        println!("{}", header_line.join("  "));
+
+        let separator: Vec<String> = widths.iter().map(|width| "-".repeat(*width)).collect();
+        println!("{}", separator.join("  "));
+    }
+
+    for row in &table.rows {
+        let line: Vec<String> = (0..col_count)
+            .map(|index| {
+                let value = row.get(index).map(String::as_str).unwrap_or("");
+                pad_or_truncate(value, widths[index])
+            })
+            .collect();
+        println!("{}", line.join("  "));
+    }
+
+    println!("\n({} rows)", table.rows.len());
+}
+
+pub async fn load_absence_symbols<P: AbsenceProvider>(
+    provider: &mut P,
+) -> Result<Vec<AbsenceSymbol>, ProviderError> {
+    provider.absence_symbols().await
+}
+
+fn pad_or_truncate(value: &str, width: usize) -> String {
+    let truncated: String = value.chars().take(width).collect();
+    format!("{truncated:<width$}")
 }
 
 async fn load_attendance_types<P: AttendanceProvider>(provider: &mut P) -> Vec<AttendanceType> {

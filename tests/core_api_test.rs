@@ -1,9 +1,9 @@
 use chrono::NaiveDate;
 use hilan::core::{
-    AttendanceChange, AttendanceProvider, AttendanceType, CalendarDay, DocumentDownload, FixTarget,
-    MonthCalendar, PayslipProvider, ProviderCapabilities, ProviderError, ReportProvider,
-    ReportSpec, ReportTable, SalaryEntry, SalaryProvider, SalarySummary, UserIdentity, WriteMode,
-    WritePreview,
+    AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, AttendanceType,
+    CalendarDay, DocumentDownload, FixTarget, MonthCalendar, PayslipProvider, ProviderCapabilities,
+    ProviderError, ReportProvider, ReportSpec, ReportTable, SalaryEntry, SalaryProvider,
+    SalarySummary, UserIdentity, WriteMode, WritePreview,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -105,6 +105,17 @@ impl SalaryProvider for DummyProvider {
 }
 
 #[async_trait::async_trait]
+impl AbsenceProvider for DummyProvider {
+    async fn absence_symbols(&mut self) -> Result<Vec<AbsenceSymbol>, ProviderError> {
+        Ok(vec![AbsenceSymbol {
+            id: "481".to_string(),
+            name: "חופשה".to_string(),
+            display_name: Some("Vacation".to_string()),
+        }])
+    }
+}
+
+#[async_trait::async_trait]
 impl PayslipProvider for DummyProvider {
     async fn download_payslip(
         &mut self,
@@ -169,6 +180,9 @@ async fn core_traits_are_usable_from_library_consumers() {
 
     let salary = provider.salary_summary(2).await.expect("salary");
     assert_eq!(salary.entries.len(), 2);
+
+    let absences = provider.absence_symbols().await.expect("absences");
+    assert_eq!(absences[0].id, "481");
 
     let payslip = provider
         .download_payslip(month, Some(Path::new("/tmp/payslip.pdf")))
