@@ -105,18 +105,16 @@ impl HilanClient {
             self.base_url
         );
 
-        let body = format!(
-            "username={}&password={}&orgId={}",
-            urlencoding(&self.config.username),
-            urlencoding(&self.config.password),
-            urlencoding(org_id),
-        );
+        let form = [
+            ("username", self.config.username.as_str()),
+            ("password", self.config.password.as_str()),
+            ("orgId", org_id.as_str()),
+        ];
 
         let resp = self
             .client
             .post(&url)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body)
+            .form(&form)
             .send()
             .await
             .context("POST login request")?;
@@ -360,15 +358,10 @@ impl HilanClient {
             .map(|(month, amount)| SalaryEntry { month, amount })
             .collect();
 
-        let percent_diff = entries.windows(2).last().and_then(|pair| {
-            let previous = pair[0].amount;
-            let current = pair[1].amount;
-            if previous == 0 {
-                None
-            } else {
-                Some((current.abs_diff(previous) as f64 / previous as f64) * 100.0)
-            }
-        });
+        let percent_diff = entries
+            .windows(2)
+            .last()
+            .and_then(|pair| percent_diff(pair[0].amount, pair[1].amount));
 
         Ok(SalarySummary {
             label,
@@ -678,19 +671,87 @@ fn shift_month(month_start: NaiveDate, delta_months: i32) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month0 + 1, 1).unwrap()
 }
 
-/// Minimal percent-encoding for form bodies.
-fn urlencoding(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{b:02X}"));
-            }
-        }
+/// Signed percentage change from `previous` to `current`.
+/// Returns `None` when `previous` is zero (division by zero).
+fn percent_diff(previous: u64, current: u64) -> Option<f64> {
+    if previous == 0 {
+        None
+    } else {
+        Some((current as f64 - previous as f64) / previous as f64 * 100.0)
     }
-    out
+}
+
+/// Percent-encode a string for use in URL query parameters / form bodies.
+///
+/// Delegates to the `urlencoding` crate which handles non-ASCII correctly.
+#[allow(dead_code)] // login now uses reqwest::form(); kept as utility
+fn urlencode(s: &str) -> String {
+    urlencoding::encode(s).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- percent_diff ----------------------------------------------------------
+
+    #[test]
+    fn test_percent_diff_positive() {
+        let diff = percent_diff(10_000, 11_000).unwrap();
+        assert!(
+            (diff - 10.0).abs() < f64::EPSILON,
+            "expected +10.0, got {diff}"
+        );
+    }
+
+    #[test]
+    fn test_percent_diff_negative() {
+        let diff = percent_diff(10_000, 9_000).unwrap();
+        assert!(
+            (diff - (-10.0)).abs() < f64::EPSILON,
+            "expected -10.0, got {diff}"
+        );
+    }
+
+    #[test]
+    fn test_percent_diff_zero_previous() {
+        assert!(percent_diff(0, 5_000).is_none());
+    }
+
+    #[test]
+    fn test_percent_diff_no_change() {
+        let diff = percent_diff(10_000, 10_000).unwrap();
+        assert!(diff.abs() < f64::EPSILON, "expected 0.0, got {diff}");
+    }
+
+    // -- urlencode -------------------------------------------------------------
+
+    #[test]
+    fn test_urlencode_ascii() {
+        assert_eq!(urlencode("hello"), "hello");
+    }
+
+    #[test]
+    fn test_urlencode_spaces() {
+        // urlencoding::encode uses %20 for spaces (RFC 3986).
+        assert_eq!(urlencode("a b"), "a%20b");
+    }
+
+    #[test]
+    fn test_urlencode_special_chars() {
+        let encoded = urlencode("p@ss&w=rd!");
+        assert!(!encoded.contains('@'));
+        assert!(!encoded.contains('&'));
+        assert!(!encoded.contains('='));
+    }
+
+    #[test]
+    fn test_urlencode_non_ascii() {
+        // Hebrew letter Alef (U+05D0) should be percent-encoded.
+        let encoded = urlencode("א");
+        assert!(
+            encoded.starts_with('%'),
+            "non-ASCII should be encoded: {encoded}"
+        );
+    }
 }

@@ -333,7 +333,7 @@ async fn main() -> Result<()> {
                 );
             }
             if let Some(percent_diff) = summary.percent_diff {
-                println!("Change over latest month: {:.2}%", percent_diff);
+                println!("Change over latest month: {:+.2}%", percent_diff);
             }
         }
         Commands::Report { name } => {
