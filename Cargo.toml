@@ -32,6 +32,10 @@ scraper = "0.22"
 directories = "6"
 chrono = { version = "0.4", features = ["serde"] }
 urlencoding = "2"
+keyring = "3"
+secrecy = { version = "0.10", features = ["serde"] }
+zeroize = "1"
+rpassword = "7"
 
 [dev-dependencies]
 assert_cmd = "2"

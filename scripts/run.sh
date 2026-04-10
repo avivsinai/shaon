@@ -93,6 +93,13 @@ if needs_rebuild "$BIN_PATH"; then
 
     cp "$SOURCE_BIN" "$BIN_PATH.tmp"
     chmod +x "$BIN_PATH.tmp"
+
+    # Ad-hoc codesign on macOS so the keyring crate can access the Keychain
+    # without triggering a system prompt on every invocation.
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1; then
+        codesign -s - -f "$BIN_PATH.tmp" 2>/dev/null || true
+    fi
+
     mv "$BIN_PATH.tmp" "$BIN_PATH"
     echo "[hilan] Cached binary at $BIN_PATH" >&2
 fi

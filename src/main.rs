@@ -1,8 +1,9 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use std::path::PathBuf;
+use zeroize::Zeroize;
 
 use hilan::{api, attendance, client, config, ontology, reports};
 
@@ -61,8 +62,12 @@ impl<'a> WriteOutput<'a> {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Authenticate with Hilan (test credentials)
-    Auth,
+    /// Authenticate with Hilan (test credentials or manage keychain)
+    Auth {
+        /// Migrate plaintext password from config file to OS keychain
+        #[arg(long)]
+        migrate: bool,
+    },
 
     /// Sync attendance-type ontology from Hilan
     SyncTypes,
@@ -209,10 +214,31 @@ async fn main() -> Result<()> {
     let json = cli.json;
 
     match cli.command {
-        Commands::Auth => {
-            client.login().await?;
-            if json {
-                print_json(&serde_json::json!({"status": "ok"}))?;
+        Commands::Auth { migrate } => {
+            if migrate {
+                // Migrate plaintext password to keychain
+                let config = client.config_mut();
+                config.migrate_to_keychain()?;
+            } else {
+                // Interactive: prompt for password if not already in keychain
+                match client.config().get_password() {
+                    Ok(_) => {
+                        eprintln!("Password already available. Testing login...");
+                    }
+                    Err(_) => {
+                        let mut password = rpassword::prompt_password(
+                            "Enter your Hilan password (input is hidden): ",
+                        )
+                        .context("read password from terminal")?;
+                        client.config().store_password_in_keychain(&password)?;
+                        password.zeroize();
+                        eprintln!("Password stored in OS keychain.");
+                    }
+                }
+                client.login().await?;
+                if json {
+                    print_json(&serde_json::json!({"status": "ok"}))?;
+                }
             }
         }
         Commands::SyncTypes => {
