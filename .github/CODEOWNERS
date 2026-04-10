@@ -1,0 +1,7 @@
+# Core maintainer
+* @avivsinai
+
+# Security-sensitive files
+src/config.rs @avivsinai
+src/mcp.rs @avivsinai
+.github/workflows/ @avivsinai
