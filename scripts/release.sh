@@ -193,8 +193,8 @@ PY
 
 # --- Bump versions ---
 
-HILAN_VERSION="$version" perl -0pi -e '
-  s/(\[workspace\.package\]\n(?:[^\[]*\n)*?version = ")[^"]+(")/${1}$ENV{HILAN_VERSION}$2/s
+SHAON_VERSION="$version" perl -0pi -e '
+  s/(\[workspace\.package\]\n(?:[^\[]*\n)*?version = ")[^"]+(")/${1}$ENV{SHAON_VERSION}$2/s
     or die "failed to update [workspace.package].version\n";
 ' Cargo.toml
 

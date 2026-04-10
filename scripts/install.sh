@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/avivsinai/hilan/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/avivsinai/hilan/main/scripts/install.sh | VERSION=v1.0.0 bash
-#   curl -fsSL https://raw.githubusercontent.com/avivsinai/hilan/main/scripts/install.sh | INSTALL_DIR="$HOME/bin" bash
+#   curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | VERSION=v1.0.0 bash
+#   curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | INSTALL_DIR="$HOME/bin" bash
 
-REPO="avivsinai/hilan"
+REPO="avivsinai/shaon"
 VERSION="${VERSION:-latest}"
 
 blue=$'\033[0;34m'
@@ -91,7 +91,7 @@ detect_asset() {
 
   case "$target" in
     aarch64-apple-darwin|x86_64-apple-darwin|x86_64-unknown-linux-gnu)
-      printf '%s\n' "hilan-${target}.tar.gz"
+      printf '%s\n' "shaon-${target}.tar.gz"
       ;;
     *)
       die "Error: no prebuilt release asset is published for ${target}"
@@ -129,7 +129,7 @@ require_command curl
 require_command tar
 require_command install
 
-info "=== Hilan Installer ==="
+info "=== Shaon Installer ==="
 
 INSTALL_DIR="$(determine_install_dir)"
 ASSET="$(detect_asset)"
@@ -151,7 +151,7 @@ fi
 printf 'Version: %s\n' "$VERSION_LABEL"
 printf 'Platform: %s / %s\n' "$(uname -s)" "$(uname -m)"
 printf 'Asset:   %s\n' "$ASSET"
-printf 'Install: %s\n' "$INSTALL_DIR/hilan"
+printf 'Install: %s\n' "$INSTALL_DIR/shaon"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -168,12 +168,12 @@ info "Checksum verification passed."
 
 info "Extracting archive..."
 tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
-[[ -f "$TMP_DIR/hilan" ]] || die "Error: archive did not contain the hilan binary."
+[[ -f "$TMP_DIR/shaon" ]] || die "Error: archive did not contain the shaon binary."
 
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$TMP_DIR/hilan" "$INSTALL_DIR/hilan"
+install -m 0755 "$TMP_DIR/shaon" "$INSTALL_DIR/shaon"
 
-installed_version="$("$INSTALL_DIR/hilan" --version 2>/dev/null || true)"
+installed_version="$("$INSTALL_DIR/shaon" --version 2>/dev/null || true)"
 
 printf '\n%sInstallation complete.%s\n' "$green" "$reset"
 if [[ -n "$installed_version" ]]; then
@@ -181,7 +181,7 @@ if [[ -n "$installed_version" ]]; then
 fi
 
 if path_contains "$INSTALL_DIR"; then
-  printf 'Available as: hilan\n'
+  printf 'Available as: shaon\n'
 else
   warn "Warning: ${INSTALL_DIR} is not in your PATH."
   if [[ -n "${ZSH_VERSION:-}" || -f "$HOME/.zshrc" ]]; then
@@ -190,10 +190,10 @@ else
     printf 'Add this to ~/.bashrc:\n'
   fi
   printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
-  printf 'Direct path: %s/hilan\n' "$INSTALL_DIR"
+  printf 'Direct path: %s/shaon\n' "$INSTALL_DIR"
 fi
 
 printf '\nNext steps:\n'
-printf '  hilan auth\n'
-printf '  hilan sync-types\n'
-printf '  hilan status\n'
+printf '  shaon auth\n'
+printf '  shaon sync-types\n'
+printf '  shaon status\n'

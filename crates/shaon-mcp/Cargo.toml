@@ -1,12 +1,12 @@
 [package]
-name = "hilan-mcp"
+name = "shaon-mcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "MCP frontend for the Hilan provider stack"
+description = "MCP frontend for the Shaon provider stack"
 
 [dependencies]
 anyhow.workspace = true

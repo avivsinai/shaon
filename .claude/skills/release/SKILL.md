@@ -1,6 +1,6 @@
 ---
 name: release
-description: Bump version, update all version references, build release binary, and create git tag. Use when cutting a new release of hilan.
+description: Bump version, update all version references, build release binary, and create git tag. Use when cutting a new release of shaon.
 disable-model-invocation: true
 ---
 
@@ -30,4 +30,4 @@ Run this skill with: `/release $ARGUMENTS`
 
 9. **Tag**: Create an annotated git tag: `git tag -a v{VERSION} -m "Release v{VERSION}"`.
 
-10. **Report**: Print the new version, tagged commit hash, and cached binary path (`~/.cache/hilan/{VERSION}/hilan`). Remind the user to `git push --follow-tags` when ready.
+10. **Report**: Print the new version, tagged commit hash, and cached binary path (`~/.cache/shaon/{VERSION}/shaon`). Remind the user to `git push --follow-tags` when ready.

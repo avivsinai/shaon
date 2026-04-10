@@ -1,7 +1,7 @@
-# Gitleaks configuration for hilan
+# Gitleaks configuration for shaon
 # https://github.com/gitleaks/gitleaks
 
-title = "hilan gitleaks config"
+title = "shaon gitleaks config"
 
 [allowlist]
   description = "Global allowlist"

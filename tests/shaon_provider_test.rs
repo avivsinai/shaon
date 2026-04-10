@@ -1,7 +1,7 @@
-use hilan::core::{
+use shaon::core::{
     AbsenceProvider, AttendanceProvider, PayslipProvider, ReportProvider, SalaryProvider,
 };
-use hilan::provider::HilanProvider;
+use shaon::provider::HilanProvider;
 
 fn assert_core_traits<T>()
 where
@@ -10,6 +10,6 @@ where
 }
 
 #[test]
-fn hilan_provider_implements_the_core_trait_stack() {
+fn shaon_provider_implements_the_core_trait_stack() {
     assert_core_traits::<HilanProvider>();
 }

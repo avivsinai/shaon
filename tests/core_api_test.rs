@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use hilan::core::{
+use shaon::core::{
     AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, AttendanceType,
     CalendarDay, DocumentDownload, FixTarget, MonthCalendar, PayslipProvider, ProviderError,
     ReportProvider, ReportSpec, ReportTable, SalaryEntry, SalaryProvider, SalarySummary,

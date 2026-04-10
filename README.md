@@ -1,6 +1,6 @@
-# hilan
+# shaon
 
-[![CI](https://github.com/avivsinai/hilan/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/hilan/actions/workflows/ci.yml)
+[![CI](https://github.com/avivsinai/shaon/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/shaon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 
@@ -41,10 +41,10 @@ For the protocol map and reverse-engineering notes, see [PROTOCOL.md](PROTOCOL.m
 ### From Source
 
 ```bash
-git clone https://github.com/avivsinai/hilan.git
-cd hilan
-cargo build -p hilan --release
-# Binary is at target/release/hilan
+git clone https://github.com/avivsinai/shaon.git
+cd shaon
+cargo build -p shaon --release
+# Binary is at target/release/shaon
 ```
 
 ### Install With Cargo
@@ -55,29 +55,29 @@ cargo install --path .
 
 ### Pre-built Binaries
 
-Download the latest release from [GitHub Releases](https://github.com/avivsinai/hilan/releases).
+Download the latest release from [GitHub Releases](https://github.com/avivsinai/shaon/releases).
 
 ```bash
 # macOS (Apple Silicon)
-curl -LO https://github.com/avivsinai/hilan/releases/latest/download/hilan-aarch64-apple-darwin.tar.gz
-tar xzf hilan-aarch64-apple-darwin.tar.gz
-sudo mv hilan /usr/local/bin/
+curl -LO https://github.com/avivsinai/shaon/releases/latest/download/shaon-aarch64-apple-darwin.tar.gz
+tar xzf shaon-aarch64-apple-darwin.tar.gz
+sudo mv shaon /usr/local/bin/
 
 # macOS (Intel)
-curl -LO https://github.com/avivsinai/hilan/releases/latest/download/hilan-x86_64-apple-darwin.tar.gz
-tar xzf hilan-x86_64-apple-darwin.tar.gz
-sudo mv hilan /usr/local/bin/
+curl -LO https://github.com/avivsinai/shaon/releases/latest/download/shaon-x86_64-apple-darwin.tar.gz
+tar xzf shaon-x86_64-apple-darwin.tar.gz
+sudo mv shaon /usr/local/bin/
 
 # Linux (x86_64)
-curl -LO https://github.com/avivsinai/hilan/releases/latest/download/hilan-x86_64-unknown-linux-gnu.tar.gz
-tar xzf hilan-x86_64-unknown-linux-gnu.tar.gz
-sudo mv hilan /usr/local/bin/
+curl -LO https://github.com/avivsinai/shaon/releases/latest/download/shaon-x86_64-unknown-linux-gnu.tar.gz
+tar xzf shaon-x86_64-unknown-linux-gnu.tar.gz
+sudo mv shaon /usr/local/bin/
 ```
 
 ### Local Development Wrapper
 
 The repo includes a wrapper that builds and caches the release binary under
-`~/.cache/hilan/<version>/hilan`:
+`~/.cache/shaon/<version>/shaon`:
 
 ```bash
 ./scripts/run.sh --help
@@ -87,37 +87,37 @@ For a stable local command name during development:
 
 ```bash
 mkdir -p ~/bin
-ln -sf "$PWD/scripts/run.sh" ~/bin/hilan
+ln -sf "$PWD/scripts/run.sh" ~/bin/shaon
 ```
 
 ## Quick Start
 
 ```bash
 # Set up credentials (stores password in OS keychain)
-hilan auth
+shaon auth
 
 # Get full context in one call — identity, status, errors, suggestions
-hilan overview
+shaon overview
 
 # Show the current month's attendance status
-hilan status
+shaon status
 
 # Auto-fill all missing days (preview first, then --execute)
-hilan auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00
-hilan auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00 --execute
+shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00
+shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00 --execute
 
 # Clock in/out
-hilan clock-in --execute
-hilan clock-out --execute
+shaon clock-in --execute
+shaon clock-out --execute
 
 # JSON output for scripting
-hilan status --json | jq '.days[] | select(.has_error)'
+shaon status --json | jq '.days[] | select(.has_error)'
 
 # Download payslip
-hilan payslip
+shaon payslip
 
 # Show salary summary
-hilan salary --months 3
+shaon salary --months 3
 ```
 
 ## Commands
@@ -171,17 +171,17 @@ All write commands are **preview-only by default**. Pass `--execute` to submit.
 
 ## Configuration
 
-`hilan` reads a TOML config file from:
+`shaon` reads a TOML config file from:
 
 | Path | Purpose |
 |------|---------|
-| `~/.hilan/config.toml` | Canonical config location |
-| `~/.hilan/<subdomain>/` | Per-org state (`cookies.json`, `types.json`) |
+| `~/.shaon/config.toml` | Canonical config location |
+| `~/.shaon/<subdomain>/` | Per-org state (`cookies.json`, `types.json`) |
 
 Example:
 
 ```toml
-subdomain = "mycompany"         # the part before .hilan.co.il
+subdomain = "mycompany"         # your employer's Hilanet subdomain
 username = "27"                  # your employee ID
 
 # optional
@@ -189,7 +189,7 @@ payslip_folder = "/Users/you/Downloads/payslips"
 payslip_format = "%Y-%m.pdf"
 ```
 
-Then run `hilan auth` to store your password in the OS keychain. No plaintext
+Then run `shaon auth` to store your password in the OS keychain. No plaintext
 passwords are stored on disk.
 
 Notes:
@@ -201,12 +201,12 @@ Notes:
 ## Architecture
 
 ```
-hilan/
+shaon/
 ├── crates/
 │   ├── hr-core/         # Provider-agnostic DTOs, traits, and use cases
 │   ├── provider-hilan/  # Hilan transport, parsing, config, adapter, fixtures
-│   ├── hilan-cli/       # CLI frontend
-│   └── hilan-mcp/       # MCP frontend
+│   ├── shaon-cli/       # CLI frontend
+│   └── shaon-mcp/       # MCP frontend
 ├── src/
 │   ├── lib.rs           # Compatibility facade re-exporting the workspace crates
 │   └── main.rs          # Thin binary entrypoint
@@ -215,7 +215,7 @@ hilan/
 ├── scripts/
 │   └── run.sh           # Build-and-cache wrapper
 ├── skills/
-│   └── hilan/SKILL.md   # Claude Code skill definition
+│   └── shaon/SKILL.md   # Claude Code skill definition
 ├── .claude-plugin/
 │   └── plugin.json      # Claude Code plugin manifest
 └── tests/
@@ -224,8 +224,8 @@ hilan/
 
 `hr-core` is the stable boundary for downstream code. `provider-hilan`
 implements that contract over Hilan's ASP.NET and ASMX surfaces. The root
-`hilan` crate intentionally stays as a convenience facade so existing
-`hilan::core`, `hilan::provider`, `hilan::use_cases`, and `hilan::mcp`
+`shaon` crate intentionally stays as a convenience facade so existing
+`shaon::core`, `shaon::provider`, `shaon::use_cases`, and `shaon::mcp`
 imports keep working while the internal workspace stays modular.
 
 For a minimal consumer, see [`examples/overview.rs`](examples/overview.rs).
@@ -243,19 +243,19 @@ All write commands are **safe by default**.
 
 ### Claude Code Skill
 
-The repo ships a Claude Code skill at `skills/hilan/SKILL.md` and a plugin
+The repo ships a Claude Code skill at `skills/shaon/SKILL.md` and a plugin
 manifest at `.claude-plugin/plugin.json`. Install it with:
 
 ```bash
 # Via skills.sh
-npx skills add avivsinai/hilan
+npx skills add avivsinai/shaon
 
 # Or install manually
 /plugin marketplace add avivsinai/skills-marketplace
-/plugin install hilan@avivsinai-marketplace
+/plugin install shaon@avivsinai-marketplace
 ```
 
-The skill triggers on keywords like "hilan", "attendance", "clock in/out",
+The skill triggers on keywords like "shaon", "attendance", "clock in/out",
 "payslip", "salary", and "שעון נוכחות".
 
 ### Scripting
@@ -265,7 +265,7 @@ output for machine consumption.
 
 ### MCP Server
 
-Run `hilan serve` to expose Hilan operations as MCP tools for AI agent
+Run `shaon serve` to expose Hilan operations as MCP tools for AI agent
 orchestration over stdio transport.
 
 ## Verifying Downloads
@@ -274,7 +274,7 @@ After downloading a release binary, verify its checksum:
 
 ```bash
 # Download the checksums file
-curl -LO https://github.com/avivsinai/hilan/releases/latest/download/SHA256SUMS.txt
+curl -LO https://github.com/avivsinai/shaon/releases/latest/download/SHA256SUMS.txt
 
 # Verify (macOS)
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing
@@ -286,11 +286,6 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
-
-## Prior Art
-
-- [zigius/hilan-bot](https://github.com/zigius/hilan-bot)
-- [talsalmona/hilan](https://github.com/talsalmona/hilan)
 
 ## License
 

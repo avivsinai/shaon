@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn `hilan` from "a Hilan CLI that happens to expose a library" into:
+Turn `shaon` from "a Hilan CLI that happens to expose a library" into:
 
 1. a small provider-agnostic core for attendance/HR workflows,
 2. a Hilan provider implementation on top of that core,
@@ -75,7 +75,7 @@ These are already domain-facing DTOs. They need naming cleanup and decoupling fr
 - `client::HilanClient`
 - all ASMX endpoint knowledge in `api.rs`
 - HTML/WebForms parsing and replay logic in `attendance.rs`
-- `config.rs` (`~/.hilan`, keychain services, cookie encryption)
+- `config.rs` (`~/.shaon`, keychain services, cookie encryption)
 - `ontology.rs` sync/cache behavior tied to Hilan calendar + absences APIs
 - report names and report URL constants in `reports.rs`
 - the current MCP tool handler names and wiring in `mcp.rs`
@@ -98,7 +98,7 @@ It should not contain:
 - `keyring`,
 - `cookie_store`,
 - `.aspx`/ASMX details,
-- filesystem layout like `~/.hilan`.
+- filesystem layout like `~/.shaon`.
 
 ## Proposed Domain Types
 
@@ -294,7 +294,7 @@ Do this before a workspace split:
   - provider error types
   - shared use-cases like overview/autofill planning
 
-- `provider/hilan/`
+- `provider/vendor/`
   - current `HilanClient`
   - current `api.rs`
   - current parsing/replay logic
@@ -322,11 +322,11 @@ Recommended end state:
   - Hilan auth/session/config/cache
   - Hilan fixtures and parser tests
 
-- `crates/hilan-cli`
-  - the shipped `hilan` binary
+- `crates/shaon-cli`
+  - the shipped `shaon` binary
   - currently compiled with `provider-hilan`
 
-- `crates/hilan-mcp`
+- `crates/shaon-mcp`
   - provider-agnostic MCP server shell
   - initially shipped with Hilan provider wiring
 
@@ -343,7 +343,7 @@ This is the smallest architecture that is useful now and does not paint us into 
 2. Make Hilan implement `AttendanceProvider` plus optional extension traits.
 3. Move `overview`, `errors`, `fill`, and `auto-fill` orchestration into provider-agnostic use-cases over those traits.
 4. Keep config, keychain, cookies, ontology cache, ASMX, and HTML parsing fully provider-local.
-5. Keep binary/tool names Hilan-branded for now.
+5. Keep binary/tool names Shaon-branded.
 
 This is enough to make the library reusable without solving plugin discovery, dynamic loading, or cross-provider config formats.
 
@@ -379,8 +379,8 @@ Definition of done:
 
 ### Phase 2: Split the binaries from the provider
 
-1. Move CLI rendering and Clap command parsing into `app/cli` or `crates/hilan-cli`.
-2. Move MCP handlers into `app/mcp` or `crates/hilan-mcp`.
+1. Move CLI rendering and Clap command parsing into `app/cli` or `crates/shaon-cli`.
+2. Move MCP handlers into `app/mcp` or `crates/shaon-mcp`.
 3. Keep provider creation in one explicit composition point.
 
 Definition of done:
@@ -416,7 +416,7 @@ What to borrow:
 
 What not to borrow:
 
-- Terraform's full resource lifecycle/state model. `hilan` is an automation library, not an IaC engine.
+- Terraform's full resource lifecycle/state model. `shaon` is an automation library, not an IaC engine.
 
 ### AWS SDK for Rust / Smithy
 

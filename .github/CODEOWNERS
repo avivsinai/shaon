@@ -3,5 +3,5 @@
 
 # Security-sensitive files
 crates/provider-hilan/src/config.rs @avivsinai
-crates/hilan-mcp/src/lib.rs @avivsinai
+crates/shaon-mcp/src/lib.rs @avivsinai
 .github/workflows/ @avivsinai
