@@ -1,0 +1,316 @@
+# Hilanet Protocol Map
+
+Deep reverse-engineering of Taboola's Hilanet instance at `https://taboola.net.hilan.co.il`.
+
+## Auth
+
+### Fetch OrgId
+```
+GET https://{subdomain}.hilan.co.il/
+```
+Parse `"OrgId":"(\d+)"` from HTML/JS. Taboola OrgId embedded in page source.
+
+### Login
+```
+POST https://{subdomain}.hilan.co.il/HilanCenter/Public/api/LoginApi/LoginRequest
+Content-Type: application/x-www-form-urlencoded
+
+username={username}&password={password}&orgId={orgId}
+```
+Response JSON: `{ IsFail, IsShowCaptcha, Code, ErrorMessage }`
+- `IsShowCaptcha: true` → CAPTCHA required (solve in browser)
+- `Code: 18` → temp lockout
+- `Code: 6` → password change required
+- Sets session cookies for all subsequent requests
+
+## Two Protocol Layers
+
+Hilanet has two protocol layers:
+
+### 1. Legacy ASP.NET WebForms (`.aspx` pages)
+- Used by: attendance calendar, error wizard, analyzed sheet, meals, correction log
+- Auth: session cookies
+- Pattern: GET page → scrape and replay ALL hidden inputs from the fresh GET → override only edited fields + button name → POST back
+- Form IDs embed employee ID + month: `ctl00$mp$RG_Days_{employeeId}_{YYYY}_{MM}`
+
+### 2. Modern ASMX JSON API (`/Services/Public/WS/*.asmx/*`)
+- Used by: absences, payslip, home page tasks, employee strip
+- Auth: session cookies + sometimes H-XSRF-Token header
+- Pattern: POST with `Content-Type: application/json` and `{}` body
+- Response: JSON
+
+## Key Identifiers
+
+- **Subdomain**: `taboola.net` → base URL `https://taboola.net.hilan.co.il`
+- **Employee ID (currentItemId)**: Extracted from `HEmployeeStripApiapi.asmx/GetData` → `PrincipalUser.UserId`
+- **EmployeeId (short)**: `PrincipalUser.EmployeeId` (integer, e.g. 27)
+- **OrganizationId**: `PrincipalUser.OrganizationId` (e.g. "4606")
+- **UserId for payslips**: `{orgId}{username}` concatenated (no separator)
+- **currentItemId** in calendar form = `PrincipalUser.UserId` from GetData API
+
+### Bootstrap: Extract Employee Info
+```
+POST /Hilannetv2/Services/Public/WS/HEmployeeStripApiapi.asmx/GetData
+Content-Type: application/json
+Body: {}
+```
+Response contains: `PrincipalUser.UserId`, `PrincipalUser.EmployeeId`, `PrincipalUser.Name`, `OrganizationId`, `PrincipalUser.IsManager`
+
+---
+
+## Attendance Calendar (Read + Write)
+
+### Read: Get Calendar Page
+```
+GET /Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true
+```
+Returns HTML with:
+- Monthly calendar grid showing reported/error/missing days
+- Bottom form for editing selected day's entry
+- ASP.NET form with `__VIEWSTATE`, `__VIEWSTATEGENERATOR`
+
+### Write: Submit Attendance Entry
+```
+POST /Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true
+Content-Type: application/x-www-form-urlencoded
+```
+
+**Implementation strategy**: Full form replay. GET the page, parse ALL hidden inputs via HTML scraper, then POST back with all hidden fields unchanged + only the edited business fields overridden + the save button name. Do NOT hardcode a minimal field list — replay everything from the GET.
+
+**No `__EVENTVALIDATION`** on this page. The H-XSRF-Token hidden field exists but is always empty (not enforced). Cookies are minimal: `h-culture=he-IL`, `HLoginLink={subdomain}`, plus session auth cookies from login.
+
+Key form fields (full set scraped dynamically at runtime — do not hardcode):
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `__VIEWSTATE` | ASP.NET state (from GET) | `kCmX4ck...` |
+| `__VIEWSTATEGENERATOR` | ASP.NET generator (from GET) | `152EA2C7` |
+| `__EVENTTARGET` | Empty for button-triggered submit | `` |
+| `__EVENTARGUMENT` | Empty | `` |
+| `__calendarSelectedDays` | Day index in calendar | `9596` |
+| `ctl00$mp$currentMonth` | Current month | `01/04/2026` |
+| `ctl00$mp$Strip$hCurrentItemId` | Employee ID | `460627` |
+| `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$cellOf_ManualEntry_EmployeeReports_row_0_0$ManualEntry_EmployeeReports_row_0_0` | Entry time | `09:00` |
+| `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$cellOf_ManualExit_EmployeeReports_row_0_0$ManualExit_EmployeeReports_row_0_0` | Exit time | `18:00` |
+| `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$cellOf_Comment_EmployeeReports_row_0_0$Comment_EmployeeReports_row_0_0` | Comment | `` |
+| `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$cellOf_Symbol.SymbolId_EmployeeReports_row_0_0$Symbol.SymbolId_EmployeeReports_row_0_0` | Attendance type code | `120` (WFH) |
+| `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$cellOf_CompletionToStandard_EmployeeReports_row_0_0$CompletionToStandard_EmployeeReports_row_0_0` | Auto-fill to standard hours | `on` |
+| `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$btnSave` | Submit button | `שמירה` |
+
+### Filter Buttons
+- `ctl00$mp$RefreshSelectedDays` → "ימים נבחרים" (selected days)
+- `ctl00$mp$RefreshErrorsDays` → "ימים שגויים" (error days)
+- `ctl00$mp$RefreshPeriod` → "דיווח תקופתי" (period report)
+
+---
+
+## Error Wizard (אשף שגויים)
+
+### Read: Error Day Form
+```
+GET /Hilannetv2/EmployeeErrorHandling.aspx?date={DD/MM/YYYY}&reportId=00000000-0000-0000-0000-000000000000&errorType=63&HideStrip=1&HideEmployeeStrip=1
+```
+(Note: canonical single-slash path; browsers normalize double-slash but we should use single)
+
+Returns HTML with same form structure as calendar, pre-populated for the error day.
+
+**Open question**: `reportId` and `errorType=63` may vary by error class. The sampled case was "חסר דיווח ליום עם תקן" (missing report for standard day). Other error types may use different `errorType` values. Verify before implementing multi-error-type support.
+
+### Write: Fix Error Day
+Same full-form-replay POST as attendance calendar but to the EmployeeErrorHandling URL:
+```
+POST /Hilannetv2/EmployeeErrorHandling.aspx?date={DD/MM/YYYY}&reportId=...&errorType=63&HideStrip=1&HideEmployeeStrip=1
+```
+Same form fields — `ManualEntry`, `ManualExit`, `Symbol.SymbolId`, `Comment`, `CompletionToStandard`, `btnSave` ("שמור וסגור").
+
+---
+
+## Attendance Types (Org Ontology)
+
+### From Calendar dropdown (English names):
+| Code | Name |
+|------|------|
+| 0 | work day |
+| 120 | work from home |
+| 481 | vacation |
+| 483 | sickness |
+| 485 | family sickness |
+| 486 | reserve duty |
+| 110 | be'er sheva |
+| 489 | mourning |
+| 140 | course |
+| 130 | work abroad |
+| 160 | conference |
+| 150 | offsite |
+| 501 | Parental leave |
+
+### From Absences API (Hebrew names):
+Retrieved via `POST /Hilannetv2/Services/Public/WS/HAbsencesApiapi.asmx/GetInitialData` with `{}` body.
+Response `Symbols` array contains `{ Id, Name, DisplayName }` — e.g., `{ Id: "481", Name: "חופשה", DisplayName: "481 - חופשה" }`.
+
+Only vacation (481) and sickness (483) appear in the absences API — the full list comes from the calendar page dropdown.
+
+---
+
+## ASMX JSON API Endpoints
+
+Base: `https://taboola.net.hilan.co.il/Hilannetv2/Services/Public/WS/`
+
+All **read** endpoints use: `POST`, `Content-Type: application/json`, body `{}`, session cookies.
+Write/mutating ASMX endpoints may require additional parameters or H-XSRF-Token — not yet verified.
+H-XSRF-Token is present as a hidden field on .aspx pages but currently always empty (not enforced as of April 2026).
+
+| Endpoint | Purpose |
+|----------|---------|
+| `HGeneralApiapi.asmx/GetAppInitialData` | App bootstrap — menu structure, user info, last login |
+| `HGeneralApiapi.asmx/GetItemState` | Current employee state |
+| `HAbsencesApiapi.asmx/GetInitialData` | Absences page — symbols, table columns, balances |
+| `HEmployeeStripApiapi.asmx/GetData` | Employee strip data |
+| `HEmployeeStripApiapi.asmx/GetStripList` | Employee list for managers |
+| `HHomeTasksApiapi.asmx/GetTasksInitialCount` | Error/task count on home page |
+| `HHomeTasksApiapi.asmx/GetTasksCount` | Detailed task count |
+| `HHomeTasksApiapi.asmx/GetReminderCount` | Reminder count |
+
+### GetAppInitialData Response (key fields):
+```json
+{
+  "Menu": {
+    "WelcomeText": "שלום, אביב סיני",
+    "LastLoginText": "חיבורך הקודם למערכת: יום שני 10:22",
+    "Modules": [...],
+    "Tabs": [...]  // Full navigation structure
+  }
+}
+```
+
+---
+
+## Payslip
+
+### Download PDF
+```
+GET /Hilannetv2/PersonalFile/PdfPaySlip.aspx?Date=01/{MM}/{YYYY}&UserId={orgId}{username}
+```
+Returns raw PDF. Validate first 4 bytes = `%PDF`.
+
+### Payslip Range Print
+```
+GET /Hilannetv2/PersonalFile/PaySlipRangePrint.aspx
+```
+For printing multiple payslips.
+
+### Modern Payslip Page
+```
+/Hilannetv2/ng/personal-file/payslip
+```
+Angular SPA — likely uses ASMX API underneath.
+
+---
+
+## Salary Comparison
+
+```
+POST /Hilannetv2/PersonalFile/SalaryAllSummary.aspx
+Content-Type: application/x-www-form-urlencoded
+
+__DatePicker_State=01/{MM_start}/{YYYY_start},0,30/{MM_end}/{YYYY_end},0
+```
+May require `__VIEWSTATE` from initial GET. Response: HTML table with `tr.RSGrid` / `tr.ARSGrid` rows.
+
+---
+
+## Other Pages (in scope)
+
+### Analyzed Sheet (גיליון מנותח)
+```
+/Hilannetv2/Attendance/HoursAnalysis.aspx
+```
+Read-only view of calculated attendance data.
+
+### Correction Log (יומן תיקונים)
+```
+/Hilannetv2/Attendance/HoursReportLog.aspx
+```
+Log of all attendance corrections made.
+
+### Attendance Approval (אישור נוכחות)
+```
+/Hilannetv2/Attendance/AttendanceApproval.aspx
+```
+Manager approval of employee attendance.
+
+### Absences (היעדרויות)
+```
+/Hilannetv2/ng/attendance/absences
+```
+Angular SPA. Uses ASMX API:
+- `HAbsencesApiapi.asmx/GetInitialData` — symbols, table config, balances
+- Likely more endpoints for submitting/canceling absence requests
+
+### Payments & Deductions (תשלומים וניכויים)
+```
+/Hilannetv2/ng/personal-file/payments-and-deductions
+```
+
+### Personal Details (פרטים אישיים)
+```
+/Hilannetv2/PersonalFile/PersonalDetails.aspx?moduleId=1
+```
+
+### Tasks (משימות לטיפולי)
+```
+/Hilannetv2/Management/TasksOfEmployee.aspx
+```
+
+### File Management (ניהול קבצים)
+```
+/Hilannetv2/ng/management/files-management/general
+```
+
+### Meals Report (דיווח ארוחות)
+```
+/Hilannetv2/Attendance/HMealsReport.aspx
+```
+
+---
+
+## Reports (read-only, via repAttendanceviewerGeneric.aspx)
+
+All at: `/Hilannetv2/Reports/repAttendanceviewerGeneric.aspx?reportName=`
+
+| reportName | Hebrew | Description |
+|------------|--------|-------------|
+| `AbsenceReportNEW` | דיווחי נוכחות היעדרות | Absence reports |
+| `AllReportNEW` | נוכחות והיעדרות מרוכז | Combined attendance & absence |
+| `MissingReportNEW` | דיווחי נוכחות חסרים | Missing attendance reports |
+| `ErrorsReportNEW` | דיווחים שגויים | Error reports |
+| `VerifyMissingReportNEW` | דיווחים לא מאושרים | Unapproved reports |
+| `ManualReportingReportNEW` | יומן תיקונים | Correction log |
+| `ManualReportingTotalNEW` | יומן תיקונים מסוכם | Summarized correction log |
+| `AttendanceStatusReportNew2` | סטטוס נוכחות | Attendance status |
+| `CalculateAttendanceData908NEW` | נוכחות מחושבים חודשי | Monthly calculated |
+| `CalculateAttendanceData918NEW` | נוכחות מחושבים יומי | Daily calculated |
+| `Manager215ReportNEW1` | העדרויות | Absences |
+| `ManagerApprovalNEW` | דוח עובדים ומאשרים | Employee & approver report |
+| `MealsReportNEW` | דוח ארוחות ברמת עובד | Employee meals report |
+| `DelegatorReportNEW` | דוח האצלות סמכות | Delegation report |
+| `HREmplAddressNEW` | אלפון עובדים | Employee phonebook |
+| `HREmplBirthDate` | ימי הולדת | Birthdays |
+| `HREmplRank&mode=2` | מצבת עובדים | Employee roster |
+
+### Regulation Reports:
+| reportName | Description |
+|------------|-------------|
+| `RegulationVacationNEW` | Consecutive vacation exceptions |
+| `RegulationExceptionalWeeklyHoursNew` | Weekly hours exceptions |
+| `RegulationExceptionalDailyHoursNEW` | Daily hours exceptions |
+| `RegulationWorkingHoursOfRestNEW` | Working during weekly rest |
+| `RegulationBreakBetweenShiftsNEW` | Break between shifts |
+| `RegulationExceptionalNightHoursNEW` | Night work |
+| `RegulationTrackingWeeklyHoursNEW` | Weekly hours tracking |
+
+---
+
+## Excluded (yearly/one-time forms)
+- Form 101: `/Hilannetv2/ng/form-101/personal-details`
+- Form 106: `/Hilannetv2/ng/personal-file/form-106`
+- Loan report: `/Hilannetv2/Reports/RepCalculated.aspx?reportName=LEV_AlvaaStatus`
