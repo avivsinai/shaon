@@ -153,6 +153,7 @@ async fn core_traits_are_usable_from_library_consumers() {
     let change = AttendanceChange {
         date: month,
         attendance_type_code: Some("0".to_string()),
+        use_default_attendance_type: false,
         entry_time: Some("09:00".to_string()),
         exit_time: Some("18:00".to_string()),
         comment: None,

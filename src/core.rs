@@ -55,6 +55,7 @@ pub struct MonthCalendar {
 pub struct AttendanceChange {
     pub date: NaiveDate,
     pub attendance_type_code: Option<String>,
+    pub use_default_attendance_type: bool,
     pub entry_time: Option<String>,
     pub exit_time: Option<String>,
     pub comment: Option<String>,
@@ -262,6 +263,7 @@ impl From<crate::attendance::AttendanceSubmit> for AttendanceChange {
         Self {
             date: value.date,
             attendance_type_code: value.attendance_type_code,
+            use_default_attendance_type: value.default_work_day,
             entry_time: value.entry_time,
             exit_time: value.exit_time,
             comment: value.comment,
