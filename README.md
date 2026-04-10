@@ -178,8 +178,7 @@ Notes:
 
 - `subdomain` is the part before `.hilan.co.il`
 - Run `hilan auth` to store the password in the OS keychain
-- `hilan auth --migrate` moves a legacy plaintext password from config into the keychain
-- Legacy config/state under `~/.config/hilan` and, on macOS, `~/Library/Application Support/com.hilan.hilan` are migrated automatically into `~/.hilan`
+- `hilan auth --migrate` moves a plaintext password from config into the keychain
 - CAPTCHA is not bypassed; if Hilan asks for one, solve it in the browser first
 
 ## Architecture
