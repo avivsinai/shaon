@@ -1,0 +1,11 @@
+# Gitleaks configuration for hilan
+# https://github.com/gitleaks/gitleaks
+
+title = "hilan gitleaks config"
+
+[allowlist]
+  description = "Global allowlist"
+  paths = [
+    '''tests/fixtures/.*''',
+    '''PROTOCOL\.md''',
+  ]
