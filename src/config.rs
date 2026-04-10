@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -46,7 +45,7 @@ impl fmt::Debug for Config {
 }
 
 impl Config {
-    /// Load config from `~/.config/hilan/config.toml`.
+    /// Load config from `~/.hilan/config.toml`.
     pub fn load() -> Result<Self> {
         let path = config_path();
         if !path.exists() {
@@ -147,11 +146,10 @@ impl Config {
     }
 }
 
-/// Returns the config directory: `~/.config/hilan/`
+/// Returns the config directory: `~/.hilan/`
 pub fn config_dir() -> PathBuf {
-    ProjectDirs::from("com", "hilan", "hilan")
-        .map(|p| p.config_dir().to_path_buf())
-        .unwrap_or_else(|| dirs_fallback().join("hilan"))
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".hilan")
 }
 
 /// Returns `~/.config/hilan/{subdomain}/` for per-org state (cookies, ontology cache).
@@ -162,11 +160,6 @@ pub fn subdomain_dir(subdomain: &str) -> PathBuf {
 
 fn config_path() -> PathBuf {
     config_dir().join("config.toml")
-}
-
-fn dirs_fallback() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("hilan")
 }
 
 /// Warn if config file is group/world readable (Unix only).
