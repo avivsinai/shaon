@@ -10,14 +10,18 @@
    ```
 3. Build:
    ```bash
-   cargo build
+   cargo build -p hilan
    ```
 4. Run the checks:
    ```bash
    cargo fmt --all -- --check
-   cargo clippy --all-targets -- -D warnings
-   cargo test --all-targets
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace --all-targets
    ```
+
+The repo is a Cargo workspace. `crates/hr-core` holds the provider-agnostic
+surface, `crates/provider-hilan` contains the Hilan implementation, and the
+root `hilan` package is the compatibility facade plus binary entrypoint.
 
 ## Commit Conventions
 
@@ -50,8 +54,8 @@ Keep the subject line under 72 characters. Use the body for context on *why*, no
 3. Ensure all checks pass locally:
    ```bash
    cargo fmt --all -- --check
-   cargo clippy --all-targets -- -D warnings
-   cargo test --all-targets
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace --all-targets
    ```
 4. Push and open a PR against `main`.
 5. PRs require passing CI before merge.
