@@ -5,4 +5,5 @@ pub mod config;
 pub mod core;
 pub mod mcp;
 pub mod ontology;
+pub mod provider;
 pub mod reports;
