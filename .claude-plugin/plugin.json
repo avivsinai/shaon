@@ -1,7 +1,7 @@
 {
   "name": "hilan",
-  "version": "0.3.0",
-  "description": "Rust CLI and Claude Code skill for Hilan (חילן) / Hilanet attendance, reports, payslips, and salary lookup.",
+  "version": "1.0.0",
+  "description": "Rust CLI and Claude Code skill for Hilan / Hilanet attendance, reports, payslips, and salary lookup. Includes MCP server mode.",
   "author": {
     "name": "Aviv Sinai",
     "email": "aviv.s@taboola.com"
@@ -15,6 +15,11 @@
       "file": "skills/hilan/SKILL.md"
     }
   ],
+  "mcp": {
+    "command": "plugins/hilan/scripts/run.sh",
+    "args": ["serve"],
+    "transport": "stdio"
+  },
   "keywords": [
     "hilan",
     "hilanet",
@@ -22,6 +27,7 @@
     "presence",
     "payslip",
     "hr",
-    "automation"
+    "automation",
+    "mcp"
   ]
 }
