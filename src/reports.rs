@@ -47,22 +47,10 @@ pub async fn fetch_table_from_url(client: &mut HilanClient, url: &str) -> Result
         format!("{}{}", client.base_url, url)
     };
 
-    let resp = client
-        .client
-        .get(&url)
-        .send()
+    let html = client
+        .get_text(&url)
         .await
-        .with_context(|| format!("GET {url}"))?;
-
-    let status = resp.status();
-    let html = resp
-        .text()
-        .await
-        .with_context(|| format!("read body for {url}"))?;
-
-    if !status.is_success() {
-        anyhow::bail!("{url} returned HTTP {status}");
-    }
+        .with_context(|| format!("fetch report from {url}"))?;
 
     parse_report_html(&html).with_context(|| format!("parse HTML table from {url}"))
 }
