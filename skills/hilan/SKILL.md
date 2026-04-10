@@ -79,6 +79,7 @@ All write commands default to **dry-run preview**. You must pass `--execute` to 
 | `absences` | Absence type symbols | `hilan absences` |
 | `payslip` | Download payslip PDF | `hilan payslip --month 2026-03` |
 | `salary` | Salary summary with trend | `hilan salary --months 3` |
+| `overview` | Full context in one call (identity, summary, types, errors, suggestions) | `hilan overview --json` |
 
 ### Write commands (require `--execute` for live submission)
 
@@ -88,15 +89,17 @@ All write commands default to **dry-run preview**. You must pass `--execute` to 
 | `clock-out` | Report exit for today | `hilan clock-out --execute` |
 | `fill` | Fill attendance for date range | `hilan fill --from 2026-04-01 --to 2026-04-05 --type "Work from Home" --execute` |
 | `fix` | Fix an error day | `hilan fix 2026-04-08 --type "regular" --hours 09:00-18:00 --execute` |
+| `auto-fill` | Batch fill all missing days in a month | `hilan auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00 --execute` |
 
-### Setup commands
+### Setup & utility commands
 
 | Command | What it does |
 |---------|-------------|
 | `auth` | Set up keychain credentials (interactive) |
 | `auth --migrate` | Move plaintext password to keychain |
-| `sync-types` | Refresh attendance type cache |
+| `sync-types` | Refresh attendance type cache (auto-syncs with 24h TTL) |
 | `completions` | Generate shell completions (`bash`, `zsh`, `fish`) |
+| `serve` | Start MCP server (stdio transport) for AI agent integration |
 
 ### Available report names
 
@@ -110,7 +113,22 @@ Use these with `hilan report <name>`:
 
 ## Common agent workflows
 
-### Check attendance and fill missing days
+### Fastest path: overview + auto-fill (recommended)
+
+```bash
+# 1. Get full context in one call — identity, summary, types, errors, suggestions
+hilan overview --json
+
+# 2. Auto-fill all missing days (preview first)
+hilan auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00
+
+# 3. Execute if preview looks right
+hilan auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00 --execute
+```
+
+`auto-fill` has a safety cap of 10 days by default. Use `--max-days N` to override.
+
+### Manual path: status + fill
 
 ```bash
 # 1. See current month status
@@ -119,10 +137,7 @@ hilan status --month 2026-04 --json
 # 2. Check for errors
 hilan errors --month 2026-04 --json
 
-# 3. Fill missing days (preview first)
-hilan fill --from 2026-04-07 --to 2026-04-11 --type "regular" --hours 09:00-18:00
-
-# 4. Execute if preview looks right
+# 3. Fill specific days
 hilan fill --from 2026-04-07 --to 2026-04-11 --type "regular" --hours 09:00-18:00 --execute
 ```
 
