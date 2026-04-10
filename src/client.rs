@@ -140,9 +140,6 @@ impl HilanClient {
     /// validation to the first authenticated request. Otherwise perform a real
     /// credential login immediately.
     pub async fn ensure_authenticated(&mut self) -> Result<()> {
-        if self.org_id.is_none() {
-            self.fetch_org_id().await?;
-        }
         if !self.session_candidate {
             self.login().await?;
         }
@@ -278,8 +275,14 @@ impl HilanClient {
         output: Option<&Path>,
     ) -> Result<PayslipDownload> {
         self.ensure_authenticated().await?;
+        if self.org_id.is_none() {
+            self.fetch_org_id().await?;
+        }
 
-        let org_id = self.org_id.as_ref().context("missing org ID after login")?;
+        let org_id = self
+            .org_id
+            .as_ref()
+            .context("missing org ID after fetching payslip context")?;
 
         let url = format!(
             "{}/Hilannetv2/PersonalFile/PdfPaySlip.aspx?Date=01/{:02}/{:04}&UserId={}{}",
@@ -1095,28 +1098,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_authenticated_reuses_candidate_session_without_login_post() {
+    async fn ensure_authenticated_reuses_candidate_session_without_network() {
         let _env_guard = crate::config::test_env_lock().lock().unwrap();
         let home = test_home_dir("candidate-session");
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("HOME", &home);
 
-        let (base_url, handle, recorded) = spawn_test_server(vec![http_response(
-            r#"<script>window.bootstrap={"OrgId":"1234"}</script>"#,
-            "text/html; charset=utf-8",
-        )]);
-
-        let mut client = build_test_client(base_url, true);
+        let mut client = build_test_client("http://127.0.0.1:1".to_string(), true);
         client.ensure_authenticated().await.unwrap();
 
-        assert_eq!(client.org_id.as_deref(), Some("1234"));
-        let requests = recorded.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, "GET");
-        assert_eq!(requests[0].path, "/");
-
-        drop(requests);
-        handle.join().unwrap();
+        assert!(client.org_id.is_none());
         std::fs::remove_dir_all(home).unwrap();
     }
 
