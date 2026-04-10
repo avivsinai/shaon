@@ -360,12 +360,18 @@ mod tests {
 
         let tasks = parse_error_tasks(text).expect("parse tasks GetData fixture");
 
-        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].date, NaiveDate::from_ymd_opt(2026, 4, 9).unwrap());
         assert_eq!(
             tasks[0].report_id,
             "00000000-0000-0000-0000-000000000000"
         );
         assert_eq!(tasks[0].error_type, "63");
+        assert_eq!(tasks[1].date, NaiveDate::from_ymd_opt(2026, 4, 6).unwrap());
+        assert_eq!(
+            tasks[1].report_id,
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(tasks[1].error_type, "63");
     }
 }
