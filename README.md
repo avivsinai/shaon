@@ -43,7 +43,7 @@ For the protocol map and reverse-engineering notes, see [PROTOCOL.md](PROTOCOL.m
 ```bash
 git clone https://github.com/avivsinai/hilan.git
 cd hilan
-cargo build --release
+cargo build -p hilan --release
 # Binary is at target/release/hilan
 ```
 
@@ -185,14 +185,16 @@ Notes:
 
 ```
 hilan/
+├── crates/
+│   ├── hr-core/         # Provider-agnostic DTOs, traits, and use cases
+│   ├── provider-hilan/  # Hilan transport, parsing, config, adapter, fixtures
+│   ├── hilan-cli/       # CLI frontend
+│   └── hilan-mcp/       # MCP frontend
 ├── src/
-│   ├── main.rs          # CLI surface (clap)
-│   ├── client.rs        # HTTP/session layer
-│   ├── attendance.rs    # Calendar parsing and write replay
-│   ├── ontology.rs      # Attendance-type caching
-│   ├── reports.rs       # Report table parsing
-│   ├── config.rs        # TOML config loading
-│   └── api.rs           # ASMX JSON endpoint helpers
+│   ├── lib.rs           # Compatibility facade re-exporting the workspace crates
+│   └── main.rs          # Thin binary entrypoint
+├── examples/
+│   └── overview.rs      # Library consumer example
 ├── scripts/
 │   └── run.sh           # Build-and-cache wrapper
 ├── skills/
@@ -200,13 +202,16 @@ hilan/
 ├── .claude-plugin/
 │   └── plugin.json      # Claude Code plugin manifest
 └── tests/
-    └── fixtures/        # Parser and protocol test data
+    └── *.rs             # Facade and use-case integration tests
 ```
 
-The client layer manages a `reqwest` cookie jar with session state.
-Attendance writes replay the full ASP.NET WebForms postback cycle
-(ViewState, EventValidation, button targets). Read flows use a mix of
-HTML scraping (`scraper`) and direct ASMX JSON POSTs.
+`hr-core` is the stable boundary for downstream code. `provider-hilan`
+implements that contract over Hilan's ASP.NET and ASMX surfaces. The root
+`hilan` crate intentionally stays as a convenience facade so existing
+`hilan::core`, `hilan::provider`, `hilan::use_cases`, and `hilan::mcp`
+imports keep working while the internal workspace stays modular.
+
+For a minimal consumer, see [`examples/overview.rs`](examples/overview.rs).
 
 ## Safety Model
 
