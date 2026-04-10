@@ -1,0 +1,38 @@
+{
+  "id": "ctl00_mp_RG_Days_460627_2026_04_cellOf_Symbol.SymbolId_EmployeeReports_row_0_0",
+  "ov": "0",
+  "select_value": "0",
+  "selectedIndex": 0,
+  "options": [
+    {
+      "index": 0,
+      "value": "0",
+      "text": "work day",
+      "selected": true
+    },
+    {
+      "index": 1,
+      "value": "481",
+      "text": "vacation",
+      "selected": false
+    },
+    {
+      "index": 2,
+      "value": "483",
+      "text": "sickness",
+      "selected": false
+    },
+    {
+      "index": 3,
+      "value": "485",
+      "text": "family sickness",
+      "selected": false
+    },
+    {
+      "index": 4,
+      "value": "120",
+      "text": "work from home",
+      "selected": false
+    }
+  ]
+}
