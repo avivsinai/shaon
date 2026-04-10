@@ -3,7 +3,7 @@ use chrono::{Datelike, Local, NaiveDate};
 use regex::Regex;
 use reqwest::cookie::Jar;
 use scraper::{Html, Selector};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,17 +19,20 @@ pub struct HilanClient {
     org_id: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
 pub struct PayslipDownload {
     pub month: NaiveDate,
     pub path: PathBuf,
     pub size_bytes: usize,
 }
 
+#[derive(Debug, Serialize)]
 pub struct SalaryEntry {
     pub month: NaiveDate,
     pub amount: u64,
 }
 
+#[derive(Debug, Serialize)]
 pub struct SalarySummary {
     pub label: String,
     pub entries: Vec<SalaryEntry>,
@@ -148,7 +151,7 @@ impl HilanClient {
             }
         }
 
-        println!(
+        eprintln!(
             "Logged in successfully as {} (org: {})",
             self.config.username, org_id
         );

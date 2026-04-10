@@ -1,10 +1,11 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, NaiveDate};
 use scraper::{Html, Selector};
+use serde::Serialize;
 
 use crate::client::{format_form_fields_for_display, HilanClient};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct CalendarDay {
     pub date: NaiveDate,
     pub day_name: String,
@@ -16,14 +17,14 @@ pub struct CalendarDay {
     pub total_hours: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct MonthCalendar {
     pub month: NaiveDate,
     pub employee_id: String,
     pub days: Vec<CalendarDay>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AttendanceSubmit {
     pub date: NaiveDate,
     pub attendance_type_code: Option<String>,
@@ -36,7 +37,7 @@ pub struct AttendanceSubmit {
     pub default_work_day: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SubmitPreview {
     pub url: String,
     pub button_name: String,

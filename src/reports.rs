@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use scraper::{Html, Selector};
+use serde::Serialize;
 
 use crate::client::HilanClient;
 
@@ -22,6 +23,7 @@ pub const SHEET_URL_PATH: &str = "/Hilannetv2/Attendance/HoursAnalysis.aspx";
 pub const CORRECTIONS_URL_PATH: &str = "/Hilannetv2/Attendance/HoursReportLog.aspx";
 
 /// A parsed HTML table from a Hilan report page.
+#[derive(Debug, Serialize)]
 pub struct ReportTable {
     pub headers: Vec<String>,
     pub rows: Vec<Vec<String>>,
