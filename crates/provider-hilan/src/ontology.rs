@@ -155,23 +155,6 @@ pub fn ontology_path(subdomain: &str) -> std::path::PathBuf {
     crate::config::subdomain_dir(subdomain).join("types.json")
 }
 
-/// Try to load the cached ontology; if present and a type name is given, validate it.
-/// Returns an error if the type is invalid. Returns Ok(()) if no type is given or validation passes.
-#[allow(dead_code)] // retained as a simple validation helper for future call sites
-pub fn validate_type_if_cached(subdomain: &str, type_name: Option<&str>) -> Result<()> {
-    let Some(name) = type_name else {
-        return Ok(());
-    };
-    let path = ontology_path(subdomain);
-    if !path.exists() {
-        // No cache — skip validation (will fail later at the not-implemented gate anyway)
-        return Ok(());
-    }
-    let ontology = OrgOntology::load(&path)?;
-    ontology.validate_type(name)?;
-    Ok(())
-}
-
 /// Sync attendance types from the calendar page dropdown and the absences API.
 ///
 /// 1. GET the calendar page and parse the Symbol.SymbolId `<select>` dropdown

@@ -174,11 +174,11 @@ impl<'a> ProviderWriteOutput<'a> {
             },
             executed: preview.executed,
             summary: &preview.summary,
-            url: preview_debug_field(preview, "url"),
-            button_name: preview_debug_field(preview, "button_name"),
-            button_value: preview_debug_field(preview, "button_value"),
-            employee_id: preview_debug_field(preview, "employee_id"),
-            payload_display: preview_debug_field(preview, "payload_display"),
+            url: preview.debug_field("url"),
+            button_name: preview.debug_field("button_name"),
+            button_value: preview.debug_field("button_value"),
+            employee_id: preview.debug_field("employee_id"),
+            payload_display: preview.debug_field("payload_display"),
         }
     }
 }
@@ -838,31 +838,23 @@ fn print_provider_preview(action: &str, preview: &CoreWritePreview) {
         "DRY RUN"
     };
     println!("{action} [{mode}]");
-    if let Some(url) = preview_debug_field(preview, "url") {
+    if let Some(url) = preview.debug_field("url") {
         println!("Target URL: {url}");
     }
-    if let Some(employee_id) = preview_debug_field(preview, "employee_id") {
+    if let Some(employee_id) = preview.debug_field("employee_id") {
         println!("Employee ID: {employee_id}");
     }
     if let (Some(button_name), Some(button_value)) = (
-        preview_debug_field(preview, "button_name"),
-        preview_debug_field(preview, "button_value"),
+        preview.debug_field("button_name"),
+        preview.debug_field("button_value"),
     ) {
         println!("Button: {button_name} = {button_value}");
     }
-    if let Some(payload_display) = preview_debug_field(preview, "payload_display") {
+    if let Some(payload_display) = preview.debug_field("payload_display") {
         println!("{payload_display}");
     } else {
         println!("{}", preview.summary);
     }
-}
-
-fn preview_debug_field<'a>(preview: &'a CoreWritePreview, key: &str) -> Option<&'a str> {
-    preview
-        .provider_debug
-        .as_ref()
-        .and_then(|debug| debug.get(key))
-        .and_then(serde_json::Value::as_str)
 }
 
 fn current_month_start() -> NaiveDate {

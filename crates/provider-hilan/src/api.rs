@@ -1,6 +1,3 @@
-// Helpers for upcoming attendance features — not yet wired to CLI commands.
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -228,6 +225,7 @@ pub async fn bootstrap(client: &mut HilanClient) -> Result<BootstrapInfo> {
 /// Fetch the pending-tasks count from the home page API.
 ///
 /// Calls `HHomeTasksApiapi.asmx/GetTasksCount`.
+#[allow(dead_code)]
 pub async fn get_tasks_count(client: &mut HilanClient) -> Result<TasksCount> {
     let text: String = client
         .asmx_call("HHomeTasksApiapi", "GetTasksCount")
