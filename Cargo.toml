@@ -35,7 +35,7 @@ schemars = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 urlencoding = "2"
-keyring = "3"
+keyring = { version = "3", features = ["apple-native", "linux-native"] }
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = "1"
 rpassword = "7"
