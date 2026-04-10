@@ -1,0 +1,27 @@
+{
+  "name": "hilan",
+  "version": "0.3.0",
+  "description": "Rust CLI and Claude Code skill for Hilan (חילן) / Hilanet attendance, reports, payslips, and salary lookup.",
+  "author": {
+    "name": "Aviv Sinai",
+    "email": "avivsinai@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/avivsinai/hilan",
+  "repository": "https://github.com/avivsinai/hilan",
+  "license": "MIT",
+  "skills": [
+    {
+      "name": "hilan",
+      "file": "skills/hilan/SKILL.md"
+    }
+  ],
+  "keywords": [
+    "hilan",
+    "hilanet",
+    "attendance",
+    "presence",
+    "payslip",
+    "hr",
+    "automation"
+  ]
+}
