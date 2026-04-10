@@ -25,7 +25,7 @@ Rust CLI for Hilan (חילן) attendance reporting, payslips, and HR automation.
 
 ## Features
 
-- **15 commands** covering attendance, reports, payslips, and salary
+- **19 commands** covering attendance, reports, payslips, salary, and agent workflows
 - **Safe by default** — all write commands require `--execute` to submit
 - **JSON output mode** for scripting and AI agents
 - **OS keychain credential storage** with legacy plaintext migration
@@ -93,25 +93,30 @@ ln -sf "$PWD/scripts/run.sh" ~/bin/hilan
 ## Quick Start
 
 ```bash
-# Verify credentials
+# Set up credentials (stores password in OS keychain)
 hilan auth
 
-# Cache attendance types for symbolic --type values
-hilan sync-types
+# Get full context in one call — identity, status, errors, suggestions
+hilan overview
 
 # Show the current month's attendance status
 hilan status
 
-# Preview a clock-in payload without submitting it
-hilan clock-in
+# Auto-fill all missing days (preview first, then --execute)
+hilan auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00
+hilan auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00 --execute
 
-# Actually submit a clock-in
+# Clock in/out
 hilan clock-in --execute
+hilan clock-out --execute
 
-# Download the previous month's payslip
+# JSON output for scripting
+hilan status --json | jq '.days[] | select(.has_error)'
+
+# Download payslip
 hilan payslip
 
-# Show recent salary totals
+# Show salary summary
 hilan salary --months 3
 ```
 
@@ -144,8 +149,18 @@ hilan salary --months 3
 | `clock-out [--execute]` | Clock out for today |
 | `fill --from DATE --to DATE [--type TYPE] [--hours HH:MM-HH:MM] [--execute]` | Fill attendance for a date range |
 | `fix DATE [--type TYPE] [--hours HH:MM-HH:MM] [--report-id UUID] [--error-type N] [--execute]` | Fix a specific attendance error |
+| `auto-fill [--month YYYY-MM] --type TYPE [--hours HH:MM-HH:MM] [--execute]` | Fill all missing days in a month |
 
 All write commands are **preview-only by default**. Pass `--execute` to submit.
+`fill` and `auto-fill` skip weekends (Fri/Sat) unless `--include-weekends` is passed.
+
+### Agent Workflows
+
+| Command | Description |
+|---------|-------------|
+| `overview [--month YYYY-MM]` | Full context in one call: identity, summary, types, errors, suggestions |
+| `serve` | Start MCP server (stdio transport) for AI agent integration |
+| `completions <SHELL>` | Generate shell completions (bash, zsh, fish) |
 
 ### Payroll
 
@@ -166,19 +181,21 @@ All write commands are **preview-only by default**. Pass `--execute` to submit.
 Example:
 
 ```toml
-subdomain = "YOUR_COMPANY"
-username = "YOUR_ID_NUMBER"
+subdomain = "mycompany"         # the part before .hilan.co.il
+username = "27"                  # your employee ID
 
 # optional
 payslip_folder = "/Users/you/Downloads/payslips"
 payslip_format = "%Y-%m.pdf"
 ```
 
+Then run `hilan auth` to store your password in the OS keychain. No plaintext
+passwords are stored on disk.
+
 Notes:
 
-- `subdomain` is the part before `.hilan.co.il`
-- Run `hilan auth` to store the password in the OS keychain
-- `hilan auth --migrate` moves a plaintext password from config into the keychain
+- Session cookies are encrypted at rest (AES-256-GCM with a random key in the keychain)
+- Types auto-sync on first use — `sync-types` is optional for manual refresh
 - CAPTCHA is not bypassed; if Hilan asks for one, solve it in the browser first
 
 ## Architecture
