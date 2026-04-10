@@ -241,6 +241,32 @@ enum Commands {
         verbose: bool,
     },
 
+    /// Automatically fill all missing days in a month (dry-run by default)
+    AutoFill {
+        /// Month to auto-fill (default: current month)
+        #[arg(long)]
+        month: Option<String>,
+
+        /// Attendance type (required unless --hours is provided)
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+
+        /// Hours range (e.g., "09:00-18:00")
+        #[arg(long)]
+        hours: Option<String>,
+
+        /// Include weekends (Fri/Sat) -- skipped by default
+        #[arg(long)]
+        include_weekends: bool,
+
+        /// Safety cap: max days to fill in one run (default: 10)
+        #[arg(long, default_value = "10")]
+        max_days: u32,
+
+        #[command(flatten)]
+        write_mode: WriteMode,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -589,6 +615,73 @@ async fn main() -> Result<()> {
         }
         Commands::Overview { month, verbose } => {
             run_overview(&mut client, &subdomain, month.as_deref(), verbose, json).await?;
+        }
+        Commands::AutoFill {
+            month,
+            r#type,
+            hours,
+            include_weekends,
+            max_days,
+            write_mode,
+        } => {
+            let execute = write_mode.should_execute();
+            let month_date = parse_month_or_current(month.as_deref())?;
+            let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
+
+            // Require --type or --hours — do NOT infer from most-common
+            if r#type.is_none() && hours_range.is_none() {
+                let ont_path = ontology::ontology_path(&subdomain);
+                let mut msg = String::from("auto-fill requires --type or --hours.\n");
+                if ont_path.exists() {
+                    let ontology = ontology::OrgOntology::load(&ont_path)?;
+                    msg.push_str("Available attendance types:\n");
+                    for t in &ontology.types {
+                        let en = t
+                            .name_en
+                            .as_deref()
+                            .map(|s| format!(" ({s})"))
+                            .unwrap_or_default();
+                        msg.push_str(&format!("  {} -- {}{}\n", t.code, t.name_he, en));
+                    }
+                } else {
+                    msg.push_str(
+                        "Run `hilan sync-types` to see available types, or pass --type <code>.",
+                    );
+                }
+                bail!("{msg}");
+            }
+
+            client.login().await?;
+
+            // Auto-sync ontology if cache is missing and --type is given
+            if r#type.is_some() && !ontology::ontology_path(&subdomain).exists() {
+                eprintln!("Ontology cache missing -- syncing attendance types...");
+                ontology::sync_from_calendar(&mut client, &subdomain).await?;
+            }
+
+            let cal = attendance::read_calendar(&mut client, month_date).await?;
+            let (type_code, type_display) =
+                attendance::resolve_auto_fill_type(&subdomain, r#type.as_deref())?;
+
+            let result = attendance::auto_fill(
+                &mut client,
+                &cal,
+                attendance::AutoFillOpts {
+                    type_code,
+                    type_display: &type_display,
+                    hours: hours_range.as_ref(),
+                    include_weekends,
+                    execute,
+                    max_days,
+                },
+            )
+            .await?;
+
+            if json {
+                print_json(&result)?;
+            } else {
+                attendance::print_auto_fill(&result);
+            }
         }
         Commands::Completions { .. } => unreachable!("handled above"),
     }
