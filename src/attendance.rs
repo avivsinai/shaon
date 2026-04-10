@@ -131,6 +131,12 @@ pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result
     }
 
     let days = parse_calendar_html(&html, month)?;
+    tracing::debug!(
+        "Parsed {} calendar days for {} (employee {})",
+        days.len(),
+        month.format("%Y-%m"),
+        employee_id
+    );
 
     Ok(MonthCalendar {
         month,
