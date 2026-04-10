@@ -199,14 +199,9 @@ impl HilanClient {
             self.config.username
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("GET payslip PDF")?;
-
-        let bytes = resp.bytes().await.context("read payslip response body")?;
+        let bytes = self
+            .send_bytes_with_retry(&format!("GET payslip {}", month.format("%Y-%m")), &url)
+            .await?;
         if !bytes.starts_with(b"%PDF") {
             bail!(
                 "Payslip download did not return a PDF for {}. The session may be invalid or the payslip is unavailable.",
@@ -307,16 +302,9 @@ impl HilanClient {
             date_picker_state.to_string(),
         ));
 
-        let resp = self
-            .client
-            .post(url)
-            .form(&form)
-            .send()
-            .await
-            .context("POST salary summary request")?;
-
-        let status = resp.status();
-        let text = resp.text().await.context("read salary summary body")?;
+        let (status, text) = self
+            .send_with_retry("POST salary summary", true, |c| c.post(url).form(&form))
+            .await?;
         if !status.is_success() {
             bail!("Salary summary request failed with HTTP {}", status);
         }
@@ -325,15 +313,9 @@ impl HilanClient {
     }
 
     async fn fetch_salary_hidden_fields(&mut self, url: &str) -> Result<Vec<(String, String)>> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .context("GET salary summary page")?;
-
-        let status = resp.status();
-        let text = resp.text().await.context("read salary summary page body")?;
+        let (status, text) = self
+            .send_with_retry("GET salary summary page", true, |c| c.get(url))
+            .await?;
         if !status.is_success() {
             bail!("Salary summary page request failed with HTTP {}", status);
         }
@@ -396,14 +378,19 @@ impl HilanClient {
         })
     }
 
-    /// Send an HTTP request with retry on transient errors and
+    /// Send an HTTP request with optional retry on transient errors and
     /// automatic re-authentication on session expiry.
     ///
     /// `build_request` is called on each attempt to produce a fresh `RequestBuilder`
     /// (since `send()` consumes it). Returns `(StatusCode, response_body)`.
+    ///
+    /// When `retryable` is `false` the request is sent exactly once — no retries
+    /// on transient errors and no re-login on session expiry. Use `false` for
+    /// state-changing write submissions that must not be replayed.
     async fn send_with_retry(
         &mut self,
         label: &str,
+        retryable: bool,
         build_request: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
     ) -> Result<(reqwest::StatusCode, String)> {
         const MAX_RETRIES: u32 = 3;
@@ -415,20 +402,20 @@ impl HilanClient {
                 .with_context(|| label.to_string());
 
             match result {
-                Err(e) if attempt < MAX_RETRIES && is_transient(&e) => {
+                Err(e) if retryable && attempt < MAX_RETRIES && is_transient(&e) => {
                     attempt += 1;
                     retry_backoff(attempt, MAX_RETRIES).await;
                 }
                 Err(e) => return Err(e),
                 Ok(resp) => {
-                    if is_login_redirect(&resp) {
+                    if retryable && is_login_redirect(&resp) && attempt < MAX_RETRIES {
                         self.logged_in = false;
                         self.login().await?;
                         attempt += 1;
                         continue;
                     }
                     let status = resp.status();
-                    if is_transient_status(status) && attempt < MAX_RETRIES {
+                    if retryable && is_transient_status(status) && attempt < MAX_RETRIES {
                         attempt += 1;
                         retry_backoff(attempt, MAX_RETRIES).await;
                         continue;
@@ -443,13 +430,73 @@ impl HilanClient {
         }
     }
 
+    /// GET a URL with retry, returning the response as raw bytes.
+    ///
+    /// Used for binary downloads (e.g. payslip PDFs) that cannot go through
+    /// `send_with_retry` (which reads the body as text).
+    async fn send_bytes_with_retry(&mut self, label: &str, url: &str) -> Result<Vec<u8>> {
+        const MAX_RETRIES: u32 = 3;
+        let mut attempt = 0u32;
+        loop {
+            let result = self
+                .client
+                .get(url)
+                .send()
+                .await
+                .with_context(|| label.to_string());
+
+            match result {
+                Err(e) if attempt < MAX_RETRIES && is_transient(&e) => {
+                    attempt += 1;
+                    retry_backoff(attempt, MAX_RETRIES).await;
+                }
+                Err(e) => return Err(e),
+                Ok(resp) => {
+                    if is_login_redirect(&resp) && attempt < MAX_RETRIES {
+                        self.logged_in = false;
+                        self.login().await?;
+                        attempt += 1;
+                        continue;
+                    }
+                    let status = resp.status();
+                    if is_transient_status(status) && attempt < MAX_RETRIES {
+                        attempt += 1;
+                        retry_backoff(attempt, MAX_RETRIES).await;
+                        continue;
+                    }
+                    if !status.is_success() {
+                        bail!("{label} returned HTTP {status}");
+                    }
+                    let body = resp
+                        .bytes()
+                        .await
+                        .with_context(|| format!("read bytes from {label}"))?;
+                    return Ok(body.to_vec());
+                }
+            }
+        }
+    }
+
+    /// GET a URL and return the response body as text.
+    ///
+    /// Retries on transient errors and re-authenticates on session expiry.
+    pub async fn get_text(&mut self, url: &str) -> Result<String> {
+        let (status, body) = self
+            .send_with_retry(&format!("GET {url}"), true, |c| c.get(url))
+            .await?;
+        if !status.is_success() {
+            bail!("GET {url} returned HTTP {status}");
+        }
+        Ok(body)
+    }
+
     /// GET an .aspx page, parse ALL form fields from `<form id="aspnetForm">`, return (html, fields).
     ///
     /// Retries on transient errors and re-authenticates on session expiry.
     #[allow(dead_code)] // shared attendance/WebForms helper
     pub async fn get_aspx_form(&mut self, url: &str) -> Result<(String, HashMap<String, String>)> {
         let (status, html) = self
-            .send_with_retry(&format!("GET {url}"), |c| c.get(url))
+            .send_with_retry(&format!("GET {url}"), true, |c| c.get(url))
             .await?;
         if !status.is_success() {
             bail!("GET {url} returned HTTP {status}");
@@ -462,7 +509,10 @@ impl HilanClient {
     ///
     /// Starts with `base_fields`, applies `overrides` (replacing existing keys or adding new ones),
     /// then adds the submit button field. POSTs as `application/x-www-form-urlencoded`.
-    /// Retries on transient errors and re-authenticates on session expiry.
+    ///
+    /// When `retryable` is `true`, retries on transient errors and re-authenticates
+    /// on session expiry. Pass `false` for state-changing submissions (e.g. attendance
+    /// writes) that must fire exactly once.
     #[allow(dead_code)] // shared attendance/WebForms helper
     pub async fn post_aspx_form(
         &mut self,
@@ -471,6 +521,7 @@ impl HilanClient {
         overrides: &[(&str, &str)],
         button_name: &str,
         button_value: &str,
+        retryable: bool,
     ) -> Result<String> {
         let mut merged: HashMap<String, String> = base_fields.clone();
         for &(key, value) in overrides {
@@ -480,7 +531,9 @@ impl HilanClient {
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
 
         let (status, text) = self
-            .send_with_retry(&format!("POST {url}"), |c| c.post(url).form(&form_pairs))
+            .send_with_retry(&format!("POST {url}"), retryable, |c| {
+                c.post(url).form(&form_pairs)
+            })
             .await?;
         if !status.is_success() {
             bail!("POST {url} returned HTTP {status}");
@@ -493,6 +546,7 @@ impl HilanClient {
     /// `POST /Hilannetv2/Services/Public/WS/{service}.asmx/{method}`
     /// with `Content-Type: application/json` and body `{}`.
     /// Retries on transient errors and re-authenticates on session expiry.
+    /// These are read-only JSON-RPC calls, safe to retry.
     pub async fn asmx_call<T: serde::de::DeserializeOwned>(
         &mut self,
         service: &str,
@@ -504,7 +558,7 @@ impl HilanClient {
         );
 
         let (status, text) = self
-            .send_with_retry(&format!("POST {url}"), |c| {
+            .send_with_retry(&format!("POST {url}"), true, |c| {
                 c.post(&url)
                     .header("Content-Type", "application/json")
                     .body("{}")
