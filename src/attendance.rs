@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, NaiveDate};
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde::Serialize;
 
 use crate::client::{format_form_fields_for_display, HilanClient};
@@ -182,13 +182,7 @@ fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>>
     for row in &rows {
         let cells: Vec<String> = row
             .select(&td_sel)
-            .map(|cell| {
-                cell.text()
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
+            .map(|cell| cell_visible_text(&cell))
             .collect();
 
         // Skip rows with too few cells or header rows
@@ -359,7 +353,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
     let img_sel = Selector::parse("img").unwrap();
 
     for td in document.select(&all_td) {
-        let td_text: String = td.text().map(str::trim).collect::<Vec<_>>().join(" ");
+        let td_text = cell_visible_text(&td);
         let td_text = td_text.trim();
 
         if td_text.is_empty() {
@@ -459,6 +453,67 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
     }
 
     days
+}
+
+/// Extract visible text from a table cell, respecting `<select>` elements.
+///
+/// When a `<select>` is present, only the text of the selected `<option>`
+/// (or the first `<option>` if none is marked selected) is included —
+/// not the text of every option in the dropdown.
+fn cell_visible_text(cell: &ElementRef<'_>) -> String {
+    let select_sel = Selector::parse("select").unwrap();
+    let option_sel = Selector::parse("option[selected]").unwrap();
+    let option_any_sel = Selector::parse("option").unwrap();
+
+    // If the cell contains no <select>, use the normal text extraction.
+    let has_select = cell.select(&select_sel).next().is_some();
+    if !has_select {
+        return cell
+            .text()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+
+    // Walk child nodes: for <select> elements, pick only the selected option text;
+    // for everything else, collect text normally.
+    let mut parts: Vec<String> = Vec::new();
+    for child in cell.children() {
+        if let Some(el) = ElementRef::wrap(child) {
+            if el.value().name() == "select" {
+                // Pick selected <option>, fall back to first <option>
+                let selected_text = el
+                    .select(&option_sel)
+                    .next()
+                    .or_else(|| el.select(&option_any_sel).next())
+                    .map(|opt| opt.text().collect::<String>());
+                if let Some(t) = selected_text {
+                    let t = t.trim().to_string();
+                    if !t.is_empty() {
+                        parts.push(t);
+                    }
+                }
+            } else {
+                // Non-select element: collect all text
+                let t: String = el
+                    .text()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !t.is_empty() {
+                    parts.push(t);
+                }
+            }
+        } else if let Some(text_node) = child.value().as_text() {
+            let t = text_node.trim();
+            if !t.is_empty() {
+                parts.push(t.to_string());
+            }
+        }
+    }
+    parts.join(" ")
 }
 
 /// Extract a day number (1-31) from a string that starts with digits.
