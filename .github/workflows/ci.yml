@@ -19,6 +19,23 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  skills:
+    name: Skill Symlinks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Validate symlinks
+        run: |
+          test -L .claude/skills/hilan
+          test -L .agents/skills/hilan
+          test "$(readlink .claude/skills/hilan)" = "../../skills/hilan"
+          test "$(readlink .agents/skills/hilan)" = "../../skills/hilan"
+          diff -rq skills/hilan .claude/skills/hilan
+          diff -rq skills/hilan .agents/skills/hilan
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
