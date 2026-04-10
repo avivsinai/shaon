@@ -393,26 +393,10 @@ impl HilanClient {
         months: u32,
     ) -> Result<SalarySummary> {
         let requested = months as usize;
-        if data.table_data.len() < requested {
-            bail!(
-                "salary ASMX response has {} rows, need {requested}",
-                data.table_data.len()
-            );
-        }
-
         let selected_months = parse_selected_salary_months(data)?;
-        if selected_months.len() != data.table_data.len() {
-            bail!(
-                "salary ASMX response has {} selected months but {} table rows",
-                selected_months.len(),
-                data.table_data.len()
-            );
-        }
-        if selected_months.len() < requested {
-            bail!(
-                "salary ASMX response has {} selected months, need {requested}",
-                selected_months.len()
-            );
+        let available = selected_months.len().min(data.table_data.len());
+        if available == 0 {
+            bail!("salary ASMX response did not include any salary rows");
         }
 
         let label = data
@@ -422,8 +406,9 @@ impl HilanClient {
             .map(|column| column.display_name.clone())
             .unwrap_or_else(|| "Bruto".to_string());
 
-        let months_slice = &selected_months[selected_months.len() - requested..];
-        let rows_slice = &data.table_data[data.table_data.len() - requested..];
+        let count = requested.min(available);
+        let months_slice = &selected_months[selected_months.len() - count..];
+        let rows_slice = &data.table_data[data.table_data.len() - count..];
         let entries: Vec<SalaryEntry> = months_slice
             .iter()
             .cloned()
@@ -1205,6 +1190,28 @@ mod tests {
         );
         assert_eq!(summary.entries[0].amount, 12_345);
         assert!(summary.percent_diff.is_none());
+    }
+
+    #[test]
+    fn salary_summary_from_initial_data_accepts_partial_month_data() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/asmx/salary-GetInitialData-full.json"
+        ));
+        let data = crate::api::parse_salary_initial_data(text).expect("parse salary fixture");
+
+        let client = build_test_client("http://127.0.0.1:1".to_string(), true);
+        let summary = client
+            .salary_summary_from_initial_data(&data, 2)
+            .expect("build salary summary from partial data");
+
+        assert_eq!(summary.label, "ברוטו");
+        assert_eq!(summary.entries.len(), 1);
+        assert_eq!(
+            summary.entries[0].month,
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+        );
+        assert_eq!(summary.entries[0].amount, 12_345);
     }
 
     // -- urlencode -------------------------------------------------------------
