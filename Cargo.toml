@@ -22,6 +22,7 @@ regex = "1"
 scraper = "0.22"
 directories = "6"
 chrono = { version = "0.4", features = ["serde"] }
+urlencoding = "2"
 
 [profile.release]
 lto = "thin"
