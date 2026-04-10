@@ -331,16 +331,30 @@ impl HilanClient {
             self.base_url
         );
 
+        // Fast path: POST with just the date picker state (no ViewState).
         let direct_html = self.post_salary_page(&url, &date_picker_state, &[]).await?;
         let html = if contains_salary_rows(&direct_html)? {
             direct_html
         } else {
-            let hidden_fields = self.fetch_salary_hidden_fields(&url).await?;
-            if hidden_fields.is_empty() {
-                bail!("Salary summary page did not return a salary table or ASP.NET hidden fields");
+            // Full form replay: GET the page first to obtain ViewState and all
+            // form fields, then POST with the complete form plus date range.
+            let (get_html, fields) = self
+                .get_aspx_form(&url)
+                .await
+                .context("GET salary summary page for form fields")?;
+
+            // If the initial GET already contains salary rows for the default
+            // period, try that before a second POST.
+            if contains_salary_rows(&get_html)? {
+                get_html
+            } else {
+                let all_fields: Vec<(String, String)> = fields.into_iter().collect();
+                if all_fields.is_empty() {
+                    bail!("Salary summary page did not return a salary table or ASP.NET hidden fields");
+                }
+                self.post_salary_page(&url, &date_picker_state, &all_fields)
+                    .await?
             }
-            self.post_salary_page(&url, &date_picker_state, &hidden_fields)
-                .await?
         };
 
         self.parse_salary_summary(&html, month_range)
@@ -395,35 +409,6 @@ impl HilanClient {
         }
 
         Ok(text)
-    }
-
-    async fn fetch_salary_hidden_fields(&mut self, url: &str) -> Result<Vec<(String, String)>> {
-        tracing::debug!("GET (salary hidden fields) {}", url);
-        let (status, text) = self
-            .send_with_retry("GET salary summary page", true, |c| c.get(url))
-            .await?;
-        if !status.is_success() {
-            bail!("Salary summary page request failed with HTTP {}", status);
-        }
-
-        let document = Html::parse_document(&text);
-        let selector = Selector::parse(r#"input[type="hidden"]"#).unwrap();
-
-        let hidden_fields = document
-            .select(&selector)
-            .filter_map(|input| {
-                let name = input.value().attr("name")?;
-                if !name.starts_with("__") {
-                    return None;
-                }
-                Some((
-                    name.to_string(),
-                    input.value().attr("value").unwrap_or("").to_string(),
-                ))
-            })
-            .collect();
-
-        Ok(hidden_fields)
     }
 
     fn parse_salary_summary(&self, html: &str, months: Vec<NaiveDate>) -> Result<SalarySummary> {
