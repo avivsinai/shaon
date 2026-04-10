@@ -12,9 +12,8 @@ const KEYRING_SERVICE: &str = "hilan-cli";
 /// must be ad-hoc codesigned (`codesign -s - -f <binary>`) for silent keychain
 /// access on macOS — otherwise the OS will prompt on every access.
 fn keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
-    let user = format!("{}/{}", subdomain, username);
-    keyring::Entry::new_with_target(KEYRING_SERVICE, &user, username)
-        .context("create keyring entry")
+    let account = format!("{}/{}", subdomain, username);
+    keyring::Entry::new(KEYRING_SERVICE, &account).context("create keyring entry")
 }
 
 #[derive(Clone, Deserialize, Serialize)]
