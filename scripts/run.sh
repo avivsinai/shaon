@@ -97,7 +97,7 @@ if needs_rebuild "$BIN_PATH"; then
     # Ad-hoc codesign on macOS so the keyring crate can access the Keychain
     # without triggering a system prompt on every invocation.
     if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1; then
-        codesign -s - -f "$BIN_PATH.tmp" 2>/dev/null || true
+        codesign -s - -f --identifier "com.avivsinai.hilan" "$BIN_PATH.tmp" 2>/dev/null || true
     fi
 
     mv "$BIN_PATH.tmp" "$BIN_PATH"
