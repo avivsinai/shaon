@@ -60,7 +60,7 @@ fn parse_aspx_form_fields_extracts_hidden_inputs() {
     );
     assert_eq!(fields.get("username").map(String::as_str), Some("test"));
     // Submit buttons should NOT be captured
-    assert!(fields.get("btnSubmit").is_none());
+    assert!(!fields.contains_key("btnSubmit"));
 }
 
 /// Verify that select elements are parsed.

@@ -5,3 +5,7 @@ target/
 .idea/
 .vscode/
 *.log
+
+# Agent Message Queue
+.agent-mail/
+.amqrc
