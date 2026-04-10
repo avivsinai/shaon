@@ -159,7 +159,7 @@ pub fn validate_type_if_cached(subdomain: &str, type_name: Option<&str>) -> Resu
 /// 1. GET the calendar page and parse the Symbol.SymbolId `<select>` dropdown
 /// 2. Fetch Hebrew names from the absences API
 /// 3. Merge into an `OrgOntology` and save to cache
-pub async fn sync_from_calendar(client: &HilanClient, subdomain: &str) -> Result<OrgOntology> {
+pub async fn sync_from_calendar(client: &mut HilanClient, subdomain: &str) -> Result<OrgOntology> {
     let url = format!(
         "{}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true",
         client.base_url

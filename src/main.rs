@@ -243,7 +243,7 @@ async fn main() -> Result<()> {
         }
         Commands::SyncTypes => {
             client.login().await?;
-            let ont = ontology::sync_from_calendar(&client, &subdomain).await?;
+            let ont = ontology::sync_from_calendar(&mut client, &subdomain).await?;
             if json {
                 print_json(&ont)?;
             } else {
@@ -361,7 +361,7 @@ async fn main() -> Result<()> {
         Commands::Errors { month } => {
             client.login().await?;
             let month = parse_month_or_current(month.as_deref())?;
-            let cal = attendance::read_calendar(&client, month).await?;
+            let cal = attendance::read_calendar(&mut client, month).await?;
             if json {
                 print_json(&cal)?;
             } else {
@@ -413,7 +413,7 @@ async fn main() -> Result<()> {
         Commands::Status { month } => {
             client.login().await?;
             let month = parse_month_or_current(month.as_deref())?;
-            let cal = attendance::read_calendar(&client, month).await?;
+            let cal = attendance::read_calendar(&mut client, month).await?;
             if json {
                 print_json(&cal)?;
             } else {
@@ -456,7 +456,7 @@ async fn main() -> Result<()> {
         }
         Commands::Report { name } => {
             client.login().await?;
-            let table = reports::fetch_report(&client, &name).await?;
+            let table = reports::fetch_report(&mut client, &name).await?;
             if json {
                 print_json(&table)?;
             } else {
@@ -465,7 +465,7 @@ async fn main() -> Result<()> {
         }
         Commands::Absences => {
             client.login().await?;
-            let data = api::get_absences_initial(&client).await?;
+            let data = api::get_absences_initial(&mut client).await?;
             if json {
                 print_json(&data)?;
             } else if data.symbols.is_empty() {
@@ -485,7 +485,7 @@ async fn main() -> Result<()> {
         }
         Commands::Sheet => {
             client.login().await?;
-            let table = reports::fetch_table_from_url(&client, reports::SHEET_URL_PATH).await?;
+            let table = reports::fetch_table_from_url(&mut client, reports::SHEET_URL_PATH).await?;
             if json {
                 print_json(&table)?;
             } else {
@@ -495,7 +495,7 @@ async fn main() -> Result<()> {
         Commands::Corrections => {
             client.login().await?;
             let table =
-                reports::fetch_table_from_url(&client, reports::CORRECTIONS_URL_PATH).await?;
+                reports::fetch_table_from_url(&mut client, reports::CORRECTIONS_URL_PATH).await?;
             if json {
                 print_json(&table)?;
             } else {

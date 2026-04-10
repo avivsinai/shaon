@@ -81,7 +81,7 @@ struct PrincipalUserRaw {
 ///
 /// Calls `HEmployeeStripApiapi.asmx/GetData` and extracts identity fields
 /// from the `PrincipalUser` object in the response.
-pub async fn bootstrap(client: &HilanClient) -> Result<BootstrapInfo> {
+pub async fn bootstrap(client: &mut HilanClient) -> Result<BootstrapInfo> {
     // Hilan ASMX endpoints wrap their payload in { "d": ... }
     let wrapper: AsmxWrapper<GetDataResponse> = client
         .asmx_call("HEmployeeStripApiapi", "GetData")
@@ -109,7 +109,7 @@ pub async fn bootstrap(client: &HilanClient) -> Result<BootstrapInfo> {
 /// Fetch the pending-tasks count from the home page API.
 ///
 /// Calls `HHomeTasksApiapi.asmx/GetTasksCount`.
-pub async fn get_tasks_count(client: &HilanClient) -> Result<TasksCount> {
+pub async fn get_tasks_count(client: &mut HilanClient) -> Result<TasksCount> {
     let wrapper: AsmxWrapper<TasksCount> = client
         .asmx_call("HHomeTasksApiapi", "GetTasksCount")
         .await
@@ -121,7 +121,7 @@ pub async fn get_tasks_count(client: &HilanClient) -> Result<TasksCount> {
 /// Fetch absences initial data (symbols / attendance-type list).
 ///
 /// Calls `HAbsencesApiapi.asmx/GetInitialData`.
-pub async fn get_absences_initial(client: &HilanClient) -> Result<AbsencesInitialData> {
+pub async fn get_absences_initial(client: &mut HilanClient) -> Result<AbsencesInitialData> {
     let wrapper: AsmxWrapper<AbsencesInitialData> = client
         .asmx_call("HAbsencesApiapi", "GetInitialData")
         .await

@@ -48,7 +48,7 @@ pub struct SubmitPreview {
 }
 
 /// Fetch and parse the attendance calendar for a given month.
-pub async fn read_calendar(client: &HilanClient, month: NaiveDate) -> Result<MonthCalendar> {
+pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result<MonthCalendar> {
     let url = format!(
         "{}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true",
         client.base_url
