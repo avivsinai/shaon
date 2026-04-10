@@ -10,27 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.5.0] - 2026-04-10
 ### Added
 
-- **Workspace architecture**: split into `hr-core` (generic traits/DTOs), `provider-hilan`, `hilan-cli`, `hilan-mcp`
+- **Workspace architecture**: split into `hr-core` (generic traits/DTOs), `provider-hilan`, `shaon-cli`, `shaon-mcp`
 - **`AttendanceProvider` trait**: generic interface for HR providers with optional `SalaryProvider`, `PayslipProvider`, `ReportProvider`, `AbsenceProvider`
 - **`overview` command**: full agent context in one call (identity, summary, types, errors, suggestions)
 - **`auto-fill` command**: batch fill missing days with safety cap (`--max-days`)
-- **MCP server** (`hilan serve`): 12 tools via rmcp 1.3 stdio transport
+- **MCP server** (`shaon serve`): 12 tools via rmcp 1.3 stdio transport
 - **Encrypted session cookies**: AES-256-GCM with random DEK in OS keychain
 - **Session reuse**: persistent cookies across CLI invocations (no re-login)
 - **Salary via ASMX API**: direct JSON parsing instead of HTML scraping
 - **Fix param discovery**: auto-extract `reportId`/`errorType` from tasks API
 - **Lazy ontology sync**: types auto-refresh with 24h TTL
-- **Shell completions**: `hilan completions bash|zsh|fish`
+- **Shell completions**: `shaon completions bash|zsh|fish`
 - **Version stamping**: dev builds show git hash (`0.5.0+abc1234`)
 - **Tracing**: `--verbose`/`--quiet` flags with structured logging to stderr
 
 ### Changed
 
-- Config path: `~/.hilan/` (simple dotfile, no platform-specific paths)
+- Config path: `~/.shaon/` (simple dotfile, no platform-specific paths)
 - Calendar parser: reads `ov` attribute for attendance type (not dropdown text)
 - ASMX API: parse raw JSON directly (no `{"d": ...}` wrapper assumption)
 - Salary: uses `PaymentsAndDeductionsApiapi/GetInitialData` JSON API
-- Codesign: stable identifier `com.avivsinai.hilan` for keychain persistence
+- Codesign: stable identifier `com.avivsinai.shaon` for keychain persistence
 - Release script: PR-based workflow (creates branch + PR, not direct push)
 
 ### Fixed
@@ -80,6 +80,6 @@ Initial public release.
 - CI workflow (Ubuntu + macOS, clippy, fmt, test)
 - MIT license
 
-[0.3.0]: https://github.com/avivsinai/hilan/releases/tag/v0.3.0
-[0.4.0]: https://github.com/avivsinai/hilan/releases/tag/v0.4.0
-[Unreleased]: https://github.com/avivsinai/hilan/compare/v0.4.0...HEAD
+[0.3.0]: https://github.com/avivsinai/shaon/releases/tag/v0.3.0
+[0.4.0]: https://github.com/avivsinai/shaon/releases/tag/v0.4.0
+[Unreleased]: https://github.com/avivsinai/shaon/compare/v0.4.0...HEAD

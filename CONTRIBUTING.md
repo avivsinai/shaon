@@ -1,16 +1,16 @@
-# Contributing to hilan
+# Contributing to shaon
 
 ## Development Setup
 
 1. Install [Rust](https://www.rust-lang.org/tools/install) (1.80+).
 2. Clone the repo:
    ```bash
-   git clone https://github.com/avivsinai/hilan.git
-   cd hilan
+   git clone https://github.com/avivsinai/shaon.git
+   cd shaon
    ```
 3. Build:
    ```bash
-   cargo build -p hilan
+   cargo build -p shaon
    ```
 4. Run the checks:
    ```bash
@@ -21,7 +21,7 @@
 
 The repo is a Cargo workspace. `crates/hr-core` holds the provider-agnostic
 surface, `crates/provider-hilan` contains the Hilan implementation, and the
-root `hilan` package is the compatibility facade plus binary entrypoint.
+root `shaon` package is the compatibility facade plus binary entrypoint.
 
 ## Commit Conventions
 
@@ -78,4 +78,4 @@ Open a GitHub issue with:
 - What you expected
 - What happened instead
 - Steps to reproduce
-- CLI version (`hilan --version`)
+- CLI version (`shaon --version`)

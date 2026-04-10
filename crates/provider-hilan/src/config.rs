@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
-const KEYRING_SERVICE: &str = "hilan-cli";
-const SESSION_KEYRING_SERVICE: &str = "hilan-session-key";
+const KEYRING_SERVICE: &str = "shaon-cli";
+const SESSION_KEYRING_SERVICE: &str = "shaon-session-key";
 const SESSION_KEY_LEN: usize = 32;
 
 /// Build a keyring entry with a stable target so macOS Keychain associates the
@@ -54,7 +54,7 @@ impl fmt::Debug for Config {
 }
 
 impl Config {
-    /// Load config from `~/.hilan/config.toml`.
+    /// Load config from `~/.shaon/config.toml`.
     pub fn load() -> Result<Self> {
         let path = config_path();
         if !path.exists() {
@@ -72,7 +72,7 @@ impl Config {
         if config.password.is_some() {
             eprintln!(
                 "warning: password found in config file (plaintext). \
-                 Run `hilan auth --migrate` to move it to the OS keychain."
+                 Run `shaon auth --migrate` to move it to the OS keychain."
             );
         }
 
@@ -82,11 +82,11 @@ impl Config {
     /// Retrieve the password: keychain first, then legacy config file fallback.
     pub fn get_password(&self) -> Result<SecretString> {
         // 1. Try environment variable first (CI, scripts, testing)
-        if let Ok(pw) = std::env::var("HILAN_PASSWORD") {
+        if let Ok(pw) = std::env::var("SHAON_PASSWORD") {
             if !pw.is_empty() {
                 return Ok(SecretString::from(pw));
             }
-            tracing::debug!("ignoring empty HILAN_PASSWORD");
+            tracing::debug!("ignoring empty SHAON_PASSWORD");
         }
 
         // 2. Try OS keychain
@@ -108,13 +108,13 @@ impl Config {
             Some(pw) => {
                 eprintln!(
                     "warning: using plaintext password from config. \
-                     Run `hilan auth --migrate` to move it to the OS keychain."
+                     Run `shaon auth --migrate` to move it to the OS keychain."
                 );
                 Ok(SecretString::from(pw.clone()))
             }
             None => anyhow::bail!(
-                "No password found. Set HILAN_PASSWORD env var, run `hilan auth`, \
-                 or add password to ~/.hilan/config.toml"
+                "No password found. Set SHAON_PASSWORD env var, run `shaon auth`, \
+                 or add password to ~/.shaon/config.toml"
             ),
         }
     }
@@ -151,7 +151,7 @@ impl Config {
             Ok(_) => anyhow::bail!("keychain stored a different value than expected"),
             Err(e) => anyhow::bail!(
                 "keychain write appeared to succeed but read-back failed: {e}. \
-                 Try setting HILAN_PASSWORD env var or adding password to ~/.hilan/config.toml"
+                 Try setting SHAON_PASSWORD env var or adding password to ~/.shaon/config.toml"
             ),
         }
     }
@@ -206,13 +206,13 @@ impl Config {
     }
 }
 
-/// Returns the config directory: `~/.hilan/`
+/// Returns the config directory: `~/.shaon/`
 pub fn config_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".hilan")
+    PathBuf::from(home).join(".shaon")
 }
 
-/// Returns `~/.hilan/{subdomain}/` for per-org state (cookies, ontology cache).
+/// Returns `~/.shaon/{subdomain}/` for per-org state (cookies, ontology cache).
 pub fn subdomain_dir(subdomain: &str) -> PathBuf {
     config_dir().join(subdomain)
 }
@@ -269,7 +269,7 @@ fn set_file_permissions_600(_path: &Path) {
 }
 
 fn print_setup_instructions(path: &Path) {
-    eprintln!("hilan: config file not found.");
+    eprintln!("shaon: config file not found.");
     eprintln!();
     eprintln!("Create {} with:", path.display());
     eprintln!();
@@ -278,7 +278,7 @@ fn print_setup_instructions(path: &Path) {
         "  username  = \"YOUR_EMPLOYEE_ID\"   # e.g. \"27\" — the ID you use to log in to Hilan"
     );
     eprintln!();
-    eprintln!("Then run `hilan auth` to store your password in the OS keychain.");
+    eprintln!("Then run `shaon auth` to store your password in the OS keychain.");
     eprintln!();
     eprintln!("Optional fields:");
     eprintln!("  payslip_folder = \"/path/to/payslips\"");
@@ -318,14 +318,14 @@ mod tests {
     struct EnvGuard {
         home: Option<OsString>,
         xdg_config_home: Option<OsString>,
-        hilan_password: Option<OsString>,
+        shaon_password: Option<OsString>,
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             restore_env("HOME", self.home.as_deref());
             restore_env("XDG_CONFIG_HOME", self.xdg_config_home.as_deref());
-            restore_env("HILAN_PASSWORD", self.hilan_password.as_deref());
+            restore_env("SHAON_PASSWORD", self.shaon_password.as_deref());
         }
     }
 
@@ -340,7 +340,7 @@ mod tests {
         EnvGuard {
             home: std::env::var_os("HOME"),
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
-            hilan_password: std::env::var_os("HILAN_PASSWORD"),
+            shaon_password: std::env::var_os("SHAON_PASSWORD"),
         }
     }
 
@@ -408,11 +408,11 @@ mod tests {
     }
 
     #[test]
-    fn get_password_ignores_empty_hilan_password() {
+    fn get_password_ignores_empty_shaon_password() {
         let _env_guard = test_env_lock().lock().unwrap();
         let _saved_env = preserve_env();
 
-        std::env::set_var("HILAN_PASSWORD", "");
+        std::env::set_var("SHAON_PASSWORD", "");
 
         let config = Config {
             subdomain: format!("acme-{}", std::process::id()),

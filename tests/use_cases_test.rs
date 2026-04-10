@@ -1,9 +1,9 @@
 use chrono::NaiveDate;
-use hilan::core::{
+use shaon::core::{
     AttendanceChange, AttendanceProvider, AttendanceType, FixTarget, MonthCalendar, ProviderError,
     WriteMode, WritePreview,
 };
-use hilan::use_cases::{
+use shaon::use_cases::{
     auto_fill, build_overview, fill_range, fix_day as run_fix_day, AutoFillOptions,
     FillRangeOptions, SuggestedActionPlan,
 };
@@ -13,8 +13,8 @@ struct OverviewProvider;
 
 #[async_trait::async_trait]
 impl AttendanceProvider for OverviewProvider {
-    async fn identity(&mut self) -> Result<hilan::core::UserIdentity, ProviderError> {
-        Ok(hilan::core::UserIdentity {
+    async fn identity(&mut self) -> Result<shaon::core::UserIdentity, ProviderError> {
+        Ok(shaon::core::UserIdentity {
             user_id: "u-1".to_string(),
             employee_id: "e-1".to_string(),
             display_name: "Overview User".to_string(),
@@ -27,7 +27,7 @@ impl AttendanceProvider for OverviewProvider {
             month,
             employee_id: "e-1".to_string(),
             days: vec![
-                hilan::core::CalendarDay {
+                shaon::core::CalendarDay {
                     date: NaiveDate::from_ymd_opt(2026, 4, 6).unwrap(),
                     day_name: "Sun".to_string(),
                     has_error: true,
@@ -37,7 +37,7 @@ impl AttendanceProvider for OverviewProvider {
                     attendance_type: Some("work day".to_string()),
                     total_hours: None,
                 },
-                hilan::core::CalendarDay {
+                shaon::core::CalendarDay {
                     date: NaiveDate::from_ymd_opt(2026, 4, 7).unwrap(),
                     day_name: "Mon".to_string(),
                     has_error: false,
@@ -47,7 +47,7 @@ impl AttendanceProvider for OverviewProvider {
                     attendance_type: None,
                     total_hours: None,
                 },
-                hilan::core::CalendarDay {
+                shaon::core::CalendarDay {
                     date: NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
                     day_name: "Tue".to_string(),
                     has_error: false,
@@ -156,8 +156,8 @@ impl RecordingProvider {
 
 #[async_trait::async_trait]
 impl AttendanceProvider for RecordingProvider {
-    async fn identity(&mut self) -> Result<hilan::core::UserIdentity, ProviderError> {
-        Ok(hilan::core::UserIdentity {
+    async fn identity(&mut self) -> Result<shaon::core::UserIdentity, ProviderError> {
+        Ok(shaon::core::UserIdentity {
             user_id: "u-2".to_string(),
             employee_id: self.calendar.employee_id.clone(),
             display_name: "Recorder".to_string(),
@@ -294,7 +294,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
         month,
         employee_id: "e-2".to_string(),
         days: vec![
-            hilan::core::CalendarDay {
+            shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 6).unwrap(),
                 day_name: "Sun".to_string(),
                 has_error: false,
@@ -304,7 +304,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 attendance_type: None,
                 total_hours: None,
             },
-            hilan::core::CalendarDay {
+            shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 7).unwrap(),
                 day_name: "Mon".to_string(),
                 has_error: true,
@@ -314,7 +314,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 attendance_type: None,
                 total_hours: None,
             },
-            hilan::core::CalendarDay {
+            shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
                 day_name: "Tue".to_string(),
                 has_error: false,
@@ -324,7 +324,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 attendance_type: None,
                 total_hours: None,
             },
-            hilan::core::CalendarDay {
+            shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
                 day_name: "Fri".to_string(),
                 has_error: false,
@@ -334,7 +334,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 attendance_type: None,
                 total_hours: None,
             },
-            hilan::core::CalendarDay {
+            shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 13).unwrap(),
                 day_name: "Mon".to_string(),
                 has_error: false,

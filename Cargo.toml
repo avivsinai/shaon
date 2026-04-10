@@ -3,8 +3,8 @@ members = [
     ".",
     "crates/hr-core",
     "crates/provider-hilan",
-    "crates/hilan-cli",
-    "crates/hilan-mcp",
+    "crates/shaon-cli",
+    "crates/shaon-mcp",
 ]
 
 [workspace.package]
@@ -12,7 +12,7 @@ version = "0.5.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
-repository = "https://github.com/avivsinai/hilan"
+repository = "https://github.com/avivsinai/shaon"
 authors = ["Aviv Sinai <aviv.s@taboola.com>"]
 
 [workspace.dependencies]
@@ -56,7 +56,7 @@ too_many_arguments = "allow"
 similar_names = "allow"
 
 [package]
-name = "hilan"
+name = "shaon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -64,23 +64,23 @@ description = "CLI for Hilan attendance reporting and payslip retrieval"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-keywords = ["hilan", "hilanet", "attendance", "hr", "cli"]
+keywords = ["shaon", "attendance", "hr", "cli"]
 categories = ["command-line-utilities"]
 
 [lib]
-name = "hilan"
+name = "shaon"
 path = "src/lib.rs"
 
 [[bin]]
-name = "hilan"
+name = "shaon"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
 hr-core = { path = "crates/hr-core" }
-hilan-cli = { path = "crates/hilan-cli" }
-hilan-mcp = { path = "crates/hilan-mcp" }
+shaon-cli = { path = "crates/shaon-cli" }
+shaon-mcp = { path = "crates/shaon-mcp" }
 provider-hilan = { path = "crates/provider-hilan" }
 tokio.workspace = true
 

@@ -37,24 +37,24 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build -p hilan --release --locked --target ${{ matrix.target }}
+        run: cargo build -p shaon --release --locked --target ${{ matrix.target }}
 
       - name: Codesign macOS binary
         if: runner.os == 'macOS'
-        run: codesign --force --sign - --identifier io.github.avivsinai.hilan target/${{ matrix.target }}/release/hilan
+        run: codesign --force --sign - --identifier com.avivsinai.shaon target/${{ matrix.target }}/release/shaon
 
       - name: Package binary
         shell: bash
         run: |
-          BINARY=target/${{ matrix.target }}/release/hilan
-          ARCHIVE=hilan-${{ matrix.target }}.tar.gz
+          BINARY=target/${{ matrix.target }}/release/shaon
+          ARCHIVE=shaon-${{ matrix.target }}.tar.gz
           tar czf "$ARCHIVE" -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: hilan-${{ matrix.target }}
+          name: shaon-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
 
   release:
@@ -111,47 +111,47 @@ jobs:
           fi
 
           VERSION="${TAG#v}"
-          SHA_ARM_MAC="$(sha256sum artifacts/hilan-aarch64-apple-darwin.tar.gz | awk '{print $1}')"
-          SHA_X86_MAC="$(sha256sum artifacts/hilan-x86_64-apple-darwin.tar.gz | awk '{print $1}')"
-          SHA_X86_LINUX="$(sha256sum artifacts/hilan-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')"
+          SHA_ARM_MAC="$(sha256sum artifacts/shaon-aarch64-apple-darwin.tar.gz | awk '{print $1}')"
+          SHA_X86_MAC="$(sha256sum artifacts/shaon-x86_64-apple-darwin.tar.gz | awk '{print $1}')"
+          SHA_X86_LINUX="$(sha256sum artifacts/shaon-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')"
 
           git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/avivsinai/homebrew-tap.git" tap
 
-          cat > tap/Formula/hilan.rb <<RUBY
+          cat > tap/Formula/shaon.rb <<RUBY
           # typed: false
           # frozen_string_literal: true
 
-          class Hilan < Formula
+          class Shaon < Formula
             desc "Automate Hilanet attendance, payslips, salary, and reports"
-            homepage "https://github.com/avivsinai/hilan"
+            homepage "https://github.com/avivsinai/shaon"
             version "${VERSION}"
             license "MIT"
 
             on_macos do
               if Hardware::CPU.intel?
-                url "https://github.com/avivsinai/hilan/releases/download/${TAG}/hilan-x86_64-apple-darwin.tar.gz"
+                url "https://github.com/avivsinai/shaon/releases/download/${TAG}/shaon-x86_64-apple-darwin.tar.gz"
                 sha256 "${SHA_X86_MAC}"
               end
               if Hardware::CPU.arm?
-                url "https://github.com/avivsinai/hilan/releases/download/${TAG}/hilan-aarch64-apple-darwin.tar.gz"
+                url "https://github.com/avivsinai/shaon/releases/download/${TAG}/shaon-aarch64-apple-darwin.tar.gz"
                 sha256 "${SHA_ARM_MAC}"
               end
             end
 
             on_linux do
               if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-                url "https://github.com/avivsinai/hilan/releases/download/${TAG}/hilan-x86_64-unknown-linux-gnu.tar.gz"
+                url "https://github.com/avivsinai/shaon/releases/download/${TAG}/shaon-x86_64-unknown-linux-gnu.tar.gz"
                 sha256 "${SHA_X86_LINUX}"
               end
             end
 
             def install
-              bin.install "hilan"
-              generate_completions_from_executable(bin/"hilan", "completions")
+              bin.install "shaon"
+              generate_completions_from_executable(bin/"shaon", "completions")
             end
 
             test do
-              system "#{bin}/hilan", "--version"
+              system "#{bin}/shaon", "--version"
             end
           end
           RUBY
@@ -159,10 +159,10 @@ jobs:
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/hilan.rb
+          git add Formula/shaon.rb
           if git diff --cached --quiet; then
             echo "Formula already up to date."
             exit 0
           fi
-          git commit -m "hilan ${TAG}"
+          git commit -m "shaon ${TAG}"
           git push

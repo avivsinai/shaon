@@ -35,7 +35,7 @@ fn main() {
         format!("{version}+{git_hash}")
     };
 
-    println!("cargo::rustc-env=HILAN_LONG_VERSION={long_version}");
+    println!("cargo::rustc-env=SHAON_LONG_VERSION={long_version}");
 
     if let Some(head_path) = git_output(&["rev-parse", "--git-path", "HEAD"]) {
         println!("cargo::rerun-if-changed={head_path}");

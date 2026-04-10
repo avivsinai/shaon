@@ -893,7 +893,7 @@ pub fn resolve_auto_fill_type(
     }
 
     anyhow::bail!(
-        "Attendance type '{name}' needs cached ontology. Run `hilan sync-types` first or pass a numeric code."
+        "Attendance type '{name}' needs cached ontology. Run `shaon sync-types` first or pass a numeric code."
     );
 }
 

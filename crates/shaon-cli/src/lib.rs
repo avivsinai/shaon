@@ -76,10 +76,10 @@ const CORRECTIONS_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursReportLog.asp
 
 #[derive(Parser)]
 #[command(
-    name = "hilan",
+    name = "shaon",
     version,
-        long_version = option_env!("HILAN_LONG_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
-    about = "Hilan attendance & payslip CLI"
+        long_version = option_env!("SHAON_LONG_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+    about = "Shaon attendance & payslip CLI"
 )]
 struct Cli {
     /// Enable verbose debug output
@@ -378,7 +378,7 @@ pub async fn run() -> Result<()> {
     // Handle completions before config loading — no credentials needed.
     if let Commands::Completions { shell } = cli.command {
         let mut cmd = Cli::command();
-        clap_complete::generate(shell, &mut cmd, "hilan", &mut std::io::stdout());
+        clap_complete::generate(shell, &mut cmd, "shaon", &mut std::io::stdout());
         return Ok(());
     }
 
@@ -709,7 +709,7 @@ pub async fn run() -> Result<()> {
                     Ok(help) => msg.push_str(&help),
                     Err(_) => {
                         msg.push_str(
-                            "Use `hilan types` to inspect available types, or pass --type <code>.",
+                            "Use `shaon types` to inspect available types, or pass --type <code>.",
                         );
                     }
                 }
@@ -756,7 +756,7 @@ pub async fn run() -> Result<()> {
 }
 
 async fn run_mcp_server() -> Result<()> {
-    hilan_mcp::serve_stdio().await
+    shaon_mcp::serve_stdio().await
 }
 
 fn parse_month_or_previous(month: Option<&str>) -> Result<NaiveDate> {
@@ -1046,13 +1046,13 @@ fn print_overview_human(ctx: &OverviewResponse) {
             let cmd_hint = match action.kind.as_str() {
                 "fix_errors" => {
                     let m = action.params["month"].as_str().unwrap_or("?");
-                    format!("hilan errors --month {m}")
+                    format!("shaon errors --month {m}")
                 }
                 "fill_missing" => {
                     let from = action.params["from"].as_str().unwrap_or("?");
                     let to = action.params["to"].as_str().unwrap_or("?");
                     format!(
-                        "hilan fill --from {from} --to {to} --type <type> --hours <HH:MM-HH:MM>"
+                        "shaon fill --from {from} --to {to} --type <type> --hours <HH:MM-HH:MM>"
                     )
                 }
                 _ => format!("{}: {}", action.kind, action.reason),

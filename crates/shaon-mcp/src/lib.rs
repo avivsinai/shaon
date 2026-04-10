@@ -113,17 +113,17 @@ pub struct OverviewParam {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct HilanMcpServer {
+pub struct ShaonMcpServer {
     tool_router: ToolRouter<Self>,
 }
 
-impl Default for HilanMcpServer {
+impl Default for ShaonMcpServer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HilanMcpServer {
+impl ShaonMcpServer {
     pub fn new() -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -134,7 +134,7 @@ impl HilanMcpServer {
 pub async fn serve_stdio() -> Result<()> {
     use rmcp::ServiceExt;
 
-    let server = HilanMcpServer::new();
+    let server = ShaonMcpServer::new();
     let transport = rmcp::transport::io::stdio();
     server.serve(transport).await?.waiting().await?;
     Ok(())
@@ -271,11 +271,11 @@ fn fix_params_json(target: &FixTarget) -> Option<serde_json::Value> {
 // ---------------------------------------------------------------------------
 
 #[tool_router]
-impl HilanMcpServer {
+impl ShaonMcpServer {
     #[tool(
         description = "Get attendance calendar for a month. Returns daily entries with entry/exit times, types, and error status."
     )]
-    async fn hilan_status(&self, Parameters(req): Parameters<MonthParam>) -> String {
+    async fn shaon_status(&self, Parameters(req): Parameters<MonthParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let month = parse_month(&req.month)?;
@@ -311,7 +311,7 @@ impl HilanMcpServer {
     }
 
     #[tool(description = "Get attendance errors for a month. Returns only days with errors.")]
-    async fn hilan_errors(&self, Parameters(req): Parameters<MonthParam>) -> String {
+    async fn shaon_errors(&self, Parameters(req): Parameters<MonthParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let month = parse_month(&req.month)?;
@@ -344,7 +344,7 @@ impl HilanMcpServer {
     }
 
     #[tool(description = "List available attendance types from the provider cache or live sync.")]
-    async fn hilan_types(&self) -> String {
+    async fn shaon_types(&self) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let subdomain = provider.client().config().subdomain.clone();
@@ -370,7 +370,7 @@ impl HilanMcpServer {
     #[tool(
         description = "Clock in for today. Defaults to dry-run preview unless execute is true. CAUTION: write operation."
     )]
-    async fn hilan_clock_in(&self, Parameters(req): Parameters<ClockParam>) -> String {
+    async fn shaon_clock_in(&self, Parameters(req): Parameters<ClockParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let preview = provider
@@ -398,7 +398,7 @@ impl HilanMcpServer {
     #[tool(
         description = "Clock out for today. Defaults to dry-run preview unless execute is true. CAUTION: write operation."
     )]
-    async fn hilan_clock_out(&self, Parameters(req): Parameters<ClockParam>) -> String {
+    async fn shaon_clock_out(&self, Parameters(req): Parameters<ClockParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let preview = provider
@@ -426,7 +426,7 @@ impl HilanMcpServer {
     #[tool(
         description = "Fill attendance for a date range. Defaults to dry-run preview. Skips weekends (Fri/Sat). CAUTION: write operation."
     )]
-    async fn hilan_fill(&self, Parameters(req): Parameters<FillParam>) -> String {
+    async fn shaon_fill(&self, Parameters(req): Parameters<FillParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let execute = req.execute.unwrap_or(false);
@@ -490,7 +490,7 @@ impl HilanMcpServer {
     #[tool(
         description = "Automatically fill all missing days in a month. Defaults to dry-run preview. Skips weekends. CAUTION: write operation."
     )]
-    async fn hilan_auto_fill(&self, Parameters(req): Parameters<AutoFillParam>) -> String {
+    async fn shaon_auto_fill(&self, Parameters(req): Parameters<AutoFillParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let execute = req.execute.unwrap_or(false);
@@ -543,7 +543,7 @@ impl HilanMcpServer {
     }
 
     #[tool(description = "Get salary summary for recent months.")]
-    async fn hilan_salary(&self, Parameters(req): Parameters<SalaryParam>) -> String {
+    async fn shaon_salary(&self, Parameters(req): Parameters<SalaryParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let summary = provider
@@ -572,7 +572,7 @@ impl HilanMcpServer {
     }
 
     #[tool(description = "Show the attendance timesheet (hours analysis).")]
-    async fn hilan_sheet(&self) -> String {
+    async fn shaon_sheet(&self) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let table = provider
@@ -590,7 +590,7 @@ impl HilanMcpServer {
     }
 
     #[tool(description = "Show the attendance correction log (manual reporting history).")]
-    async fn hilan_corrections(&self) -> String {
+    async fn shaon_corrections(&self) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let table = provider
@@ -608,7 +608,7 @@ impl HilanMcpServer {
     }
 
     #[tool(description = "Show absences initial data (attendance symbols and display names).")]
-    async fn hilan_absences(&self) -> String {
+    async fn shaon_absences(&self) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let symbols = use_cases::load_absence_symbols(&mut provider)
@@ -637,7 +637,7 @@ impl HilanMcpServer {
     #[tool(
         description = "Get overview for a month: identity, summary, errors, missing days, and suggested actions."
     )]
-    async fn hilan_overview(&self, Parameters(req): Parameters<OverviewParam>) -> String {
+    async fn shaon_overview(&self, Parameters(req): Parameters<OverviewParam>) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
             let month = parse_month_or_current(req.month.as_deref())?;
@@ -746,10 +746,10 @@ impl HilanMcpServer {
 }
 
 #[tool_handler]
-impl ServerHandler for HilanMcpServer {
+impl ServerHandler for ShaonMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Hilan attendance & payslip server. \
+            "Shaon attendance & payslip server. \
                  Read tools return JSON data. \
                  Write tools (clock_in, clock_out, fill, auto_fill) default to dry-run; \
                  set execute=true to submit.",

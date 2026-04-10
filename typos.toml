@@ -1,7 +1,6 @@
 [default.extend-words]
 # Hebrew transliterations and domain-specific terms
-hilan = "hilan"
-hilanet = "hilanet"
+shaon = "shaon"
 orgid = "orgid"
 aspx = "aspx"
 asmx = "asmx"
