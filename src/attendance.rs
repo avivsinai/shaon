@@ -741,7 +741,7 @@ async fn replay_submit(
     button_value: &str,
     execute: bool,
 ) -> Result<SubmitPreview> {
-    client.login().await?;
+    client.ensure_authenticated().await?;
 
     let (_html, base_fields) = client
         .get_aspx_form(url)
