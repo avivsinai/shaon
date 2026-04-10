@@ -5,6 +5,31 @@ use serde::Serialize;
 
 use crate::client::{format_form_fields_for_display, HilanClient};
 
+/// Keywords that indicate an attendance type in calendar cells.
+///
+/// Shared between `try_parse_day_row` and `parse_calendar_grid` to
+/// avoid drift between the two code paths.
+pub(crate) const TYPE_KEYWORDS: &[&str] = &[
+    "work day",
+    "work from home",
+    "vacation",
+    "sickness",
+    "d off",
+    "day off",
+    "reserve",
+    "mourning",
+    "course",
+    "work abroad",
+    "conference",
+    "offsite",
+    "parental",
+    "יום עבודה",
+    "עבודה מהבית",
+    "עבודה",
+    "חופשה",
+    "מחלה",
+];
+
 #[derive(Debug, Serialize)]
 pub struct CalendarDay {
     pub date: NaiveDate,
@@ -274,32 +299,14 @@ fn try_parse_day_row(cells: &[String], month: NaiveDate) -> Option<CalendarDay> 
         }
 
         // Attendance type keywords
-        let type_keywords = [
-            "work day",
-            "work from home",
-            "vacation",
-            "sickness",
-            "d off",
-            "day off",
-            "reserve",
-            "mourning",
-            "course",
-            "work abroad",
-            "conference",
-            "offsite",
-            "parental",
-            "עבודה",
-            "חופשה",
-            "מחלה",
-        ];
-        for kw in &type_keywords {
+        for kw in TYPE_KEYWORDS {
             if trimmed.to_lowercase().contains(kw) && attendance_type.is_none() {
                 attendance_type = Some(trimmed.to_string());
             }
         }
 
         // Hours pattern: H:MM or HH:MM (as total hours, usually after times)
-        if i > 2 && is_hours_pattern(trimmed) && entry_time.is_some() && total_hours.is_none() {
+        if i > 2 && is_time_pattern(trimmed) && entry_time.is_some() && total_hours.is_none() {
             total_hours = Some(trimmed.to_string());
         }
 
@@ -425,27 +432,8 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
         }
 
         // Check for attendance type text
-        let type_keywords = [
-            "work day",
-            "work from home",
-            "vacation",
-            "sickness",
-            "d off",
-            "day off",
-            "reserve",
-            "mourning",
-            "course",
-            "work abroad",
-            "conference",
-            "offsite",
-            "parental",
-            "יום עבודה",
-            "עבודה מהבית",
-            "חופשה",
-            "מחלה",
-        ];
         let lower = td_text.to_lowercase();
-        for kw in &type_keywords {
+        for kw in TYPE_KEYWORDS {
             if lower.contains(kw) {
                 attendance_type = Some(kw.to_string());
                 break;
@@ -505,7 +493,7 @@ fn extract_day_number_strict(s: &str) -> Option<u32> {
 }
 
 /// Check if a string looks like a time (HH:MM).
-fn is_time_pattern(s: &str) -> bool {
+pub fn is_time_pattern(s: &str) -> bool {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 2 {
         return false;
@@ -519,12 +507,6 @@ fn is_time_pattern(s: &str) -> bool {
         Err(_) => return false,
     };
     hour < 24 && minute < 60
-}
-
-/// Check if a string looks like an hours duration (H:MM or HH:MM).
-fn is_hours_pattern(s: &str) -> bool {
-    // Same format as time but could represent duration
-    is_time_pattern(s)
 }
 
 /// Print a formatted attendance calendar table.

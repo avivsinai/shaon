@@ -7,6 +7,7 @@ use zeroize::Zeroize;
 
 use hilan::{api, attendance, client, config, ontology, reports};
 
+use attendance::is_time_pattern;
 use client::HilanClient;
 use config::Config;
 
@@ -692,7 +693,7 @@ async fn main() -> Result<()> {
 fn parse_month_or_previous(month: Option<&str>) -> Result<NaiveDate> {
     match month {
         Some(value) => parse_month(value),
-        None => Ok(previous_month_start()),
+        None => Ok(client::previous_month_start(Local::now().date_naive())),
     }
 }
 
@@ -719,29 +720,11 @@ fn parse_hours_range(value: &str) -> Result<(String, String)> {
         .split_once('-')
         .ok_or_else(|| anyhow::anyhow!("hours must be in HH:MM-HH:MM format"))?;
 
-    if !is_hhmm(entry) || !is_hhmm(exit) {
+    if !is_time_pattern(entry) || !is_time_pattern(exit) {
         bail!("hours must be in HH:MM-HH:MM format");
     }
 
     Ok((entry.to_string(), exit.to_string()))
-}
-
-fn is_hhmm(value: &str) -> bool {
-    let parts: Vec<&str> = value.split(':').collect();
-    if parts.len() != 2 {
-        return false;
-    }
-
-    let hour: u32 = match parts[0].parse() {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let minute: u32 = match parts[1].parse() {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-
-    hour < 24 && minute < 60
 }
 
 async fn resolve_attendance_type_code(
@@ -792,15 +775,6 @@ fn print_submit_preview(action: &str, preview: &attendance::SubmitPreview) {
 
 fn current_month_start() -> NaiveDate {
     Local::now().date_naive().with_day(1).unwrap()
-}
-
-fn previous_month_start() -> NaiveDate {
-    let today = Local::now().date_naive();
-    let this_month = today.with_day(1).unwrap();
-    let total_months = this_month.year() * 12 + this_month.month0() as i32 - 1;
-    let year = total_months.div_euclid(12);
-    let month0 = total_months.rem_euclid(12) as u32;
-    NaiveDate::from_ymd_opt(year, month0 + 1, 1).unwrap()
 }
 
 fn format_number(value: u64) -> String {
