@@ -23,8 +23,7 @@ fn keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
 
 fn session_keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
     let account = format!("{}/{}", subdomain, username);
-    keyring::Entry::new(SESSION_KEYRING_SERVICE, &account)
-        .context("create session keyring entry")
+    keyring::Entry::new(SESSION_KEYRING_SERVICE, &account).context("create session keyring entry")
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -186,9 +185,9 @@ impl Config {
         match entry.get_password() {
             Ok(stored) if stored == encoded => Ok(key),
             Ok(_) => anyhow::bail!("keychain stored a different session key than expected"),
-            Err(e) => anyhow::bail!(
-                "session key write appeared to succeed but read-back failed: {e}"
-            ),
+            Err(e) => {
+                anyhow::bail!("session key write appeared to succeed but read-back failed: {e}")
+            }
         }
     }
 
