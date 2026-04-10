@@ -13,7 +13,7 @@ use std::time::Duration;
 use zeroize::Zeroize;
 
 static ORG_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    // Match OrgId in both plain JSON ("OrgId":"4606") and escaped JSON (\"OrgId\":\"4606\")
+    // Match OrgId in both plain JSON ("OrgId":"1234") and escaped JSON (\"OrgId\":\"1234\")
     Regex::new(r#"\\?"OrgId\\?"[:\s]*\\?"(\d+)\\?""#).expect("invalid OrgId regex")
 });
 
@@ -24,7 +24,7 @@ pub struct HilanClient {
     pub(crate) base_url: String,
     config: Config,
     org_id: Option<String>,
-    logged_in: bool,
+    session_candidate: bool,
     cookie_store: Arc<CookieStoreMutex>,
 }
 
@@ -65,9 +65,7 @@ struct LoginResponse {
 impl HilanClient {
     pub fn new(config: Config) -> Result<Self> {
         // Load persisted cookies if available
-        let cookie_path = crate::config::config_dir()
-            .join(&config.subdomain)
-            .join("cookies.json");
+        let cookie_path = crate::config::subdomain_dir(&config.subdomain).join("cookies.json");
         let cookie_store = if cookie_path.exists() {
             let file = fs::File::open(&cookie_path)
                 .with_context(|| format!("open {}", cookie_path.display()))?;
@@ -121,8 +119,7 @@ impl HilanClient {
             base_url,
             config,
             org_id: None,
-            // Candidate session: will be validated on first request
-            logged_in: has_session_candidate,
+            session_candidate: has_session_candidate,
             cookie_store,
         })
     }
@@ -135,6 +132,21 @@ impl HilanClient {
     /// Mutably borrow the config (e.g. for migration).
     pub fn config_mut(&mut self) -> &mut Config {
         &mut self.config
+    }
+
+    /// Ensure we have the minimum state required for authenticated requests.
+    ///
+    /// If persisted cookies exist, reuse them as a candidate session and defer
+    /// validation to the first authenticated request. Otherwise perform a real
+    /// credential login immediately.
+    pub async fn ensure_authenticated(&mut self) -> Result<()> {
+        if self.org_id.is_none() {
+            self.fetch_org_id().await?;
+        }
+        if !self.session_candidate {
+            self.login().await?;
+        }
+        Ok(())
     }
 
     /// Fetch the OrgId from the Hilanet homepage.
@@ -161,12 +173,8 @@ impl HilanClient {
         Ok(org_id)
     }
 
-    /// Log in to Hilan. Fetches OrgId first if not already known.
-    /// Subsequent calls are no-ops while the session is alive.
+    /// Log in to Hilan with credentials, even if cached cookies exist.
     pub async fn login(&mut self) -> Result<()> {
-        if self.logged_in {
-            return Ok(());
-        }
         if self.org_id.is_none() {
             self.fetch_org_id().await?;
         }
@@ -225,7 +233,7 @@ impl HilanClient {
             }
         }
 
-        self.logged_in = true;
+        self.session_candidate = true;
         self.save_cookies();
         let masked_user = if self.config.username.len() > 4 {
             format!(
@@ -241,7 +249,7 @@ impl HilanClient {
 
     /// Persist session cookies to disk for reuse across CLI invocations.
     fn save_cookies(&self) {
-        let cookie_dir = crate::config::config_dir().join(&self.config.subdomain);
+        let cookie_dir = crate::config::subdomain_dir(&self.config.subdomain);
         if fs::create_dir_all(&cookie_dir).is_err() {
             return;
         }
@@ -269,7 +277,7 @@ impl HilanClient {
         month: NaiveDate,
         output: Option<&Path>,
     ) -> Result<PayslipDownload> {
-        self.login().await?;
+        self.ensure_authenticated().await?;
 
         let org_id = self.org_id.as_ref().context("missing org ID after login")?;
 
@@ -313,7 +321,7 @@ impl HilanClient {
             bail!("months must be greater than 0");
         }
 
-        self.login().await?;
+        self.ensure_authenticated().await?;
 
         let latest_month = previous_month_start(Local::now().date_naive());
         let oldest_month = shift_month(latest_month, -((months - 1) as i32));
@@ -480,7 +488,7 @@ impl HilanClient {
                 Err(e) => return Err(e),
                 Ok(resp) => {
                     if retryable && is_login_redirect(&resp) && attempt < MAX_RETRIES {
-                        self.logged_in = false;
+                        self.session_candidate = false;
                         self.login().await?;
                         attempt += 1;
                         continue;
@@ -524,7 +532,7 @@ impl HilanClient {
                 Err(e) => return Err(e),
                 Ok(resp) => {
                     if is_login_redirect(&resp) && attempt < MAX_RETRIES {
-                        self.logged_in = false;
+                        self.session_candidate = false;
                         self.login().await?;
                         attempt += 1;
                         continue;
@@ -901,6 +909,128 @@ async fn retry_backoff(attempt: u32, max_retries: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Mutex;
+
+    fn test_home_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hilan-client-tests-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn build_test_client(base_url: String, session_candidate: bool) -> HilanClient {
+        let config = Config {
+            subdomain: "acme".to_string(),
+            username: "12345".to_string(),
+            password: Some("s3cret".to_string()),
+            payslip_folder: None,
+            payslip_format: None,
+        };
+        let cookie_store = Arc::new(CookieStoreMutex::new(cookie_store::CookieStore::default()));
+        let client = reqwest::Client::builder()
+            .cookie_provider(cookie_store.clone())
+            .user_agent(USER_AGENT)
+            .build()
+            .unwrap();
+
+        HilanClient {
+            client,
+            base_url,
+            config,
+            org_id: None,
+            session_candidate,
+            cookie_store,
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordedRequest {
+        method: String,
+        path: String,
+        body: String,
+    }
+
+    fn http_response(body: &str, content_type: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    fn spawn_test_server(
+        responses: Vec<String>,
+    ) -> (
+        String,
+        std::thread::JoinHandle<()>,
+        std::sync::Arc<Mutex<Vec<RecordedRequest>>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let recorded = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let recorded_clone = recorded.clone();
+
+        let handle = std::thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+
+                let mut buffer = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let header_end = loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    assert!(read > 0, "unexpected EOF while reading request");
+                    buffer.extend_from_slice(&chunk[..read]);
+                    if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break pos;
+                    }
+                };
+
+                let header_bytes = &buffer[..header_end];
+                let headers = String::from_utf8_lossy(header_bytes).to_string();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if name.eq_ignore_ascii_case("Content-Length") {
+                            value.trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                let body_start = header_end + 4;
+                while buffer.len() < body_start + content_length {
+                    let read = stream.read(&mut chunk).unwrap();
+                    assert!(read > 0, "unexpected EOF while reading request body");
+                    buffer.extend_from_slice(&chunk[..read]);
+                }
+
+                let request_line = headers.lines().next().unwrap_or_default();
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_string();
+                let path = parts.next().unwrap_or_default().to_string();
+                let body = String::from_utf8_lossy(&buffer[body_start..body_start + content_length])
+                    .to_string();
+
+                recorded_clone.lock().unwrap().push(RecordedRequest {
+                    method,
+                    path,
+                    body,
+                });
+
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        (format!("http://{addr}"), handle, recorded)
+    }
 
     // -- percent_diff ----------------------------------------------------------
 
@@ -962,5 +1092,70 @@ mod tests {
             encoded.starts_with('%'),
             "non-ASCII should be encoded: {encoded}"
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_authenticated_reuses_candidate_session_without_login_post() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("candidate-session");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![http_response(
+            r#"<script>window.bootstrap={"OrgId":"1234"}</script>"#,
+            "text/html; charset=utf-8",
+        )]);
+
+        let mut client = build_test_client(base_url, true);
+        client.ensure_authenticated().await.unwrap();
+
+        assert_eq!(client.org_id.as_deref(), Some("1234"));
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].path, "/");
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn login_validates_credentials_even_with_candidate_session() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("credential-login");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            http_response(
+                r#"<script>window.bootstrap={"OrgId":"1234"}</script>"#,
+                "text/html; charset=utf-8",
+            ),
+            http_response(
+                r#"{"IsFail":false,"IsShowCaptcha":false}"#,
+                "application/json",
+            ),
+        ]);
+
+        let mut client = build_test_client(base_url, true);
+        client.login().await.unwrap();
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].path, "/");
+        assert_eq!(requests[1].method, "POST");
+        assert_eq!(
+            requests[1].path,
+            "/HilanCenter/Public/api/LoginApi/LoginRequest"
+        );
+        assert!(requests[1].body.contains("username=12345"));
+        assert!(requests[1].body.contains("password=s3cret"));
+        assert!(requests[1].body.contains("orgId=1234"));
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

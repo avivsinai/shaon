@@ -1,7 +1,7 @@
 // Helpers for upcoming attendance features — not yet wired to CLI commands.
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::client::HilanClient;
@@ -41,26 +41,6 @@ pub struct AbsencesInitialData {
     pub symbols: Vec<AbsenceSymbol>,
 }
 
-// ---------------------------------------------------------------------------
-// Internal response wrappers (match Hilan JSON shapes)
-// ---------------------------------------------------------------------------
-
-/// The `d` wrapper that Hilan ASMX endpoints historically return.
-/// Some endpoints now return the payload directly without the `d` wrapper.
-#[derive(Deserialize)]
-struct AsmxWrapper<T> {
-    d: T,
-}
-
-/// Deserialize an ASMX response that may or may not have the `d` wrapper.
-fn parse_asmx_response<T: serde::de::DeserializeOwned>(text: &str) -> serde_json::Result<T> {
-    // Try with wrapper first, then fall back to direct deserialization.
-    if let Ok(wrapper) = serde_json::from_str::<AsmxWrapper<T>>(text) {
-        return Ok(wrapper.d);
-    }
-    serde_json::from_str::<T>(text)
-}
-
 #[derive(Deserialize)]
 struct GetDataResponse {
     #[serde(rename = "PrincipalUser")]
@@ -83,6 +63,48 @@ struct PrincipalUserRaw {
     organization_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TasksCountResponse {
+    RawNumber(u32),
+    WrappedObject {
+        #[serde(rename = "TasksCount")]
+        tasks_count: u32,
+    },
+}
+
+fn parse_bootstrap_info(text: &str) -> serde_json::Result<BootstrapInfo> {
+    let data: GetDataResponse = serde_json::from_str(text)?;
+    let user = data.principal_user;
+    let org_id = data
+        .organization_id
+        .or(user.organization_id)
+        .ok_or_else(|| {
+            serde_json::Error::io(std::io::Error::other(
+                "bootstrap: OrganizationId not found in GetData response",
+            ))
+        })?;
+
+    Ok(BootstrapInfo {
+        user_id: user.user_id,
+        employee_id: user.employee_id,
+        org_id,
+        name: user.name,
+        is_manager: user.is_manager,
+    })
+}
+
+fn parse_tasks_count(text: &str) -> serde_json::Result<TasksCount> {
+    match serde_json::from_str::<TasksCountResponse>(text)? {
+        TasksCountResponse::RawNumber(tasks_count) => Ok(TasksCount { tasks_count }),
+        TasksCountResponse::WrappedObject { tasks_count } => Ok(TasksCount { tasks_count }),
+    }
+}
+
+fn parse_absences_initial_data(text: &str) -> serde_json::Result<AbsencesInitialData> {
+    serde_json::from_str(text)
+}
+
 // ---------------------------------------------------------------------------
 // Public API functions
 // ---------------------------------------------------------------------------
@@ -97,23 +119,7 @@ pub async fn bootstrap(client: &mut HilanClient) -> Result<BootstrapInfo> {
         .await
         .context("bootstrap: GetData")?;
 
-    let data: GetDataResponse =
-        parse_asmx_response(&text).context("parse JSON from HEmployeeStripApiapi/GetData")?;
-    let user = data.principal_user;
-
-    // OrganizationId can appear at root level or inside PrincipalUser
-    let org_id = data
-        .organization_id
-        .or(user.organization_id)
-        .ok_or_else(|| anyhow!("bootstrap: OrganizationId not found in GetData response"))?;
-
-    Ok(BootstrapInfo {
-        user_id: user.user_id,
-        employee_id: user.employee_id,
-        org_id,
-        name: user.name,
-        is_manager: user.is_manager,
-    })
+    parse_bootstrap_info(&text).context("parse JSON from HEmployeeStripApiapi/GetData")
 }
 
 /// Fetch the pending-tasks count from the home page API.
@@ -125,7 +131,7 @@ pub async fn get_tasks_count(client: &mut HilanClient) -> Result<TasksCount> {
         .await
         .context("get_tasks_count")?;
 
-    parse_asmx_response(&text).context("parse JSON from HHomeTasksApiapi/GetTasksCount")
+    parse_tasks_count(&text).context("parse JSON from HHomeTasksApiapi/GetTasksCount")
 }
 
 /// Fetch absences initial data (symbols / attendance-type list).
@@ -137,5 +143,50 @@ pub async fn get_absences_initial(client: &mut HilanClient) -> Result<AbsencesIn
         .await
         .context("get_absences_initial")?;
 
-    parse_asmx_response(&text).context("parse JSON from HAbsencesApiapi/GetInitialData")
+    parse_absences_initial_data(&text).context("parse JSON from HAbsencesApiapi/GetInitialData")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_get_data_fixture_parses_without_d_wrapper() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/asmx/GetData.json"
+        ));
+
+        let data: GetDataResponse = serde_json::from_str(text).expect("parse GetData fixture");
+
+        assert_eq!(data.principal_user.user_id, "999999");
+        assert_eq!(data.principal_user.employee_id, 99);
+        assert_eq!(data.organization_id.as_deref(), Some("1234"));
+    }
+
+    #[test]
+    fn live_get_initial_data_fixture_parses_without_d_wrapper() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/asmx/GetInitialData.json"
+        ));
+
+        let data = parse_absences_initial_data(text).expect("parse GetInitialData fixture");
+
+        assert_eq!(data.symbols.len(), 2);
+        assert_eq!(data.symbols[0].id, "481");
+        assert_eq!(data.symbols[0].name, "חופשה");
+    }
+
+    #[test]
+    fn live_get_tasks_count_fixture_parses_plain_number_response() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/asmx/GetTasksCount.json"
+        ));
+
+        let data = parse_tasks_count(text).expect("parse GetTasksCount fixture");
+
+        assert_eq!(data.tasks_count, 0);
+    }
 }

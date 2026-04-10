@@ -106,9 +106,9 @@ async fn new_client() -> Result<HilanClient, String> {
     let config = Config::load().map_err(|e| format!("config error: {e}"))?;
     let mut client = HilanClient::new(config).map_err(|e| format!("client error: {e}"))?;
     client
-        .login()
+        .ensure_authenticated()
         .await
-        .map_err(|e| format!("login error: {e}"))?;
+        .map_err(|e| format!("auth error: {e}"))?;
     Ok(client)
 }
 
@@ -282,9 +282,9 @@ impl HilanMcpServer {
             let subdomain = config.subdomain.clone();
             let mut client = HilanClient::new(config).map_err(|e| format!("client error: {e}"))?;
             client
-                .login()
+                .ensure_authenticated()
                 .await
-                .map_err(|e| format!("login error: {e}"))?;
+                .map_err(|e| format!("auth error: {e}"))?;
             let execute = req.execute.unwrap_or(false);
 
             let type_code = resolve_type_code(&subdomain, None)?;
@@ -345,9 +345,9 @@ impl HilanMcpServer {
             let subdomain = config.subdomain.clone();
             let mut client = HilanClient::new(config).map_err(|e| format!("client error: {e}"))?;
             client
-                .login()
+                .ensure_authenticated()
                 .await
-                .map_err(|e| format!("login error: {e}"))?;
+                .map_err(|e| format!("auth error: {e}"))?;
             let execute = req.execute.unwrap_or(false);
             let from = parse_date(&req.from)?;
             let to = parse_date(&req.to)?;
@@ -413,9 +413,9 @@ impl HilanMcpServer {
             let subdomain = config.subdomain.clone();
             let mut client = HilanClient::new(config).map_err(|e| format!("client error: {e}"))?;
             client
-                .login()
+                .ensure_authenticated()
                 .await
-                .map_err(|e| format!("login error: {e}"))?;
+                .map_err(|e| format!("auth error: {e}"))?;
 
             let execute = req.execute.unwrap_or(false);
             let include_weekends = req.include_weekends.unwrap_or(false);
@@ -552,7 +552,10 @@ impl HilanMcpServer {
             let subdomain = config.subdomain.clone();
             let mut client =
                 HilanClient::new(config).map_err(|e| format!("client error: {e}"))?;
-            client.login().await.map_err(|e| format!("login error: {e}"))?;
+            client
+                .ensure_authenticated()
+                .await
+                .map_err(|e| format!("auth error: {e}"))?;
 
             let bootstrap = api::bootstrap(&mut client)
                 .await

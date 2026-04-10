@@ -28,24 +28,27 @@ The wrapper script auto-builds from source, caches the binary, and codesigns on 
 
 ## First-time setup
 
+Create `~/.hilan/config.toml` with the non-secret settings:
+
+```toml
+subdomain = "mycompany"        # the part before .hilan.co.il
+username = "123456789"         # Israeli ID number
+# password lives in keychain, not here
+payslip_folder = "/path/to/payslips"   # optional
+payslip_format = "%Y-%m.pdf"           # optional
+```
+
+Then run:
+
 ```bash
 hilan auth
 ```
 
-This prompts for subdomain, username (Israeli ID number), and password, then stores credentials in the OS keychain. No plaintext passwords on disk.
+This tests the configured account and stores the password in the OS keychain. No plaintext passwords are required on disk.
 
-If the user already has a legacy `~/.config/hilan/config.toml` with a password field, migrate it:
+Legacy config/state from `~/.config/hilan` and, on macOS, `~/Library/Application Support/com.hilan.hilan` are migrated automatically into `~/.hilan`. If a legacy config still contains a plaintext password field, migrate it explicitly:
 ```bash
 hilan auth --migrate
-```
-
-The config file still holds non-secret settings:
-```toml
-subdomain = "mycompany"       # the part before .hilan.co.il
-username = "123456789"         # Israeli ID number
-# password is in keychain, not here
-payslip_folder = "/path/to/payslips"   # optional
-payslip_format = "%Y-%m.pdf"           # optional
 ```
 
 ## Output modes
