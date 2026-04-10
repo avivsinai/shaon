@@ -60,7 +60,12 @@ struct SuggestedAction {
 }
 
 #[derive(Parser)]
-#[command(name = "hilan", version, about = "Hilan attendance & payslip CLI")]
+#[command(
+    name = "hilan",
+    version,
+    long_version = env!("HILAN_LONG_VERSION"),
+    about = "Hilan attendance & payslip CLI"
+)]
 struct Cli {
     /// Enable verbose debug output
     #[arg(global = true, long, short = 'v')]
