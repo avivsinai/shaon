@@ -69,7 +69,7 @@ enum Commands {
         migrate: bool,
     },
 
-    /// Sync attendance-type ontology from Hilan
+    /// Sync attendance-type ontology from Hilan (optional — types auto-sync on first use)
     SyncTypes,
 
     /// Clock in for today
@@ -179,7 +179,7 @@ enum Commands {
     /// Show the attendance correction log
     Corrections,
 
-    /// List available attendance types (from local cache)
+    /// List available attendance types (from cache or server)
     Types,
 
     /// Generate shell completions
@@ -255,12 +255,15 @@ async fn main() -> Result<()> {
             write_mode,
         } => {
             let execute = write_mode.should_execute();
+            if attendance_type.is_some() {
+                client.login().await?;
+            }
+            let type_code =
+                resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
+                    .await?;
             let submit = attendance::AttendanceSubmit {
                 date: Local::now().date_naive(),
-                attendance_type_code: resolve_attendance_type_code(
-                    &subdomain,
-                    attendance_type.as_deref(),
-                )?,
+                attendance_type_code: type_code,
                 entry_time: Some(current_local_time_hhmm()),
                 exit_time: None,
                 comment: None,
@@ -311,7 +314,12 @@ async fn main() -> Result<()> {
                 bail!("--from must be before or equal to --to");
             }
 
-            let type_code = resolve_attendance_type_code(&subdomain, attendance_type.as_deref())?;
+            if attendance_type.is_some() {
+                client.login().await?;
+            }
+            let type_code =
+                resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
+                    .await?;
             let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
 
             if type_code.is_none() && hours_range.is_none() {
@@ -378,7 +386,12 @@ async fn main() -> Result<()> {
         } => {
             let execute = write_mode.should_execute();
             let date = parse_date(&day)?;
-            let type_code = resolve_attendance_type_code(&subdomain, attendance_type.as_deref())?;
+            if attendance_type.is_some() {
+                client.login().await?;
+            }
+            let type_code =
+                resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
+                    .await?;
             let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
 
             if type_code.is_none() && hours_range.is_none() {
@@ -512,8 +525,7 @@ async fn main() -> Result<()> {
                     ont.print_table();
                 }
             } else {
-                eprintln!("No cached types. Run `hilan sync-types` first.");
-                std::process::exit(1);
+                eprintln!("No cached types. Run `hilan sync-types` or use any command with `--type` to auto-sync.");
             }
         }
         Commands::Completions { .. } => unreachable!("handled above"),
@@ -577,7 +589,8 @@ fn is_hhmm(value: &str) -> bool {
     hour < 24 && minute < 60
 }
 
-fn resolve_attendance_type_code(
+async fn resolve_attendance_type_code(
+    client: &mut HilanClient,
     subdomain: &str,
     requested: Option<&str>,
 ) -> Result<Option<String>> {
@@ -585,20 +598,9 @@ fn resolve_attendance_type_code(
         return Ok(None);
     };
 
-    let path = ontology::ontology_path(subdomain);
-    if path.exists() {
-        let ontology = ontology::OrgOntology::load(&path)?;
-        return Ok(Some(ontology.validate_type(requested)?.code.clone()));
-    }
+    let ontology = ontology::OrgOntology::load_or_sync(client, subdomain).await?;
 
-    if requested.chars().all(|ch| ch.is_ascii_digit()) {
-        return Ok(Some(requested.to_string()));
-    }
-
-    bail!(
-        "Attendance type '{}' needs cached ontology. Run `hilan sync-types` first or pass a numeric type code.",
-        requested
-    );
+    Ok(Some(ontology.validate_type(requested)?.code.clone()))
 }
 
 fn dates_inclusive(from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
