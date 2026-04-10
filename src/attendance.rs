@@ -937,7 +937,7 @@ pub async fn auto_fill(
             continue;
         }
 
-        // At this point, the day is fully missing
+        // At this point, the day is truly missing — it's a candidate for fill
         if !include_weekends && is_weekend(day.date) {
             skipped.push(SkippedDay {
                 date: date_display,
@@ -963,25 +963,10 @@ pub async fn auto_fill(
             default_work_day: type_code.is_none(),
         };
 
-        let (status, error) = if execute {
-            match submit_day(client, &submit, true).await {
-                Ok(_) => ("success".to_string(), None),
-                Err(e) => ("failed".to_string(), Some(e.to_string())),
-            }
-        } else {
-            ("would_fill".to_string(), None)
-        };
-
-        filled.push(DayResult {
-            date: date_display,
-            attendance_type: type_display.to_string(),
-            hours: hours_display.clone(),
-            status,
-            error,
-        });
+        filled.push((date_display, submit));
     }
 
-    // Safety cap check — after counting candidates, before returning
+    // Safety cap check — BEFORE any execution
     let candidate_count = filled.len() as u32;
     if execute && candidate_count > max_days {
         anyhow::bail!(
@@ -990,8 +975,29 @@ pub async fn auto_fill(
         );
     }
 
-    let failed = filled.iter().filter(|d| d.status == "failed").count() as u32;
-    let filled_ok = filled.iter().filter(|d| d.status != "failed").count() as u32;
+    // Now execute or preview each candidate
+    let mut results = Vec::new();
+    for (date_display, submit) in &filled {
+        let (status, error) = if execute {
+            match submit_day(client, submit, true).await {
+                Ok(_) => ("success".to_string(), None),
+                Err(e) => ("failed".to_string(), Some(e.to_string())),
+            }
+        } else {
+            ("would_fill".to_string(), None)
+        };
+
+        results.push(DayResult {
+            date: date_display.clone(),
+            attendance_type: type_display.to_string(),
+            hours: hours_display.clone(),
+            status,
+            error,
+        });
+    }
+
+    let failed = results.iter().filter(|d| d.status == "failed").count() as u32;
+    let filled_ok = results.iter().filter(|d| d.status != "failed").count() as u32;
     let skipped_count = skipped.len() as u32;
 
     let mode = if execute {
@@ -1004,7 +1010,7 @@ pub async fn auto_fill(
         month: cal.month.format("%Y-%m").to_string(),
         mode,
         attendance_type: type_display.to_string(),
-        filled,
+        filled: results,
         skipped,
         summary: AutoFillSummary {
             total_candidates: candidate_count,

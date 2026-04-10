@@ -1007,17 +1007,11 @@ async fn load_or_sync_ontology(
     client: &mut HilanClient,
     subdomain: &str,
 ) -> Result<Vec<ontology::AttendanceType>> {
-    let path = ontology::ontology_path(subdomain);
-    if path.exists() {
-        let ont = ontology::OrgOntology::load(&path)?;
-        return Ok(ont.types);
-    }
-
-    // Auto-sync if no cache exists
-    match ontology::sync_from_calendar(client, subdomain).await {
+    // Use load_or_sync which respects 24h TTL cache freshness
+    match ontology::OrgOntology::load_or_sync(client, subdomain).await {
         Ok(ont) => Ok(ont.types),
         Err(_) => {
-            // Non-fatal: overview is still useful without types
+            // Non-fatal: overview/auto-fill are still useful without types
             Ok(Vec::new())
         }
     }
