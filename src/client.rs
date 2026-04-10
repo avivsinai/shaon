@@ -68,6 +68,17 @@ impl HilanClient {
             .build()
             .context("build HTTP client")?;
 
+        // Validate subdomain to prevent URL manipulation via malicious config
+        if !config
+            .subdomain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        {
+            anyhow::bail!(
+                "subdomain '{}' contains invalid characters (only alphanumeric, hyphens, and dots allowed)",
+                config.subdomain
+            );
+        }
         let base_url = format!("https://{}.hilan.co.il", config.subdomain);
 
         Ok(Self {
@@ -178,7 +189,12 @@ impl HilanClient {
         }
 
         self.logged_in = true;
-        tracing::info!("Logged in as {} (org: {})", self.config.username, org_id);
+        let masked_user = if self.config.username.len() > 4 {
+            format!("***{}", &self.config.username[self.config.username.len() - 4..])
+        } else {
+            "***".to_string()
+        };
+        tracing::info!("Logged in as {} (org: {})", masked_user, org_id);
         Ok(())
     }
 

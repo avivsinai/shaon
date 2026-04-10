@@ -33,7 +33,8 @@ pub struct ReportTable {
 pub async fn fetch_report(client: &mut HilanClient, report_name: &str) -> Result<ReportTable> {
     let url = format!(
         "{}/Hilannetv2/Reports/repAttendanceviewerGeneric.aspx?reportName={}",
-        client.base_url, report_name
+        client.base_url,
+        urlencoding::encode(report_name)
     );
 
     fetch_table_from_url(client, &url).await

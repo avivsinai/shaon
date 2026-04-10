@@ -21,7 +21,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "charset", "http2"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
