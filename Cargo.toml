@@ -33,6 +33,8 @@ directories = "6"
 chrono = { version = "0.4", features = ["serde"] }
 rmcp = { version = "1.3", features = ["server", "transport-io"] }
 schemars = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 urlencoding = "2"
 keyring = "3"
 secrecy = { version = "0.10", features = ["serde"] }

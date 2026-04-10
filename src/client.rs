@@ -91,6 +91,7 @@ impl HilanClient {
 
     /// Fetch the OrgId from the Hilanet homepage.
     pub async fn fetch_org_id(&mut self) -> Result<String> {
+        tracing::debug!("GET {}", self.base_url);
         let resp = self
             .client
             .get(&self.base_url)
@@ -128,6 +129,7 @@ impl HilanClient {
             self.base_url
         );
 
+        tracing::debug!("POST {}", url);
         let secret = self.config.get_password()?;
         let mut pw = secret.expose_secret().to_string();
 
@@ -176,10 +178,7 @@ impl HilanClient {
         }
 
         self.logged_in = true;
-        eprintln!(
-            "Logged in successfully as {} (org: {})",
-            self.config.username, org_id
-        );
+        tracing::info!("Logged in as {} (org: {})", self.config.username, org_id);
         Ok(())
     }
 
@@ -201,6 +200,7 @@ impl HilanClient {
             self.config.username
         );
 
+        tracing::debug!("GET payslip {} (UserId=<redacted>)", month.format("%Y-%m"));
         let bytes = self
             .send_bytes_with_retry(&format!("GET payslip {}", month.format("%Y-%m")), &url)
             .await?;
@@ -304,6 +304,7 @@ impl HilanClient {
             date_picker_state.to_string(),
         ));
 
+        tracing::debug!("POST {} ({} form fields)", url, form.len());
         let (status, text) = self
             .send_with_retry("POST salary summary", true, |c| c.post(url).form(&form))
             .await?;
@@ -315,6 +316,7 @@ impl HilanClient {
     }
 
     async fn fetch_salary_hidden_fields(&mut self, url: &str) -> Result<Vec<(String, String)>> {
+        tracing::debug!("GET (salary hidden fields) {}", url);
         let (status, text) = self
             .send_with_retry("GET salary summary page", true, |c| c.get(url))
             .await?;
@@ -497,6 +499,7 @@ impl HilanClient {
     /// Retries on transient errors and re-authenticates on session expiry.
     #[allow(dead_code)] // shared attendance/WebForms helper
     pub async fn get_aspx_form(&mut self, url: &str) -> Result<(String, BTreeMap<String, String>)> {
+        tracing::debug!("GET (aspx form) {}", url);
         let (status, html) = self
             .send_with_retry(&format!("GET {url}"), true, |c| c.get(url))
             .await?;
@@ -504,6 +507,7 @@ impl HilanClient {
             bail!("GET {url} returned HTTP {status}");
         }
         let fields = parse_aspx_form_fields(&html);
+        tracing::debug!("Parsed {} form fields from {}", fields.len(), url);
         Ok((html, fields))
     }
 
@@ -525,6 +529,12 @@ impl HilanClient {
         button_value: &str,
         retryable: bool,
     ) -> Result<String> {
+        tracing::debug!(
+            "POST (aspx form) {} ({} base fields, {} overrides)",
+            url,
+            base_fields.len(),
+            overrides.len()
+        );
         let mut merged: BTreeMap<String, String> = base_fields.clone();
         for &(key, value) in overrides {
             merged.insert(key.to_string(), value.to_string());
@@ -559,6 +569,7 @@ impl HilanClient {
             self.base_url, service, method
         );
 
+        tracing::debug!("POST (asmx) {}/{}", service, method);
         let (status, text) = self
             .send_with_retry(&format!("POST {url}"), true, |c| {
                 c.post(&url)
