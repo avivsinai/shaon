@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::provider::HilanProvider;
 
 pub mod cli;
+pub mod mcp;
 
 pub fn load_config() -> Result<Config> {
     Config::load()
