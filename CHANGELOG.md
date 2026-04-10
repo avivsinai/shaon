@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-10
+
 ### Added
 
 - Codex plugin manifest for the shared agent distribution
 - Shared skill symlinks under `.claude/skills` and `.agents/skills`
 - Release automation hooks for Homebrew tap updates
+
 
 ## [0.3.0] - 2026-04-10
 
@@ -31,5 +34,6 @@ Initial public release.
 - CI workflow (Ubuntu + macOS, clippy, fmt, test)
 - MIT license
 
-[Unreleased]: https://github.com/avivsinai/hilan/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/avivsinai/hilan/releases/tag/v0.3.0
+[0.4.0]: https://github.com/avivsinai/hilan/releases/tag/v0.4.0
+[Unreleased]: https://github.com/avivsinai/hilan/compare/v0.4.0...HEAD
