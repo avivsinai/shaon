@@ -46,7 +46,7 @@ hilan auth
 
 This tests the configured account and stores the password in the OS keychain. No plaintext passwords are required on disk.
 
-Legacy config/state from `~/.config/hilan` and, on macOS, `~/Library/Application Support/com.hilan.hilan` are migrated automatically into `~/.hilan`. If a legacy config still contains a plaintext password field, migrate it explicitly:
+If the config still contains a plaintext password field, migrate it explicitly:
 ```bash
 hilan auth --migrate
 ```
