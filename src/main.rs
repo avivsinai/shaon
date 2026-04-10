@@ -268,6 +268,9 @@ enum Commands {
         write_mode: WriteMode,
     },
 
+    /// Start MCP server (stdio transport)
+    Serve,
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -279,6 +282,13 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // MCP serve mode: bypass normal config/client init — each tool call
+    // creates its own client. All logging goes to stderr so stdout stays
+    // clean for the JSON-RPC protocol stream.
+    if matches!(cli.command, Commands::Serve) {
+        return run_mcp_server().await;
+    }
 
     // Handle completions before config loading — no credentials needed.
     if let Commands::Completions { shell } = cli.command {
@@ -684,9 +694,18 @@ async fn main() -> Result<()> {
                 attendance::print_auto_fill(&result);
             }
         }
+        Commands::Serve => unreachable!("handled above"),
         Commands::Completions { .. } => unreachable!("handled above"),
     }
 
+    Ok(())
+}
+
+async fn run_mcp_server() -> Result<()> {
+    use rmcp::ServiceExt;
+    let server = hilan::mcp::HilanMcpServer::new();
+    let transport = rmcp::transport::io::stdio();
+    server.serve(transport).await?.waiting().await?;
     Ok(())
 }
 
