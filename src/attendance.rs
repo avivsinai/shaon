@@ -17,6 +17,18 @@ pub struct CalendarDay {
     pub total_hours: Option<String>,
 }
 
+impl CalendarDay {
+    /// Whether this day has any attendance report (entry time or attendance type set).
+    pub fn is_reported(&self) -> bool {
+        self.entry_time.is_some() || self.attendance_type.is_some()
+    }
+
+    /// Whether this day falls on a work day (Sun-Thu, Israeli work week).
+    pub fn is_work_day(&self) -> bool {
+        self.date.weekday().num_days_from_sunday() < 5
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct MonthCalendar {
     pub month: NaiveDate,
@@ -550,7 +562,7 @@ pub fn print_calendar(cal: &MonthCalendar) {
 
         let status = if day.has_error {
             "\u{2717}" // ✗
-        } else if day.entry_time.is_some() || day.attendance_type.is_some() {
+        } else if day.is_reported() {
             "\u{2713}" // ✓
         } else {
             "?"
@@ -571,11 +583,7 @@ pub fn print_calendar(cal: &MonthCalendar) {
     // Summary
     let total = cal.days.len();
     let errors = cal.days.iter().filter(|d| d.has_error).count();
-    let reported = cal
-        .days
-        .iter()
-        .filter(|d| d.entry_time.is_some() || d.attendance_type.is_some())
-        .count();
+    let reported = cal.days.iter().filter(|d| d.is_reported()).count();
     let missing = total.saturating_sub(reported).saturating_sub(errors);
 
     println!();
