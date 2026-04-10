@@ -1,11 +1,37 @@
 target/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
 *.swp
 *.swo
-.DS_Store
+*~
 .idea/
 .vscode/
+*.iml
+
+# Logs
 *.log
 
-# Agent Message Queue
+# Secrets / credentials — NEVER commit these
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+config.toml
+credentials*
+secrets*
+
+# Agent coordination
 .agent-mail/
 .amqrc
+
+# Claude Code local config (personal, not shared)
+CLAUDE.local.md
+
+# Build artifacts
+*.dSYM/
