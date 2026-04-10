@@ -6,6 +6,7 @@ use rmcp::{
 use serde::Deserialize;
 
 use chrono::Datelike;
+use std::collections::BTreeMap;
 
 use crate::api;
 use crate::attendance;
@@ -572,15 +573,36 @@ impl HilanMcpServer {
             let is_past =
                 |d: &attendance::CalendarDay| !(is_current_month && d.date > today);
 
-            let error_days: Vec<serde_json::Value> = cal
-                .days
+            let error_days_raw: Vec<&attendance::CalendarDay> =
+                cal.days.iter().filter(|d| d.has_error).collect();
+            let error_tasks_by_date: BTreeMap<chrono::NaiveDate, api::ErrorTask> =
+                if error_days_raw.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    match api::get_error_tasks(&mut client).await {
+                        Ok(tasks) => tasks.into_iter().map(|task| (task.date, task)).collect(),
+                        Err(err) => {
+                            tracing::debug!("error task lookup failed: {err}");
+                            BTreeMap::new()
+                        }
+                    }
+                };
+
+            let error_days: Vec<serde_json::Value> = error_days_raw
                 .iter()
-                .filter(|d| d.has_error)
                 .map(|d| {
+                    let fix_params = error_tasks_by_date.get(&d.date).map(|task| {
+                        serde_json::json!({
+                            "report_id": task.report_id,
+                            "error_type": task.error_type,
+                        })
+                    });
+
                     serde_json::json!({
                         "date": d.date.format("%Y-%m-%d").to_string(),
                         "day": &d.day_name,
                         "error_message": d.error_message,
+                        "fix_params": fix_params,
                     })
                 })
                 .collect();
@@ -618,9 +640,30 @@ impl HilanMcpServer {
 
             let mut suggested_actions = Vec::new();
             if !error_days.is_empty() {
+                let fixable_days: Vec<serde_json::Value> = error_days
+                    .iter()
+                    .filter_map(|day| {
+                        day.get("fix_params").and_then(|params| {
+                            if params.is_null() {
+                                None
+                            } else {
+                                Some(serde_json::json!({
+                                    "date": day["date"],
+                                    "report_id": params["report_id"],
+                                    "error_type": params["error_type"],
+                                }))
+                            }
+                        })
+                    })
+                    .collect();
                 suggested_actions.push(serde_json::json!({
                     "kind": "fix_errors",
                     "reason": format!("{} day(s) have attendance errors", error_days.len()),
+                    "params": {
+                        "month": month.format("%Y-%m").to_string(),
+                        "count": error_days.len(),
+                        "fixable_days": fixable_days,
+                    },
                     "safety": "dry_run_default",
                 }));
             }
