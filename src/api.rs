@@ -2,8 +2,9 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::client::HilanClient;
 
@@ -60,6 +61,13 @@ pub struct SalaryInitialData {
     pub table_columns: Vec<SalaryTableColumn>,
     #[serde(rename = "TableData", default)]
     pub table_data: Vec<BTreeMap<String, serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ErrorTask {
+    pub date: NaiveDate,
+    pub report_id: String,
+    pub error_type: String,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +138,76 @@ pub(crate) fn parse_salary_initial_data(text: &str) -> serde_json::Result<Salary
     serde_json::from_str(text)
 }
 
+pub(crate) fn parse_error_tasks(text: &str) -> serde_json::Result<Vec<ErrorTask>> {
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    Ok(extract_error_tasks(&value))
+}
+
+fn extract_error_tasks(value: &serde_json::Value) -> Vec<ErrorTask> {
+    let mut seen = BTreeSet::new();
+    let mut tasks = Vec::new();
+    collect_error_tasks(value, &mut seen, &mut tasks);
+    tasks
+}
+
+fn collect_error_tasks(
+    value: &serde_json::Value,
+    seen: &mut BTreeSet<ErrorTask>,
+    tasks: &mut Vec<ErrorTask>,
+) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_error_tasks(item, seen, tasks);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["link", "Link"] {
+                if let Some(link) = map.get(key).and_then(serde_json::Value::as_str) {
+                    if let Some(task) = parse_error_task_link(link) {
+                        if seen.insert(task.clone()) {
+                            tasks.push(task);
+                        }
+                    }
+                }
+            }
+
+            for child in map.values() {
+                collect_error_tasks(child, seen, tasks);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_error_task_link(link: &str) -> Option<ErrorTask> {
+    if !link.contains("EmployeeErrorHandling.aspx") {
+        return None;
+    }
+
+    let (_, query) = link.split_once('?')?;
+    let mut date = None;
+    let mut report_id = None;
+    let mut error_type = None;
+
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=')?;
+        let value = urlencoding::decode(value).ok()?.into_owned();
+        match key {
+            "date" => date = NaiveDate::parse_from_str(&value, "%d/%m/%Y").ok(),
+            "reportId" => report_id = Some(value),
+            "errorType" => error_type = Some(value),
+            _ => {}
+        }
+    }
+
+    Some(ErrorTask {
+        date: date?,
+        report_id: report_id?,
+        error_type: error_type?,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Public API functions
 // ---------------------------------------------------------------------------
@@ -182,6 +260,18 @@ pub async fn get_salary_initial(client: &mut HilanClient) -> Result<SalaryInitia
 
     parse_salary_initial_data(&text)
         .context("parse JSON from PaymentsAndDeductionsApiapi/GetInitialData")
+}
+
+/// Fetch error tasks from the home tasks API and extract fix parameters.
+///
+/// Calls `HHomeTasksApiapi.asmx/GetData`.
+pub async fn get_error_tasks(client: &mut HilanClient) -> Result<Vec<ErrorTask>> {
+    let text: String = client
+        .asmx_call("HHomeTasksApiapi", "GetData")
+        .await
+        .context("get_error_tasks")?;
+
+    parse_error_tasks(&text).context("parse JSON from HHomeTasksApiapi/GetData")
 }
 
 #[cfg(test)]
@@ -259,5 +349,23 @@ mod tests {
                 .and_then(serde_json::Value::as_f64),
             Some(12345.0)
         );
+    }
+
+    #[test]
+    fn tasks_get_data_fixture_extracts_error_fix_params() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/asmx/tasks-GetData.json"
+        ));
+
+        let tasks = parse_error_tasks(text).expect("parse tasks GetData fixture");
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].date, NaiveDate::from_ymd_opt(2026, 4, 9).unwrap());
+        assert_eq!(
+            tasks[0].report_id,
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(tasks[0].error_type, "63");
     }
 }

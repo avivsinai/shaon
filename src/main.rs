@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use zeroize::Zeroize;
 
@@ -47,6 +48,13 @@ struct ErrorDay {
     date: String,
     day_name: String,
     error_message: String,
+    fix_params: Option<ErrorFixParams>,
+}
+
+#[derive(Serialize)]
+struct ErrorFixParams {
+    report_id: String,
+    error_type: String,
 }
 
 /// Structured suggested action — NOT a shell string.
@@ -859,6 +867,17 @@ async fn run_overview(
 
     let error_days: Vec<&attendance::CalendarDay> =
         cal.days.iter().filter(|d| d.has_error).collect();
+    let error_tasks_by_date: BTreeMap<NaiveDate, api::ErrorTask> = if error_days.is_empty() {
+        BTreeMap::new()
+    } else {
+        match api::get_error_tasks(client).await {
+            Ok(tasks) => tasks.into_iter().map(|task| (task.date, task)).collect(),
+            Err(err) => {
+                tracing::debug!("error task lookup failed: {err}");
+                BTreeMap::new()
+            }
+        }
+    };
 
     let reported_count = cal.days.iter().filter(|d| d.is_reported()).count() as u32;
 
@@ -885,6 +904,10 @@ async fn run_overview(
                 .error_message
                 .clone()
                 .unwrap_or_else(|| "missing report".to_string()),
+            fix_params: error_tasks_by_date.get(&d.date).map(|task| ErrorFixParams {
+                report_id: task.report_id.clone(),
+                error_type: task.error_type.clone(),
+            }),
         })
         .collect();
 
@@ -897,12 +920,25 @@ async fn run_overview(
 
     if !error_day_details.is_empty() {
         let count = error_day_details.len();
+        let fixable_days: Vec<serde_json::Value> = error_day_details
+            .iter()
+            .filter_map(|day| {
+                day.fix_params.as_ref().map(|params| {
+                    serde_json::json!({
+                        "date": day.date,
+                        "report_id": params.report_id,
+                        "error_type": params.error_type,
+                    })
+                })
+            })
+            .collect();
         suggested_actions.push(SuggestedAction {
             kind: "fix_errors".to_string(),
             reason: format!("{count} day(s) have attendance errors"),
             params: serde_json::json!({
                 "month": month_str,
                 "count": count,
+                "fixable_days": fixable_days,
             }),
             safety: "dry_run_default".to_string(),
         });
@@ -994,7 +1030,13 @@ fn print_overview_human(ctx: &OverviewResponse) {
         println!();
         println!("Error days:");
         for ed in &ctx.error_days {
-            println!("  {} ({}) -- {}", ed.date, ed.day_name, ed.error_message);
+            match &ed.fix_params {
+                Some(params) => println!(
+                    "  {} ({}) -- {} [reportId={}, errorType={}]",
+                    ed.date, ed.day_name, ed.error_message, params.report_id, params.error_type
+                ),
+                None => println!("  {} ({}) -- {}", ed.date, ed.day_name, ed.error_message),
+            }
         }
     }
 
