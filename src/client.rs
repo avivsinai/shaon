@@ -5,12 +5,15 @@ use reqwest::cookie::Jar;
 use scraper::{Html, Selector};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use zeroize::Zeroize;
+
+static ORG_ID_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""OrgId":"(\d+)""#).expect("invalid OrgId regex"));
 
 use crate::config::Config;
 
@@ -97,8 +100,7 @@ impl HilanClient {
 
         let text = resp.text().await.context("read homepage body")?;
 
-        let re = Regex::new(r#""OrgId":"(\d+)""#).unwrap();
-        let org_id = re
+        let org_id = ORG_ID_RE
             .captures(&text)
             .and_then(|cap| cap.get(1))
             .map(|m| m.as_str().to_string())
@@ -494,7 +496,7 @@ impl HilanClient {
     ///
     /// Retries on transient errors and re-authenticates on session expiry.
     #[allow(dead_code)] // shared attendance/WebForms helper
-    pub async fn get_aspx_form(&mut self, url: &str) -> Result<(String, HashMap<String, String>)> {
+    pub async fn get_aspx_form(&mut self, url: &str) -> Result<(String, BTreeMap<String, String>)> {
         let (status, html) = self
             .send_with_retry(&format!("GET {url}"), true, |c| c.get(url))
             .await?;
@@ -517,13 +519,13 @@ impl HilanClient {
     pub async fn post_aspx_form(
         &mut self,
         url: &str,
-        base_fields: &HashMap<String, String>,
+        base_fields: &BTreeMap<String, String>,
         overrides: &[(&str, &str)],
         button_name: &str,
         button_value: &str,
         retryable: bool,
     ) -> Result<String> {
-        let mut merged: HashMap<String, String> = base_fields.clone();
+        let mut merged: BTreeMap<String, String> = base_fields.clone();
         for &(key, value) in overrides {
             merged.insert(key.to_string(), value.to_string());
         }
@@ -578,9 +580,9 @@ impl HilanClient {
 /// Looks for `<form id="aspnetForm">` first; falls back to the first `<form>` if not found.
 /// Extracts hidden inputs, text inputs, checkboxes, selects, and textareas.
 /// Skips `input[type=submit]` (buttons are added explicitly by the caller).
-pub fn parse_aspx_form_fields(html: &str) -> HashMap<String, String> {
+pub fn parse_aspx_form_fields(html: &str) -> BTreeMap<String, String> {
     let document = Html::parse_document(html);
-    let mut fields = HashMap::new();
+    let mut fields = BTreeMap::new();
 
     // Try aspnetForm first, fall back to first <form>
     let form_sel = Selector::parse(r#"form#aspnetForm"#).unwrap();
@@ -671,7 +673,7 @@ pub fn parse_aspx_form_fields(html: &str) -> HashMap<String, String> {
 /// Format form fields for dry-run display, masking sensitive values.
 #[allow(dead_code)] // shared attendance/WebForms helper
 pub fn format_form_fields_for_display(
-    fields: &HashMap<String, String>,
+    fields: &BTreeMap<String, String>,
     overrides: &[(&str, &str)],
 ) -> String {
     let override_keys: std::collections::HashSet<&str> =
@@ -682,11 +684,7 @@ pub fn format_form_fields_for_display(
     // Sensitive patterns to mask
     let sensitive_patterns = ["__VIEWSTATE", "password", "Password", "token", "Token"];
 
-    let mut sorted_keys: Vec<&String> = fields.keys().collect();
-    sorted_keys.sort();
-
-    for key in &sorted_keys {
-        let value = &fields[*key];
+    for (key, value) in fields {
         let is_override = override_keys.contains(key.as_str());
         let marker = if is_override { " [OVERRIDE]" } else { "" };
 
@@ -752,17 +750,17 @@ fn extract_amount(cell: &str) -> Option<u64> {
     }
 }
 
-fn previous_month_start(today: NaiveDate) -> NaiveDate {
+pub fn previous_month_start(today: NaiveDate) -> NaiveDate {
     shift_month(today.with_day(1).unwrap(), -1)
 }
 
-fn month_range(start: NaiveDate, months: u32) -> Vec<NaiveDate> {
+pub(crate) fn month_range(start: NaiveDate, months: u32) -> Vec<NaiveDate> {
     (0..months)
         .map(|offset| shift_month(start, offset as i32))
         .collect()
 }
 
-fn shift_month(month_start: NaiveDate, delta_months: i32) -> NaiveDate {
+pub(crate) fn shift_month(month_start: NaiveDate, delta_months: i32) -> NaiveDate {
     let total_months = month_start.year() * 12 + month_start.month0() as i32 + delta_months;
     let year = total_months.div_euclid(12);
     let month0 = total_months.rem_euclid(12) as u32;
