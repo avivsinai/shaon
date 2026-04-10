@@ -62,6 +62,14 @@ struct SuggestedAction {
 #[derive(Parser)]
 #[command(name = "hilan", version, about = "Hilan attendance & payslip CLI")]
 struct Cli {
+    /// Enable verbose debug output
+    #[arg(global = true, long, short = 'v')]
+    verbose: bool,
+
+    /// Suppress all status messages
+    #[arg(global = true, long, short = 'q', conflicts_with = "verbose")]
+    quiet: bool,
+
     /// Output JSON instead of human-readable text
     #[arg(global = true, long)]
     json: bool,
@@ -239,7 +247,7 @@ enum Commands {
 
         /// Include full per-day calendar data in output
         #[arg(long)]
-        verbose: bool,
+        detailed: bool,
     },
 
     /// Automatically fill all missing days in a month (dry-run by default)
@@ -289,6 +297,18 @@ async fn main() -> Result<()> {
     if matches!(cli.command, Commands::Serve) {
         return run_mcp_server().await;
     }
+
+    let filter = if cli.verbose {
+        "debug"
+    } else if cli.quiet {
+        "error"
+    } else {
+        "info"
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 
     // Handle completions before config loading — no credentials needed.
     if let Commands::Completions { shell } = cli.command {
@@ -621,11 +641,11 @@ async fn main() -> Result<()> {
                     ont.print_table();
                 }
             } else {
-                eprintln!("No cached types. Run `hilan sync-types` or use any command with `--type` to auto-sync.");
+                tracing::error!("No cached types. Run `hilan sync-types` or use any command with `--type` to auto-sync.");
             }
         }
-        Commands::Overview { month, verbose } => {
-            run_overview(&mut client, &subdomain, month.as_deref(), verbose, json).await?;
+        Commands::Overview { month, detailed } => {
+            run_overview(&mut client, &subdomain, month.as_deref(), detailed, json).await?;
         }
         Commands::AutoFill {
             month,

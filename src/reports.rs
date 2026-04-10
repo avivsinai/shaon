@@ -47,6 +47,7 @@ pub async fn fetch_table_from_url(client: &mut HilanClient, url: &str) -> Result
         format!("{}{}", client.base_url, url)
     };
 
+    tracing::debug!("GET (report) {}", url);
     let html = client
         .get_text(&url)
         .await
