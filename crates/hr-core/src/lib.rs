@@ -57,8 +57,6 @@ pub struct CalendarDay {
     pub exit_time: Option<String>,
     pub attendance_type: Option<String>,
     pub total_hours: Option<String>,
-    /// How this day's data was determined (user-reported, system auto-fill, etc.).
-    #[serde(default)]
     pub source: AttendanceSource,
 }
 

@@ -273,7 +273,16 @@ async fn load_month_page(
     }
 
     // Step-by-step fallback (or finish remaining distance after partial jump)
+    const MAX_NAV_STEPS: u32 = 24;
+    let mut nav_step = 0u32;
     while current_month != requested_month {
+        nav_step += 1;
+        if nav_step > MAX_NAV_STEPS {
+            return Err(anyhow!(
+                "calendar navigation exceeded {MAX_NAV_STEPS} steps (stuck at {})",
+                current_month.format("%Y-%m")
+            ));
+        }
         let go_forward = current_month < requested_month;
         let next_month = shift_month(current_month, if go_forward { 1 } else { -1 })?;
         let selected_day = calendar_selected_day_value(next_month);
