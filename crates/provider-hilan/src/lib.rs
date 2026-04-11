@@ -68,6 +68,7 @@ impl From<attendance::CalendarDay> for hr_core::CalendarDay {
             exit_time: value.exit_time,
             attendance_type: value.attendance_type,
             total_hours: value.total_hours,
+            source: value.source,
         }
     }
 }

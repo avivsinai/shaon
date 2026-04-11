@@ -36,6 +36,7 @@ impl AttendanceProvider for OverviewProvider {
                     exit_time: None,
                     attendance_type: Some("work day".to_string()),
                     total_hours: None,
+                    source: shaon::core::AttendanceSource::UserReported,
                 },
                 shaon::core::CalendarDay {
                     date: NaiveDate::from_ymd_opt(2026, 4, 7).unwrap(),
@@ -46,6 +47,7 @@ impl AttendanceProvider for OverviewProvider {
                     exit_time: None,
                     attendance_type: None,
                     total_hours: None,
+                    source: Default::default(),
                 },
                 shaon::core::CalendarDay {
                     date: NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
@@ -56,6 +58,7 @@ impl AttendanceProvider for OverviewProvider {
                     exit_time: Some("18:00".to_string()),
                     attendance_type: Some("work day".to_string()),
                     total_hours: Some("09:00".to_string()),
+                    source: shaon::core::AttendanceSource::UserReported,
                 },
             ],
         })
@@ -303,6 +306,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 exit_time: None,
                 attendance_type: None,
                 total_hours: None,
+                source: Default::default(),
             },
             shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 7).unwrap(),
@@ -313,6 +317,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 exit_time: None,
                 attendance_type: None,
                 total_hours: None,
+                source: Default::default(),
             },
             shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
@@ -323,6 +328,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 exit_time: None,
                 attendance_type: None,
                 total_hours: None,
+                source: Default::default(),
             },
             shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
@@ -333,6 +339,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 exit_time: None,
                 attendance_type: None,
                 total_hours: None,
+                source: Default::default(),
             },
             shaon::core::CalendarDay {
                 date: NaiveDate::from_ymd_opt(2026, 4, 13).unwrap(),
@@ -343,6 +350,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 exit_time: None,
                 attendance_type: None,
                 total_hours: None,
+                source: Default::default(),
             },
         ],
     };

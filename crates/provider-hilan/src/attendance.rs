@@ -40,12 +40,18 @@ pub struct CalendarDay {
     pub exit_time: Option<String>,
     pub attendance_type: Option<String>,
     pub total_hours: Option<String>,
+    pub source: hr_core::AttendanceSource,
 }
 
 impl CalendarDay {
-    /// Whether this day has any attendance report (entry time or attendance type set).
+    /// Whether this day counts as reported by the user or organization.
     pub fn is_reported(&self) -> bool {
-        self.entry_time.is_some() || self.attendance_type.is_some()
+        self.source == hr_core::AttendanceSource::UserReported
+            || self.source == hr_core::AttendanceSource::Holiday
+    }
+
+    pub fn is_auto_filled(&self) -> bool {
+        self.source == hr_core::AttendanceSource::SystemAutoFill
     }
 
     /// Whether this day falls on a work day (Sun-Thu, Israeli work week).
@@ -91,31 +97,11 @@ pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result
         client.base_url
     );
 
-    let (mut html, mut fields) = client
+    let (html, fields) = client
         .get_aspx_form(&url)
         .await
         .context("read attendance calendar page")?;
-
-    let requested_month = month_field_value(month);
-    let current_month = fields
-        .get("ctl00$mp$currentMonth")
-        .cloned()
-        .unwrap_or_default();
-
-    if current_month != requested_month {
-        html = client
-            .post_aspx_form(
-                &url,
-                &fields,
-                &[("ctl00$mp$currentMonth", requested_month.as_str())],
-                "ctl00$mp$RefreshPeriod",
-                "דיווח תקופתי",
-                true, // read-only navigation, safe to retry
-            )
-            .await
-            .with_context(|| format!("refresh attendance calendar to {}", month.format("%Y-%m")))?;
-        fields = crate::client::parse_aspx_form_fields(&html);
-    }
+    let (html, fields) = load_month_page(client, &url, html, fields, month).await?;
 
     // Extract employee_id from hidden field
     let employee_id = fields
@@ -130,7 +116,41 @@ pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result
         ));
     }
 
-    let days = parse_calendar_html(&html, month)?;
+    let mut days = parse_calendar_html(&html, month)?;
+    // Check if the parsed days have actual attendance data (not just day numbers
+    // from the mini calendar). The mini calendar returns 30 days with no types,
+    // times, or errors — just blank CalendarDay entries.
+    let has_real_data = days.iter().any(|d| {
+        d.entry_time.is_some()
+            || d.exit_time.is_some()
+            || d.attendance_type.is_some()
+            || d.has_error
+    });
+    if !has_real_data {
+        tracing::debug!(
+            "Calendar page has {} day(s) but no attendance data for {}; trying async postback for full grid",
+            days.len(),
+            month.format("%Y-%m")
+        );
+        // The calendar grid lazy-loads via ASP.NET UpdatePanel. The RefreshPeriod
+        // button is inside an UpdatePanel with ChildrenAsTriggers=true, so clicking
+        // it triggers an async postback. The delta response contains the full grid.
+        match load_full_grid_async(client, &url, &fields, month).await {
+            Ok(async_days) if !async_days.is_empty() => {
+                days = async_days;
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    "async postback returned no days, falling back to day-by-day probe"
+                );
+                days = probe_month_days(client, &url, &fields, month).await?;
+            }
+            Err(e) => {
+                tracing::debug!("async postback failed: {e}, falling back to day-by-day probe");
+                days = probe_month_days(client, &url, &fields, month).await?;
+            }
+        }
+    }
     tracing::debug!(
         "Parsed {} calendar days for {} (employee {})",
         days.len(),
@@ -145,59 +165,300 @@ pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result
     })
 }
 
-/// Parse the calendar HTML grid and extract day information.
-fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>> {
-    let document = Html::parse_document(html);
-    let mut days = Vec::new();
+async fn load_month_page(
+    client: &mut HilanClient,
+    url: &str,
+    mut html: String,
+    mut fields: std::collections::BTreeMap<String, String>,
+    requested_month: NaiveDate,
+) -> Result<(String, std::collections::BTreeMap<String, String>)> {
+    let requested_month = month_start(requested_month)?;
+    let mut current_month = displayed_month(&fields)?;
 
-    // The calendar page renders day cells in a table structure.
-    // Each day cell typically contains:
-    //   - A date number and day name
-    //   - Status indicators (error icons, type text)
-    //   - Entry/exit times
-    //
-    // We look for table cells that contain day information by scanning
-    // for patterns in the rendered text and class attributes.
+    if current_month == requested_month {
+        return Ok((html, fields));
+    }
 
-    // Strategy 1: Look for day rows in the attendance grid table.
-    // The grid has rows with class patterns like "RSGrid" or "ARSGrid",
-    // or the calendar may use a different table structure with day cells.
+    let month_value = month_field_value(requested_month);
+    let selected_day = calendar_selected_day_value(requested_month);
 
-    // Look for elements that indicate day entries — these often have
-    // specific class patterns or contain structured attendance data.
-    // The calendar page may render days as table rows with columns for
-    // date, day name, entry, exit, type, hours, status.
-
-    // Try to find the attendance data grid (not the visual calendar,
-    // but the tabular data section if present).
-    let row_sel = Selector::parse("tr").map_err(|e| anyhow!("selector parse error: {e}"))?;
-
-    // First, try to parse a tabular layout where each row is a day
-    let rows: Vec<_> = document.select(&row_sel).collect();
-
-    for row in &rows {
-        let cells: Vec<String> = row
-            .children()
-            .filter_map(ElementRef::wrap)
-            .filter(|cell| cell.value().name() == "td")
-            .map(|cell| cell_visible_text(&cell))
-            .collect();
-
-        // Skip rows with too few cells or header rows
-        if cells.len() < 3 {
-            continue;
+    // First try the most direct path: set the hidden month field and submit the
+    // standard period refresh. This is not constrained by the visible month list
+    // window, so it can jump to months beyond the +/-12 range shown in the UI.
+    match client
+        .post_aspx_form(
+            url,
+            &fields,
+            &[
+                ("__calendarSelectedDays", selected_day.as_str()),
+                ("ctl00$mp$currentMonth", month_value.as_str()),
+            ],
+            "ctl00$mp$RefreshPeriod",
+            "דיווח תקופתי",
+            true,
+        )
+        .await
+    {
+        Ok(new_html) => {
+            let new_fields = crate::client::parse_aspx_form_fields(&new_html);
+            if let Ok(displayed) = displayed_month(&new_fields) {
+                if displayed == requested_month {
+                    tracing::debug!(
+                        "direct month refresh to {} succeeded",
+                        requested_month.format("%Y-%m")
+                    );
+                    return Ok((new_html, new_fields));
+                }
+                tracing::debug!(
+                    "direct month refresh landed on {} instead of {}; trying other navigation paths",
+                    displayed.format("%Y-%m"),
+                    requested_month.format("%Y-%m")
+                );
+                html = new_html;
+                fields = new_fields;
+                current_month = displayed;
+            }
         }
-
-        // Try to extract a date from the first cell or two
-        if let Some(day) = try_parse_day_row(&cells, month) {
-            days.push(day);
+        Err(err) => {
+            tracing::debug!(
+                "direct month refresh to {} failed: {err}",
+                requested_month.format("%Y-%m")
+            );
         }
     }
 
-    // If we didn't find rows in tabular format, try parsing
-    // the visual calendar grid (cells with day numbers).
+    // Next try the dropdown month-change event. This works when the target month
+    // is present in Hilan's visible month-list window and is still a single POST.
+    match client
+        .post_aspx_event(
+            url,
+            &fields,
+            &[
+                ("__calendarSelectedDays", selected_day.as_str()),
+                ("ctl00$mp$currentMonth", month_value.as_str()),
+            ],
+            "ctl00$mp$calendar_monthChanged",
+            &month_value,
+            true,
+        )
+        .await
+    {
+        Ok(new_html) => {
+            let new_fields = crate::client::parse_aspx_form_fields(&new_html);
+            if let Ok(displayed) = displayed_month(&new_fields) {
+                if displayed == requested_month {
+                    tracing::debug!(
+                        "direct dropdown jump to {} succeeded",
+                        requested_month.format("%Y-%m")
+                    );
+                    return Ok((new_html, new_fields));
+                }
+                tracing::debug!(
+                    "direct dropdown jump landed on {} instead of {}; falling back to step-by-step",
+                    displayed.format("%Y-%m"),
+                    requested_month.format("%Y-%m")
+                );
+                // Use the jumped page as starting point if it moved closer.
+                html = new_html;
+                fields = new_fields;
+                current_month = displayed;
+            }
+        }
+        Err(err) => {
+            tracing::debug!(
+                "direct dropdown jump to {} failed: {err}",
+                requested_month.format("%Y-%m")
+            );
+        }
+    }
+
+    // Step-by-step fallback (or finish remaining distance after partial jump)
+    const MAX_NAV_STEPS: u32 = 24;
+    let mut nav_step = 0u32;
+    while current_month != requested_month {
+        nav_step += 1;
+        if nav_step > MAX_NAV_STEPS {
+            return Err(anyhow!(
+                "calendar navigation exceeded {MAX_NAV_STEPS} steps (stuck at {})",
+                current_month.format("%Y-%m")
+            ));
+        }
+        let go_forward = current_month < requested_month;
+        let next_month = shift_month(current_month, if go_forward { 1 } else { -1 })?;
+        let selected_day = calendar_selected_day_value(next_month);
+        let month_value = month_field_value(next_month);
+        let event_target = if go_forward {
+            "ctl00_mp_calendar_next"
+        } else {
+            "ctl00_mp_calendar_prev"
+        };
+
+        html = client
+            .post_aspx_event(
+                url,
+                &fields,
+                &[
+                    ("__calendarSelectedDays", selected_day.as_str()),
+                    ("ctl00$mp$currentMonth", month_value.as_str()),
+                ],
+                event_target,
+                "",
+                true,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "navigate attendance calendar from {} to {}",
+                    current_month.format("%Y-%m"),
+                    next_month.format("%Y-%m")
+                )
+            })?;
+        fields = crate::client::parse_aspx_form_fields(&html);
+        dump_debug_html(&format!("nav-{}", next_month.format("%Y-%m")), &html);
+        let displayed = displayed_month(&fields)?;
+        if displayed == current_month {
+            return Err(anyhow!(
+                "calendar navigation via {} did not change displayed month from {}",
+                event_target,
+                current_month.format("%Y-%m")
+            ));
+        }
+        current_month = displayed;
+    }
+
+    Ok((html, fields))
+}
+
+/// Try to load the full calendar grid via ASP.NET async postback.
+///
+/// The calendar page uses UpdatePanel for the grid. RefreshPeriod (period view)
+/// is inside an UpdatePanel with ChildrenAsTriggers=true, meaning the browser
+/// sends it as an async postback. The response is in ASP.NET delta format with
+/// the full grid HTML embedded in the updatePanel entries.
+async fn load_full_grid_async(
+    client: &mut HilanClient,
+    url: &str,
+    fields: &std::collections::BTreeMap<String, String>,
+    month: NaiveDate,
+) -> Result<Vec<CalendarDay>> {
+    let month_value = month_field_value(month);
+
+    let delta = client
+        .post_aspx_async(
+            url,
+            fields,
+            &[
+                ("ctl00$mp$currentMonth", month_value.as_str()),
+                ("ctl00$mp$RefreshPeriod", "דיווח תקופתי"),
+            ],
+            "ctl00$ms",
+            "ctl00$mp$RefreshPeriod",
+        )
+        .await
+        .context("async postback for RefreshPeriod")?;
+
+    dump_debug_html(&format!("async-{}", month.format("%Y-%m")), &delta);
+
+    // If the response looks like full HTML (not delta), try parsing it directly
+    if delta.contains("<html") || delta.contains("<!DOCTYPE") {
+        return parse_calendar_html(&delta, month);
+    }
+
+    // Parse delta once and search for grid content
+    let entries = crate::client::parse_aspx_delta(&delta);
+    tracing::debug!(
+        "async postback delta has {} entries: {:?}",
+        entries.len(),
+        entries.keys().collect::<Vec<_>>()
+    );
+
+    for ((entry_type, entry_id), content) in &entries {
+        if entry_type != "updatePanel" {
+            continue;
+        }
+        if entry_id.contains("upGrid")
+            || entry_id.contains("reportsGrid_bodyUpdate")
+            || content.contains("row_")
+        {
+            let panel_days = parse_calendar_html(content, month)?;
+            if !panel_days.is_empty() {
+                return Ok(panel_days);
+            }
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+async fn probe_month_days(
+    client: &mut HilanClient,
+    url: &str,
+    fields: &std::collections::BTreeMap<String, String>,
+    month: NaiveDate,
+) -> Result<Vec<CalendarDay>> {
+    let month = month_start(month)?;
+    let mut fields = fields.clone();
+    let mut days = Vec::with_capacity(days_in_month(month) as usize);
+
+    for day_num in 1..=days_in_month(month) {
+        let date = NaiveDate::from_ymd_opt(month.year(), month.month(), day_num)
+            .ok_or_else(|| anyhow!("invalid date while probing month: {month} + day {day_num}"))?;
+        let selected_day = calendar_selected_day_value(date);
+        let month_value = month_field_value(date);
+        let html = client
+            .post_aspx_form(
+                url,
+                &fields,
+                &[
+                    ("__calendarSelectedDays", selected_day.as_str()),
+                    ("ctl00$mp$currentMonth", month_value.as_str()),
+                ],
+                "ctl00$mp$RefreshSelectedDays",
+                "ימים נבחרים",
+                true, // read-only navigation, safe to retry
+            )
+            .await
+            .with_context(|| format!("load attendance details for {}", date.format("%Y-%m-%d")))?;
+        fields = crate::client::parse_aspx_form_fields(&html);
+
+        if day_num <= 3 {
+            dump_debug_html(&format!("probe-{}-{:02}", month.format("%Y-%m"), day_num), &html);
+        }
+        let parsed_day = parse_calendar_html(&html, month)?
+            .into_iter()
+            .find(|candidate| candidate.date == date)
+            .unwrap_or_else(|| blank_calendar_day(date));
+        days.push(parsed_day);
+    }
+
+    Ok(days)
+}
+
+/// Parse the calendar HTML grid and extract day information.
+fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>> {
+    let document = Html::parse_document(html);
+    let mut days = parse_calendar_grid(&document, month);
+
     if days.is_empty() {
-        days = parse_calendar_grid(&document, month);
+        // Fallback for the tabular attendance grid, which appears in some
+        // postback/update-panel responses instead of the visual month calendar.
+        let row_sel = Selector::parse("tr").map_err(|e| anyhow!("selector parse error: {e}"))?;
+        for row in document.select(&row_sel) {
+            let cells: Vec<String> = row
+                .children()
+                .filter_map(ElementRef::wrap)
+                .filter(|cell| cell.value().name() == "td")
+                .map(|cell| cell_visible_text(&cell))
+                .collect();
+
+            if cells.len() < 3 {
+                continue;
+            }
+
+            if let Some(day) = try_parse_day_row(&cells, month) {
+                days.push(day);
+            }
+        }
     }
 
     // Sort by date
@@ -217,7 +478,10 @@ fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>>
                     exit_time: b.exit_time.take(),
                     attendance_type: b.attendance_type.take().or(a.attendance_type.take()),
                     total_hours: b.total_hours.take().or(a.total_hours.take()),
+                    source: preferred_source(b.source, a.source),
                 };
+            } else {
+                a.source = preferred_source(a.source, b.source);
             }
             true
         } else {
@@ -324,6 +588,14 @@ fn try_parse_day_row(cells: &[String], month: NaiveDate) -> Option<CalendarDay> 
         day_name = date.format("%a").to_string();
     }
 
+    let source = if let Some(attendance_type) = attendance_type.as_deref() {
+        source_from_calendar_state("", None, Some(attendance_type))
+    } else if entry_time.is_some() {
+        hr_core::AttendanceSource::UserReported
+    } else {
+        hr_core::AttendanceSource::Unreported
+    };
+
     Some(CalendarDay {
         date,
         day_name,
@@ -333,33 +605,47 @@ fn try_parse_day_row(cells: &[String], month: NaiveDate) -> Option<CalendarDay> 
         exit_time,
         attendance_type,
         total_hours,
+        source,
     })
 }
 
-/// Parse the visual calendar grid (month view with clickable day cells).
+/// Parse the Hilan visual calendar grid (month view with clickable day cells).
+///
+/// The calendar renders each day as a `<td>` with:
+/// - `aria-label="N"` — the day number
+/// - `title="H:MM"` — clock-in time (if present)
+/// - `class` containing `cDIES` or similar calendar day class
+/// - `Days="NNNNN"` — day index (epoch-based)
+/// - Nested: `<td class="dTS">N</td>` — displayed day number
+/// - Nested: `<span class="calendarIcon mx-1 fh-x">` — absence/vacation icon
+/// - Nested: `<span class="calendarIcon mx-1 fh-error">` — error icon
+/// - Nested: `<div class="cDM">H:MM</div>` — clock-in time display
 fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
     let mut days = Vec::new();
 
-    // The calendar page often uses a table-based month grid.
-    // Day cells may be <td> elements with class attributes indicating state.
-    // We look for any element that contains a day number in the context of
-    // attendance-related content.
+    // Target calendar day cells: both regular (cDIES) and absence (calendarAbcenseDay).
+    // Both have the `Days` attribute.
+    let day_cell_sel = Selector::parse("td[Days]").unwrap();
+    let day_num_sel = Selector::parse("tr.dayImageNumberContainer td.dTS").unwrap();
+    let message_sel = Selector::parse("td.calendarMessageCell .cDM").unwrap();
+    let icon_sel = Selector::parse("td.imageContainerStyle span.calendarIcon").unwrap();
 
-    // Try to find elements with class containing "calendar" or "day"
-    let all_td = Selector::parse("td").unwrap();
-    let span_sel = Selector::parse("span").unwrap();
-    let img_sel = Selector::parse("img").unwrap();
+    for td in document.select(&day_cell_sel) {
+        // Prefer the visible day-number cell over outer attributes.
+        let day_num = td
+            .select(&day_num_sel)
+            .next()
+            .map(|cell| cell_visible_text(&cell))
+            .as_deref()
+            .and_then(extract_day_number_strict)
+            .or_else(|| {
+                td.value()
+                    .attr("aria-label")
+                    .and_then(|label| label.parse::<u32>().ok())
+                    .filter(|&n| (1..=31).contains(&n))
+            });
 
-    for td in document.select(&all_td) {
-        let td_text = cell_visible_text(&td);
-        let td_text = td_text.trim();
-
-        if td_text.is_empty() {
-            continue;
-        }
-
-        // Check if this cell looks like a day cell (contains a small number 1-31)
-        let day_num = match extract_day_number_strict(td_text) {
+        let day_num = match day_num {
             Some(n) => n,
             None => continue,
         };
@@ -369,74 +655,94 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
             None => continue,
         };
 
-        // Check for error indicators via child elements
+        // Determine attendance source from CSS class:
+        // - "calendarAbcenseDay" = user-reported absence (vacation, sickness, etc.)
+        // - "cED" = system auto-filled (user didn't report)
+        // - neither = user-reported work day or unreported
+        let td_class = td.value().attr("class").unwrap_or("");
+        let is_absence_day = td_class.contains("calendarAbcenseDay");
+        let is_auto_filled = td_class.contains("cED");
+
         let mut has_error = false;
         let mut error_message = None;
-
-        // Check for error-indicating images (red X, error icons)
-        for img in td.select(&img_sel) {
-            let alt = img.value().attr("alt").unwrap_or("");
-            let src = img.value().attr("src").unwrap_or("");
-            if alt.contains("error")
-                || alt.contains("שגיאה")
-                || src.contains("error")
-                || src.contains("Error")
-                || src.contains("red")
-            {
-                has_error = true;
-            }
-        }
-
-        // Check for error-indicating CSS classes
-        let class = td.value().attr("class").unwrap_or("");
-        if class.contains("error") || class.contains("Error") || class.contains("missing") {
-            has_error = true;
-        }
-
-        // Check for error text in spans
-        for span in td.select(&span_sel) {
-            let span_class = span.value().attr("class").unwrap_or("");
-            let span_text: String = span.text().collect();
-            if span_class.contains("error") || span_class.contains("Error") {
-                has_error = true;
-                if !span_text.trim().is_empty() {
-                    error_message = Some(span_text.trim().to_string());
-                }
-            }
-        }
-
-        // Check for title/tooltip with error info
-        if let Some(title) = td.value().attr("title") {
-            if title.contains("שגיאה") || title.contains("חסר") || title.contains("error") {
-                has_error = true;
-                error_message = Some(title.to_string());
-            }
-        }
-
-        // Extract any time patterns from the cell text
-        let mut entry_time = None;
-        let mut exit_time = None;
         let mut attendance_type = None;
 
-        let parts: Vec<&str> = td_text.split_whitespace().collect();
-        for part in &parts {
-            if is_time_pattern(part) {
-                if entry_time.is_none() {
-                    entry_time = Some(part.to_string());
-                } else if exit_time.is_none() {
-                    exit_time = Some(part.to_string());
+        let message_text = td
+            .select(&message_sel)
+            .map(|cell| cell_visible_text(&cell))
+            .map(|text| text.trim().to_string())
+            .find(|text| !text.is_empty());
+
+        // The title attribute contains either:
+        // - A clock-in time like "9:07" for days with physical clock-in
+        // - An attendance type name like "work from home" for manually reported days
+        // - Empty/missing for truly unreported days
+        let title_value = td
+            .value()
+            .attr("title")
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        let mut entry_time = title_value
+            .filter(|title| is_time_pattern(title))
+            .map(ToOwned::to_owned);
+
+        // If title is not a time, it's an attendance type name
+        if entry_time.is_none() {
+            if let Some(title) = title_value {
+                if !is_time_pattern(title) {
+                    attendance_type = Some(title.to_string());
                 }
             }
         }
 
-        // Check for attendance type text
-        let lower = td_text.to_lowercase();
-        for kw in TYPE_KEYWORDS {
-            if lower.contains(kw) {
-                attendance_type = Some(kw.to_string());
-                break;
+        if entry_time.is_none() {
+            entry_time = message_text
+                .as_deref()
+                .filter(|text| is_time_pattern(text))
+                .map(ToOwned::to_owned);
+        }
+
+        for icon in td.select(&icon_sel) {
+            let icon_class = icon.value().attr("class").unwrap_or("");
+            if icon_class.contains("fh-x") {
+                // "x" icon = system auto-filled as vacation
+                if attendance_type.is_none() {
+                    attendance_type = Some("vacation".to_string());
+                }
+            } else if icon_class.contains("fh-error") || icon_class.contains("fh-warning") {
+                has_error = true;
             }
         }
+
+        if let Some(message) = &message_text {
+            let lower = message.to_lowercase();
+            if message.contains("שגיאה") || lower.contains("error") || lower.contains("missing")
+            {
+                has_error = true;
+                error_message = Some(message.clone());
+            } else if attendance_type.is_none() {
+                for kw in TYPE_KEYWORDS {
+                    if lower.contains(kw) {
+                        attendance_type = Some(message.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // If we have a clock-in time but no attendance type, it's a work day
+        let exit_time = None;
+        if entry_time.is_some() && attendance_type.is_none() {
+            attendance_type = Some("work day".to_string());
+        }
+
+        let source = if is_auto_filled {
+            hr_core::AttendanceSource::SystemAutoFill
+        } else if is_absence_day {
+            hr_core::AttendanceSource::UserReported
+        } else {
+            source_from_calendar_state(td_class, title_value, attendance_type.as_deref())
+        };
 
         days.push(CalendarDay {
             date,
@@ -447,6 +753,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
             exit_time,
             attendance_type,
             total_hours: None,
+            source,
         });
     }
 
@@ -580,6 +887,56 @@ fn extract_day_number_strict(s: &str) -> Option<u32> {
     }
 }
 
+fn preferred_source(
+    left: hr_core::AttendanceSource,
+    right: hr_core::AttendanceSource,
+) -> hr_core::AttendanceSource {
+    fn priority(source: hr_core::AttendanceSource) -> u8 {
+        match source {
+            hr_core::AttendanceSource::Unreported => 0,
+            hr_core::AttendanceSource::SystemAutoFill => 1,
+            hr_core::AttendanceSource::Holiday => 2,
+            hr_core::AttendanceSource::UserReported => 3,
+        }
+    }
+
+    if priority(left) >= priority(right) {
+        left
+    } else {
+        right
+    }
+}
+
+fn source_from_calendar_state(
+    td_class: &str,
+    title_value: Option<&str>,
+    attendance_type: Option<&str>,
+) -> hr_core::AttendanceSource {
+    if title_value.is_some() || attendance_type.is_some() {
+        if td_class.contains("cHD")
+            || td_class.contains("holiday")
+            || is_holiday_text(title_value.or(attendance_type).unwrap_or_default())
+        {
+            hr_core::AttendanceSource::Holiday
+        } else {
+            hr_core::AttendanceSource::UserReported
+        }
+    } else {
+        hr_core::AttendanceSource::Unreported
+    }
+}
+
+fn is_holiday_text(value: &str) -> bool {
+    let lower = value.to_lowercase();
+    lower.contains("חג")
+        || lower.contains("ערב חג")
+        || lower.contains("d.off")
+        || lower.contains("day off")
+        || lower
+            .split_whitespace()
+            .any(|part| part == "ho" || part == "h.o")
+}
+
 /// Check if a string looks like a time (HH:MM).
 pub fn is_time_pattern(s: &str) -> bool {
     let parts: Vec<&str> = s.split(':').collect();
@@ -597,68 +954,6 @@ pub fn is_time_pattern(s: &str) -> bool {
     hour < 24 && minute < 60
 }
 
-/// Print a formatted attendance calendar table.
-pub fn print_calendar(cal: &MonthCalendar) {
-    println!(
-        "Attendance for {} (employee {})",
-        cal.month.format("%Y-%m"),
-        cal.employee_id
-    );
-    println!();
-
-    // Column widths
-    let date_w = 10;
-    let day_w = 5;
-    let entry_w = 5;
-    let exit_w = 5;
-    let type_w = 16;
-    let hours_w = 5;
-    let status_w = 6;
-
-    println!(
-        "{:<date_w$}  {:<day_w$}  {:<entry_w$}  {:<exit_w$}  {:<type_w$}  {:<hours_w$}  {:<status_w$}",
-        "Date", "Day", "Entry", "Exit", "Type", "Hours", "Status",
-    );
-    println!(
-        "{:-<date_w$}  {:-<day_w$}  {:-<entry_w$}  {:-<exit_w$}  {:-<type_w$}  {:-<hours_w$}  {:-<status_w$}",
-        "", "", "", "", "", "", "",
-    );
-
-    for day in &cal.days {
-        let entry = day.entry_time.as_deref().unwrap_or("-");
-        let exit = day.exit_time.as_deref().unwrap_or("-");
-        let att_type = day.attendance_type.as_deref().unwrap_or("-");
-        let hours = day.total_hours.as_deref().unwrap_or("-");
-
-        let status = if day.has_error {
-            "\u{2717}" // ✗
-        } else if day.is_reported() {
-            "\u{2713}" // ✓
-        } else {
-            "?"
-        };
-
-        println!(
-            "{:<date_w$}  {:<day_w$}  {:<entry_w$}  {:<exit_w$}  {:<type_w$}  {:<hours_w$}  {:<status_w$}",
-            day.date.format("%Y-%m-%d"),
-            &day.day_name,
-            entry,
-            exit,
-            att_type,
-            hours,
-            status,
-        );
-    }
-
-    // Summary
-    let total = cal.days.len();
-    let errors = cal.days.iter().filter(|d| d.has_error).count();
-    let reported = cal.days.iter().filter(|d| d.is_reported()).count();
-    let missing = total.saturating_sub(reported).saturating_sub(errors);
-
-    println!();
-    println!("{total} days: {reported} reported, {errors} errors, {missing} missing");
-}
 
 /// Print only the error days from a calendar.
 pub fn print_errors(cal: &MonthCalendar) {
@@ -861,10 +1156,67 @@ fn month_field_value(date: NaiveDate) -> String {
     format!("01/{:02}/{:04}", date.month(), date.year())
 }
 
+fn displayed_month(fields: &std::collections::BTreeMap<String, String>) -> Result<NaiveDate> {
+    let raw = fields
+        .get("ctl00$mp$currentMonth")
+        .ok_or_else(|| anyhow!("calendar page is missing ctl00$mp$currentMonth"))?;
+    let parsed = NaiveDate::parse_from_str(raw, "%d/%m/%Y")
+        .with_context(|| format!("parse displayed month from '{raw}'"))?;
+    month_start(parsed)
+}
+
+fn month_start(date: NaiveDate) -> Result<NaiveDate> {
+    NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
+        .ok_or_else(|| anyhow!("invalid month start for {}", date.format("%Y-%m-%d")))
+}
+
+fn shift_month(date: NaiveDate, months: i32) -> Result<NaiveDate> {
+    let month_index = date.year() * 12 + date.month0() as i32 + months;
+    let year = month_index.div_euclid(12);
+    let month0 = month_index.rem_euclid(12);
+    NaiveDate::from_ymd_opt(year, month0 as u32 + 1, 1).ok_or_else(|| {
+        anyhow!(
+            "failed to shift month {} by {}",
+            date.format("%Y-%m-%d"),
+            months
+        )
+    })
+}
+
+fn days_in_month(date: NaiveDate) -> u32 {
+    let current = month_start(date).expect("valid month start");
+    let next = shift_month(current, 1).expect("next month");
+    next.signed_duration_since(current).num_days() as u32
+}
+
 fn calendar_selected_day_value(date: NaiveDate) -> String {
     // Inferred from the captured Hilanet payload where 2026-04-10 maps to 9596.
     let epoch = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
     date.signed_duration_since(epoch).num_days().to_string()
+}
+
+fn blank_calendar_day(date: NaiveDate) -> CalendarDay {
+    CalendarDay {
+        date,
+        day_name: date.format("%a").to_string(),
+        has_error: false,
+        error_message: None,
+        entry_time: None,
+        exit_time: None,
+        attendance_type: None,
+        total_hours: None,
+        source: hr_core::AttendanceSource::Unreported,
+    }
+}
+
+fn dump_debug_html(label: &str, content: &str) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !ENABLED.get_or_init(|| std::env::var("SHAON_DUMP_HTML").is_ok()) {
+        return;
+    }
+    let dump_path = format!("/tmp/shaon-{label}.html");
+    let _ = std::fs::write(&dump_path, content);
+    tracing::debug!("{label}: {} bytes → {dump_path}", content.len());
 }
 
 /// Resolve the attendance type code for auto-fill.
@@ -967,5 +1319,171 @@ mod tests {
             .expect("day 2026-04-10");
 
         assert_eq!(day.attendance_type.as_deref(), Some("work day"));
+    }
+
+    #[test]
+    fn visual_calendar_cell_parses_work_day_from_message_text() {
+        let html = r#"
+            <html><body><table><tbody><tr>
+                <td class="cDIES" Days="9437" tabindex="0" aria-label="2">
+                    <table class="iDSIE">
+                        <tr class="dayImageNumberContainer">
+                            <td class="dTS">2</td>
+                            <td class="imageContainerStyle"></td>
+                        </tr>
+                        <tr>
+                            <td class="calendarMessageCell" colspan="2"><div class="cDM">6:55</div></td>
+                        </tr>
+                    </table>
+                </td>
+            </tr></tbody></table></body></html>
+        "#;
+        let month = NaiveDate::from_ymd_opt(2025, 11, 1).unwrap();
+
+        let days = parse_calendar_html(html, month).expect("parse visual calendar work day");
+        let day = days
+            .iter()
+            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 11, 2).unwrap())
+            .expect("day 2025-11-02");
+
+        assert_eq!(day.entry_time.as_deref(), Some("6:55"));
+        assert_eq!(day.attendance_type.as_deref(), Some("work day"));
+        assert_eq!(day.source, hr_core::AttendanceSource::UserReported);
+        assert!(day.is_reported());
+        assert!(!day.has_error);
+    }
+
+    #[test]
+    fn visual_calendar_cell_parses_fh_x_as_system_auto_fill() {
+        let html = r#"
+            <html><body><table><tbody><tr>
+                <td class="cDIES cED" Days="9441" tabindex="0" aria-label="6">
+                    <table class="iDSIE">
+                        <tr class="dayImageNumberContainer">
+                            <td class="dTS">6</td>
+                            <td class="imageContainerStyle">
+                                <span class="calendarIcon mx-1 fh-x"></span>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="calendarMessageCell" colspan="2"><div class="cDM">&nbsp;</div></td>
+                        </tr>
+                    </table>
+                </td>
+            </tr></tbody></table></body></html>
+        "#;
+        let month = NaiveDate::from_ymd_opt(2025, 11, 1).unwrap();
+
+        let days = parse_calendar_html(html, month).expect("parse visual calendar absence");
+        let day = days
+            .iter()
+            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 11, 6).unwrap())
+            .expect("day 2025-11-06");
+
+        assert_eq!(day.attendance_type.as_deref(), Some("vacation"));
+        assert_eq!(day.source, hr_core::AttendanceSource::SystemAutoFill);
+        assert!(day.is_auto_filled());
+        assert!(!day.is_reported());
+        assert!(!day.has_error);
+        assert!(day.entry_time.is_none());
+    }
+
+    #[test]
+    fn visual_calendar_cell_parses_calendar_absence_day_as_user_reported() {
+        let html = r#"
+            <html><body><table><tbody><tr>
+                <td class="calendarAbcenseDay" Days="9255" tabindex="0" aria-label="4" title="vacation">
+                    <table class="iDSIE">
+                        <tr class="dayImageNumberContainer">
+                            <td class="dTS">4</td>
+                            <td class="imageContainerStyle"></td>
+                        </tr>
+                        <tr>
+                            <td class="calendarMessageCell" colspan="2"><div class="cDM">&nbsp;</div></td>
+                        </tr>
+                    </table>
+                </td>
+            </tr></tbody></table></body></html>
+        "#;
+        let month = NaiveDate::from_ymd_opt(2025, 4, 1).unwrap();
+
+        let days = parse_calendar_html(html, month).expect("parse user-reported vacation");
+        let day = days
+            .iter()
+            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 4, 4).unwrap())
+            .expect("day 2025-04-04");
+
+        assert_eq!(day.attendance_type.as_deref(), Some("vacation"));
+        assert_eq!(day.source, hr_core::AttendanceSource::UserReported);
+        assert!(day.is_reported());
+        assert!(!day.is_auto_filled());
+    }
+
+    #[test]
+    fn visual_calendar_cell_parses_holiday_as_holiday_source() {
+        let html = r#"
+            <html><body><table><tbody><tr>
+                <td class="cHD" Days="9521" tabindex="0" aria-label="25" title="חג">
+                    <table class="iDSIE">
+                        <tr class="dayImageNumberContainer">
+                            <td class="dTS">25</td>
+                            <td class="imageContainerStyle"></td>
+                        </tr>
+                        <tr>
+                            <td class="calendarMessageCell" colspan="2"><div class="cDM">חג</div></td>
+                        </tr>
+                    </table>
+                </td>
+            </tr></tbody></table></body></html>
+        "#;
+        let month = NaiveDate::from_ymd_opt(2025, 9, 1).unwrap();
+
+        let days = parse_calendar_html(html, month).expect("parse holiday cell");
+        let day = days
+            .iter()
+            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 9, 25).unwrap())
+            .expect("day 2025-09-25");
+
+        assert_eq!(day.attendance_type.as_deref(), Some("חג"));
+        assert_eq!(day.source, hr_core::AttendanceSource::Holiday);
+        assert!(day.is_reported());
+        assert!(!day.is_auto_filled());
+    }
+
+    #[test]
+    fn displayed_month_reads_hidden_calendar_month() {
+        let fields = std::collections::BTreeMap::from([(
+            "ctl00$mp$currentMonth".to_string(),
+            "01/04/2026".to_string(),
+        )]);
+
+        assert_eq!(
+            displayed_month(&fields).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn shift_month_moves_across_year_boundaries() {
+        assert_eq!(
+            shift_month(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), -1).unwrap(),
+            NaiveDate::from_ymd_opt(2025, 12, 1).unwrap()
+        );
+        assert_eq!(
+            shift_month(NaiveDate::from_ymd_opt(2026, 12, 1).unwrap(), 1).unwrap(),
+            NaiveDate::from_ymd_opt(2027, 1, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn days_in_month_handles_leap_and_non_leap_february() {
+        assert_eq!(
+            days_in_month(NaiveDate::from_ymd_opt(2024, 2, 1).unwrap()),
+            29
+        );
+        assert_eq!(
+            days_in_month(NaiveDate::from_ymd_opt(2025, 2, 1).unwrap()),
+            28
+        );
     }
 }
