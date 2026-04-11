@@ -1010,8 +1010,7 @@ pub fn format_form_fields_for_display(
     // Sensitive patterns to mask
     let sensitive_patterns = ["__VIEWSTATE", "password", "Password", "token", "Token"];
 
-    let override_map: std::collections::HashMap<&str, &str> =
-        overrides.iter().copied().collect();
+    let override_map: std::collections::HashMap<&str, &str> = overrides.iter().copied().collect();
 
     for (key, value) in fields {
         let override_value = override_map.get(key.as_str());
@@ -1022,9 +1021,17 @@ pub fn format_form_fields_for_display(
 
         let display_value =
             if sensitive_patterns.iter().any(|pat| key.contains(pat)) && display_source.len() > 8 {
-                format!("{}...({} chars)", &display_source[..4], display_source.len())
+                format!(
+                    "{}...({} chars)",
+                    &display_source[..4],
+                    display_source.len()
+                )
             } else if display_source.len() > 80 {
-                format!("{}...({} chars)", &display_source[..40], display_source.len())
+                format!(
+                    "{}...({} chars)",
+                    &display_source[..40],
+                    display_source.len()
+                )
             } else {
                 display_source.to_string()
             };
@@ -1593,5 +1600,4 @@ mod tests {
         let entries = parse_aspx_delta("");
         assert!(entries.is_empty());
     }
-
 }

@@ -434,7 +434,10 @@ async fn probe_month_days(
         fields = crate::client::parse_aspx_form_fields(&html);
 
         if day_num <= 3 {
-            dump_debug_html(&format!("probe-{}-{:02}", month.format("%Y-%m"), day_num), &html);
+            dump_debug_html(
+                &format!("probe-{}-{:02}", month.format("%Y-%m"), day_num),
+                &html,
+            );
         }
         let parsed_day = parse_calendar_html(&html, month)?
             .into_iter()
@@ -964,7 +967,6 @@ pub fn is_time_pattern(s: &str) -> bool {
     };
     hour < 24 && minute < 60
 }
-
 
 /// Print only the error days from a calendar.
 pub fn print_errors(cal: &MonthCalendar) {
