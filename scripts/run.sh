@@ -37,11 +37,13 @@ require_rust() {
 }
 
 package_version() {
+    # Try [package] version = "x.y.z" first, then fall back to [workspace.package]
     awk '
-        BEGIN { in_package = 0 }
-        /^\[package\]/ { in_package = 1; next }
-        /^\[/ { in_package = 0 }
-        in_package && $1 == "version" {
+        BEGIN { in_pkg = 0; in_ws_pkg = 0 }
+        /^\[package\]/           { in_pkg = 1; in_ws_pkg = 0; next }
+        /^\[workspace\.package\]/ { in_ws_pkg = 1; in_pkg = 0; next }
+        /^\[/                    { in_pkg = 0; in_ws_pkg = 0; next }
+        (in_pkg || in_ws_pkg) && $1 == "version" && $3 !~ /workspace/ {
             gsub(/"/, "", $3)
             print $3
             exit
@@ -60,7 +62,7 @@ needs_rebuild() {
         return 0
     fi
 
-    if find "$ROOT_DIR/src" -type f -newer "$bin_path" -print -quit | grep -q .; then
+    if find "$ROOT_DIR/src" "$ROOT_DIR/crates" -type f -newer "$bin_path" -print -quit 2>/dev/null | grep -q .; then
         return 0
     fi
 
