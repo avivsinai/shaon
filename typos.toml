@@ -12,6 +12,7 @@ extend-exclude = [
     "Cargo.lock",
     "target/",
     "tests/fixtures/",
+    "**/tests/fixtures/",
     ".claude/",
     ".agent-mail/",
 ]
