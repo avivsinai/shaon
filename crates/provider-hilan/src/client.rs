@@ -586,17 +586,16 @@ impl HilanClient {
     ) -> Result<(reqwest::StatusCode, String)> {
         const MAX_RETRIES: u32 = 3;
 
-        // Rate-pace: ensure minimum delay between requests
-        if let Some(last) = self.last_request_at {
-            let elapsed = last.elapsed();
-            let min_delay = Duration::from_millis(Self::REQUEST_PACE_MS);
-            if elapsed < min_delay {
-                tokio::time::sleep(min_delay - elapsed).await;
-            }
-        }
-
         let mut attempt = 0u32;
         loop {
+            // Rate-pace: ensure minimum delay between requests (including retries)
+            if let Some(last) = self.last_request_at {
+                let elapsed = last.elapsed();
+                let min_delay = Duration::from_millis(Self::REQUEST_PACE_MS);
+                if elapsed < min_delay {
+                    tokio::time::sleep(min_delay - elapsed).await;
+                }
+            }
             self.last_request_at = Some(tokio::time::Instant::now());
             let result = build_request(&self.client)
                 .send()
@@ -905,15 +904,6 @@ pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
     }
 
     result
-}
-
-/// Extract the HTML content of a specific UpdatePanel from a delta response.
-pub fn extract_update_panel(delta: &str, panel_id: &str) -> Option<String> {
-    let entries = parse_aspx_delta(delta);
-    entries
-        .into_iter()
-        .find(|((t, id), _)| t == "updatePanel" && id.contains(panel_id))
-        .map(|(_, content)| content)
 }
 
 /// Looks for `<form id="aspnetForm">` first; falls back to the first `<form>` if not found.
@@ -1601,17 +1591,4 @@ mod tests {
         assert!(entries.is_empty());
     }
 
-    #[test]
-    fn extract_update_panel_finds_matching_panel() {
-        let delta = "20|updatePanel|upGrid|<div>grid data</div>|5|hiddenField|__VS|state|";
-        let panel = extract_update_panel(delta, "upGrid");
-        assert_eq!(panel, Some("<div>grid data</div>".to_string()));
-    }
-
-    #[test]
-    fn extract_update_panel_returns_none_for_missing() {
-        let delta = "5|updatePanel|other|hello|";
-        let panel = extract_update_panel(delta, "upGrid");
-        assert!(panel.is_none());
-    }
 }

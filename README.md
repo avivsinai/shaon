@@ -1,5 +1,9 @@
 # shaon
 
+<p align="center">
+  <img src="assets/logo.jpg" alt="Shaon — a clanker punching a time clock" width="200">
+</p>
+
 [![CI](https://github.com/avivsinai/shaon/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/shaon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
