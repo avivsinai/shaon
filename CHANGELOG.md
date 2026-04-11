@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-11
+### Added
+- **`AttendanceSource` enum**: distinguishes user-reported, system-auto-filled, holiday, and unreported days
+- **Direct month navigation**: jump to any month via `calendar_monthChanged` postback instead of clicking prev/next repeatedly
+- **ASP.NET async postback support**: `post_aspx_async()` with delta response parser for UpdatePanel content
+- **401/403 re-authentication**: automatic re-login on session expiry (not just login redirects)
+- **Request rate-pacing**: 200ms minimum delay between HTTP requests to prevent WAF blocks
+- **`SHAON_SESSION_KEY` env var**: bypass OS keychain for session cookie decryption in headless/CI environments
+- **Clanker logo**: robot punching a time clock
+
+### Fixed
+- **Calendar parsing**: parse the visual calendar grid (`td[Days]` cells) instead of the never-rendered attendance data grid — was returning only 1 day per month
+- **Attendance type extraction**: read `title` attribute for type names (e.g., "work from home") and `fh-x` icon for system auto-fill
+- **Month navigation**: use `calendar_monthChanged` event for direct jumps; fall back to step-by-step prev/next with iteration cap (24 steps max)
+- **Build cache**: `run.sh` now checks `crates/` directory for changes, not just `src/`
+
+### Changed
+- `CalendarDay.is_reported()` now checks `AttendanceSource` instead of presence of entry_time/attendance_type
+- `CalendarDay` includes `source` field in JSON output
+
 ## [0.5.0] - 2026-04-10
 ### Added
 
