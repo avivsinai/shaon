@@ -1005,25 +1005,28 @@ pub fn format_form_fields_for_display(
     fields: &BTreeMap<String, String>,
     overrides: &[(&str, &str)],
 ) -> String {
-    let override_keys: std::collections::HashSet<&str> =
-        overrides.iter().map(|&(k, _)| k).collect();
-
     let mut lines = Vec::new();
 
     // Sensitive patterns to mask
     let sensitive_patterns = ["__VIEWSTATE", "password", "Password", "token", "Token"];
 
+    let override_map: std::collections::HashMap<&str, &str> =
+        overrides.iter().copied().collect();
+
     for (key, value) in fields {
-        let is_override = override_keys.contains(key.as_str());
-        let marker = if is_override { " [OVERRIDE]" } else { "" };
+        let override_value = override_map.get(key.as_str());
+        let (display_source, marker) = match override_value {
+            Some(ov) => (*ov, " [OVERRIDE]"),
+            None => (value.as_str(), ""),
+        };
 
         let display_value =
-            if sensitive_patterns.iter().any(|pat| key.contains(pat)) && value.len() > 8 {
-                format!("{}...({} chars)", &value[..4], value.len())
-            } else if value.len() > 80 {
-                format!("{}...({} chars)", &value[..40], value.len())
+            if sensitive_patterns.iter().any(|pat| key.contains(pat)) && display_source.len() > 8 {
+                format!("{}...({} chars)", &display_source[..4], display_source.len())
+            } else if display_source.len() > 80 {
+                format!("{}...({} chars)", &display_source[..40], display_source.len())
             } else {
-                value.to_string()
+                display_source.to_string()
             };
 
         lines.push(format!("  {key} = {display_value}{marker}"));
