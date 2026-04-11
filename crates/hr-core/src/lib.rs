@@ -38,7 +38,7 @@ pub enum AttendanceSource {
     /// The user explicitly reported this day (chose a type, entered times, etc.).
     UserReported,
     /// The system auto-filled this day (typically as vacation) because the user
-    /// didn't report. Indicated by `cED` class + `fh-x` icon in Hilan calendar.
+    /// didn't report.
     SystemAutoFill,
     /// A holiday or day-off set by the organization, not by the user.
     Holiday,

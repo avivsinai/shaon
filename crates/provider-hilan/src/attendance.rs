@@ -305,16 +305,7 @@ async fn load_month_page(
                 )
             })?;
         fields = crate::client::parse_aspx_form_fields(&html);
-        // Debug: dump navigated HTML
-        if std::env::var("SHAON_DUMP_HTML").is_ok() {
-            let dump_path = format!("/tmp/shaon-nav-{}.html", next_month.format("%Y-%m"));
-            let _ = std::fs::write(&dump_path, &html);
-            eprintln!(
-                "[SHAON] nav to {} → {} bytes",
-                next_month.format("%Y-%m"),
-                html.len()
-            );
-        }
+        dump_debug_html(&format!("nav-{}", next_month.format("%Y-%m")), &html);
         let displayed = displayed_month(&fields)?;
         if displayed == current_month {
             return Err(anyhow!(
@@ -357,33 +348,14 @@ async fn load_full_grid_async(
         .await
         .context("async postback for RefreshPeriod")?;
 
-    // Debug: dump the async response
-    if std::env::var("SHAON_DUMP_HTML").is_ok() {
-        let dump_path = format!("/tmp/shaon-async-{}.txt", month.format("%Y-%m"));
-        let _ = std::fs::write(&dump_path, &delta);
-        eprintln!(
-            "[SHAON] async response: {} bytes → {}",
-            delta.len(),
-            dump_path
-        );
-    }
-
-    // Try to extract the grid body UpdatePanel content
-    if let Some(grid_html) = crate::client::extract_update_panel(&delta, "upGrid") {
-        return parse_calendar_html(&grid_html, month);
-    }
-
-    // Also try the reportsGrid body update panel
-    if let Some(grid_html) = crate::client::extract_update_panel(&delta, "reportsGrid_bodyUpdate") {
-        return parse_calendar_html(&grid_html, month);
-    }
+    dump_debug_html(&format!("async-{}", month.format("%Y-%m")), &delta);
 
     // If the response looks like full HTML (not delta), try parsing it directly
     if delta.contains("<html") || delta.contains("<!DOCTYPE") {
         return parse_calendar_html(&delta, month);
     }
 
-    // Log delta entries for debugging
+    // Parse delta once and search for grid content
     let entries = crate::client::parse_aspx_delta(&delta);
     tracing::debug!(
         "async postback delta has {} entries: {:?}",
@@ -391,9 +363,14 @@ async fn load_full_grid_async(
         entries.keys().collect::<Vec<_>>()
     );
 
-    // Try parsing any updatePanel entries for calendar day data
-    for ((entry_type, _entry_id), content) in &entries {
-        if entry_type == "updatePanel" && content.contains("row_") {
+    for ((entry_type, entry_id), content) in &entries {
+        if entry_type != "updatePanel" {
+            continue;
+        }
+        if entry_id.contains("upGrid")
+            || entry_id.contains("reportsGrid_bodyUpdate")
+            || content.contains("row_")
+        {
             let panel_days = parse_calendar_html(content, month)?;
             if !panel_days.is_empty() {
                 return Ok(panel_days);
@@ -435,20 +412,8 @@ async fn probe_month_days(
             .with_context(|| format!("load attendance details for {}", date.format("%Y-%m-%d")))?;
         fields = crate::client::parse_aspx_form_fields(&html);
 
-        // Debug: dump HTML for the first few probed days
-        if std::env::var("SHAON_DUMP_HTML").is_ok() && day_num <= 3 {
-            let dump_path = format!(
-                "/tmp/shaon-probe-{}-{:02}.html",
-                month.format("%Y-%m"),
-                day_num
-            );
-            let _ = std::fs::write(&dump_path, &html);
-            eprintln!(
-                "[SHAON] probed day {} → {} bytes to {}",
-                date,
-                html.len(),
-                dump_path
-            );
+        if day_num <= 3 {
+            dump_debug_html(&format!("probe-{}-{:02}", month.format("%Y-%m"), day_num), &html);
         }
         let parsed_day = parse_calendar_html(&html, month)?
             .into_iter()
@@ -715,7 +680,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
         // If title is not a time, it's an attendance type name
         if entry_time.is_none() {
             if let Some(title) = title_value {
-                if !title.is_empty() && !is_time_pattern(title) {
+                if !is_time_pattern(title) {
                     attendance_type = Some(title.to_string());
                 }
             }
@@ -980,99 +945,6 @@ pub fn is_time_pattern(s: &str) -> bool {
     hour < 24 && minute < 60
 }
 
-/// Print a formatted attendance calendar table.
-pub fn print_calendar(cal: &MonthCalendar) {
-    println!(
-        "Attendance for {} (employee {})",
-        cal.month.format("%Y-%m"),
-        cal.employee_id
-    );
-    println!();
-
-    // Column widths
-    let date_w = 10;
-    let day_w = 5;
-    let entry_w = 5;
-    let exit_w = 5;
-    let type_w = 16;
-    let hours_w = 5;
-    let status_w = 6;
-
-    println!(
-        "{:<date_w$}  {:<day_w$}  {:<entry_w$}  {:<exit_w$}  {:<type_w$}  {:<hours_w$}  {:<status_w$}",
-        "Date", "Day", "Entry", "Exit", "Type", "Hours", "Status",
-    );
-    println!(
-        "{:-<date_w$}  {:-<day_w$}  {:-<entry_w$}  {:-<exit_w$}  {:-<type_w$}  {:-<hours_w$}  {:-<status_w$}",
-        "", "", "", "", "", "", "",
-    );
-
-    for day in &cal.days {
-        let entry = day.entry_time.as_deref().unwrap_or("-");
-        let exit = day.exit_time.as_deref().unwrap_or("-");
-        let att_type = display_attendance_type(day);
-        let hours = day.total_hours.as_deref().unwrap_or("-");
-
-        let status = if day.has_error {
-            "\u{2717}" // ✗
-        } else if day.is_auto_filled() {
-            "auto"
-        } else if day.is_reported() {
-            "\u{2713}" // ✓
-        } else {
-            "?"
-        };
-
-        println!(
-            "{:<date_w$}  {:<day_w$}  {:<entry_w$}  {:<exit_w$}  {:<type_w$}  {:<hours_w$}  {:<status_w$}",
-            day.date.format("%Y-%m-%d"),
-            &day.day_name,
-            entry,
-            exit,
-            &att_type,
-            hours,
-            status,
-        );
-    }
-
-    let total = cal.days.iter().filter(|d| d.is_work_day()).count();
-    let errors = cal
-        .days
-        .iter()
-        .filter(|d| d.is_work_day() && d.has_error)
-        .count();
-    let reported = cal
-        .days
-        .iter()
-        .filter(|d| d.is_work_day() && d.is_reported())
-        .count();
-    let missing = cal
-        .days
-        .iter()
-        .filter(|d| d.is_work_day() && !d.has_error && !d.is_reported())
-        .count();
-
-    println!();
-    println!("{total} work days: {reported} reported, {errors} errors, {missing} missing");
-}
-
-fn display_attendance_type(day: &CalendarDay) -> String {
-    match day.source {
-        hr_core::AttendanceSource::SystemAutoFill => day
-            .attendance_type
-            .as_deref()
-            .map(|kind| format!("{kind} (auto)"))
-            .unwrap_or_else(|| "auto".to_string()),
-        hr_core::AttendanceSource::Holiday => day
-            .attendance_type
-            .clone()
-            .unwrap_or_else(|| "holiday".to_string()),
-        _ => day
-            .attendance_type
-            .clone()
-            .unwrap_or_else(|| "-".to_string()),
-    }
-}
 
 /// Print only the error days from a calendar.
 pub fn print_errors(cal: &MonthCalendar) {
@@ -1326,6 +1198,16 @@ fn blank_calendar_day(date: NaiveDate) -> CalendarDay {
         total_hours: None,
         source: hr_core::AttendanceSource::Unreported,
     }
+}
+
+fn dump_debug_html(label: &str, content: &str) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !ENABLED.get_or_init(|| std::env::var("SHAON_DUMP_HTML").is_ok()) {
+        return;
+    }
+    let dump_path = format!("/tmp/shaon-{label}.html");
+    let _ = std::fs::write(&dump_path, content);
+    tracing::debug!("{label}: {} bytes → {dump_path}", content.len());
 }
 
 /// Resolve the attendance type code for auto-fill.

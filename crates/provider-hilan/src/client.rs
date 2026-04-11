@@ -29,7 +29,6 @@ pub struct HilanClient {
     org_id: Option<String>,
     session_candidate: bool,
     cookie_store: Arc<CookieStoreMutex>,
-    /// Timestamp of the last HTTP request, for rate-pacing.
     last_request_at: Option<tokio::time::Instant>,
 }
 
@@ -611,9 +610,7 @@ impl HilanClient {
                 }
                 Err(e) => return Err(e),
                 Ok(resp) => {
-                    let needs_reauth = is_login_redirect(&resp)
-                        || resp.status() == reqwest::StatusCode::UNAUTHORIZED
-                        || resp.status() == reqwest::StatusCode::FORBIDDEN;
+                    let needs_reauth = needs_reauth(&resp);
 
                     if retryable && needs_reauth && attempt < MAX_RETRIES {
                         tracing::debug!(
@@ -664,9 +661,7 @@ impl HilanClient {
                 }
                 Err(e) => return Err(e),
                 Ok(resp) => {
-                    let needs_reauth = is_login_redirect(&resp)
-                        || resp.status() == reqwest::StatusCode::UNAUTHORIZED
-                        || resp.status() == reqwest::StatusCode::FORBIDDEN;
+                    let needs_reauth = needs_reauth(&resp);
                     if needs_reauth && attempt < MAX_RETRIES {
                         self.session_candidate = false;
                         self.login().await?;
@@ -740,37 +735,17 @@ impl HilanClient {
         button_value: &str,
         retryable: bool,
     ) -> Result<String> {
-        tracing::debug!(
-            "POST (aspx form) {} ({} base fields, {} overrides)",
+        self.post_aspx_merged(
             url,
-            base_fields.len(),
-            overrides.len()
-        );
-        let mut merged: BTreeMap<String, String> = base_fields.clone();
-        for &(key, value) in overrides {
-            merged.insert(key.to_string(), value.to_string());
-        }
-        merged.insert(button_name.to_string(), button_value.to_string());
-        let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
-
-        let (status, text) = self
-            .send_with_retry(&format!("POST {url}"), retryable, |c| {
-                c.post(url).form(&form_pairs)
-            })
-            .await?;
-        if !status.is_success() {
-            bail!("POST {url} returned HTTP {status}");
-        }
-        Ok(text)
+            base_fields,
+            overrides,
+            &[(button_name, button_value)],
+            retryable,
+        )
+        .await
     }
 
     /// POST an .aspx page using ASP.NET `__doPostBack` semantics.
-    ///
-    /// Starts with `base_fields`, applies `overrides`, then sets
-    /// `__EVENTTARGET`/`__EVENTARGUMENT` before submitting the full form.
-    ///
-    /// This is used for read-only navigation flows such as calendar month
-    /// changes, where the browser would normally call `__doPostBack(...)`.
     pub async fn post_aspx_event(
         &mut self,
         url: &str,
@@ -780,19 +755,57 @@ impl HilanClient {
         event_argument: &str,
         retryable: bool,
     ) -> Result<String> {
-        tracing::debug!(
-            "POST (aspx event) {} (target={}, {} base fields, {} overrides)",
+        self.post_aspx_merged(
             url,
-            event_target,
-            base_fields.len(),
-            overrides.len()
-        );
+            base_fields,
+            overrides,
+            &[
+                ("__EVENTTARGET", event_target),
+                ("__EVENTARGUMENT", event_argument),
+            ],
+            retryable,
+        )
+        .await
+    }
+
+    /// POST an ASP.NET async postback (UpdatePanel / ScriptManager).
+    pub async fn post_aspx_async(
+        &mut self,
+        url: &str,
+        base_fields: &BTreeMap<String, String>,
+        overrides: &[(&str, &str)],
+        script_manager: &str,
+        event_target: &str,
+    ) -> Result<String> {
+        let sm_value = format!("{script_manager}|{event_target}");
+        self.post_aspx_merged(
+            url,
+            base_fields,
+            overrides,
+            &[
+                ("__EVENTTARGET", event_target),
+                ("__EVENTARGUMENT", ""),
+                ("__ASYNCPOST", "true"),
+                (script_manager, &sm_value),
+            ],
+            true,
+        )
+        .await
+    }
+
+    /// Merge base fields + overrides + extras, POST the form, and return the body.
+    async fn post_aspx_merged(
+        &mut self,
+        url: &str,
+        base_fields: &BTreeMap<String, String>,
+        overrides: &[(&str, &str)],
+        extras: &[(&str, &str)],
+        retryable: bool,
+    ) -> Result<String> {
         let mut merged: BTreeMap<String, String> = base_fields.clone();
-        for &(key, value) in overrides {
+        for &(key, value) in overrides.iter().chain(extras.iter()) {
             merged.insert(key.to_string(), value.to_string());
         }
-        merged.insert("__EVENTTARGET".to_string(), event_target.to_string());
-        merged.insert("__EVENTARGUMENT".to_string(), event_argument.to_string());
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
 
         let (status, text) = self
@@ -802,52 +815,6 @@ impl HilanClient {
             .await?;
         if !status.is_success() {
             bail!("POST {url} returned HTTP {status}");
-        }
-        Ok(text)
-    }
-
-    /// POST an ASP.NET async postback (UpdatePanel / ScriptManager).
-    ///
-    /// Sends the form with `__ASYNCPOST=true` and the ScriptManager field
-    /// `{script_manager}|{event_target}`. The response is in ASP.NET delta
-    /// format (pipe-delimited), which this method parses to extract the
-    /// requested UpdatePanel content.
-    pub async fn post_aspx_async(
-        &mut self,
-        url: &str,
-        base_fields: &BTreeMap<String, String>,
-        overrides: &[(&str, &str)],
-        script_manager: &str,
-        event_target: &str,
-    ) -> Result<String> {
-        tracing::debug!(
-            "POST (aspx async) {} (target={}, sm={}, {} base fields, {} overrides)",
-            url,
-            event_target,
-            script_manager,
-            base_fields.len(),
-            overrides.len()
-        );
-        let mut merged: BTreeMap<String, String> = base_fields.clone();
-        for &(key, value) in overrides {
-            merged.insert(key.to_string(), value.to_string());
-        }
-        merged.insert("__EVENTTARGET".to_string(), event_target.to_string());
-        merged.insert("__EVENTARGUMENT".to_string(), String::new());
-        merged.insert("__ASYNCPOST".to_string(), "true".to_string());
-        merged.insert(
-            script_manager.to_string(),
-            format!("{script_manager}|{event_target}"),
-        );
-        let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
-
-        let (status, text) = self
-            .send_with_retry(&format!("POST {url} (async)"), true, |c| {
-                c.post(url).form(&form_pairs)
-            })
-            .await?;
-        if !status.is_success() {
-            bail!("POST {url} (async) returned HTTP {status}");
         }
         Ok(text)
     }
@@ -1265,6 +1232,12 @@ fn is_transient_status(status: reqwest::StatusCode) -> bool {
 
 /// Detect whether a response was redirected to the Hilan login page,
 /// indicating session expiry. Checks the final URL after redirect following.
+fn needs_reauth(resp: &reqwest::Response) -> bool {
+    resp.status() == reqwest::StatusCode::UNAUTHORIZED
+        || resp.status() == reqwest::StatusCode::FORBIDDEN
+        || is_login_redirect(resp)
+}
+
 fn is_login_redirect(resp: &reqwest::Response) -> bool {
     let url = resp.url().as_str().to_lowercase();
     url.contains("/login")
