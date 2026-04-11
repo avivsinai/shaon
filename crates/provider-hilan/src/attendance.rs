@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, NaiveDate};
 use scraper::{ElementRef, Html, Selector};
@@ -173,9 +175,9 @@ async fn load_month_page(
     client: &mut HilanClient,
     url: &str,
     mut html: String,
-    mut fields: std::collections::BTreeMap<String, String>,
+    mut fields: BTreeMap<String, String>,
     requested_month: NaiveDate,
-) -> Result<(String, std::collections::BTreeMap<String, String>)> {
+) -> Result<(String, BTreeMap<String, String>)> {
     let requested_month = month_start(requested_month)?;
     let mut current_month = displayed_month(&fields)?;
 
@@ -342,7 +344,7 @@ async fn load_month_page(
 async fn load_full_grid_async(
     client: &mut HilanClient,
     url: &str,
-    fields: &std::collections::BTreeMap<String, String>,
+    fields: &BTreeMap<String, String>,
     month: NaiveDate,
 ) -> Result<Vec<CalendarDay>> {
     let month_value = month_field_value(month);
@@ -403,7 +405,7 @@ async fn load_full_grid_async(
 async fn probe_month_days(
     client: &mut HilanClient,
     url: &str,
-    fields: &std::collections::BTreeMap<String, String>,
+    fields: &BTreeMap<String, String>,
     month: NaiveDate,
 ) -> Result<Vec<CalendarDay>> {
     let month = month_start(month)?;
@@ -1165,7 +1167,7 @@ fn month_field_value(date: NaiveDate) -> String {
     format!("01/{:02}/{:04}", date.month(), date.year())
 }
 
-fn displayed_month(fields: &std::collections::BTreeMap<String, String>) -> Result<NaiveDate> {
+fn displayed_month(fields: &BTreeMap<String, String>) -> Result<NaiveDate> {
     let raw = fields
         .get("ctl00$mp$currentMonth")
         .ok_or_else(|| anyhow!("calendar page is missing ctl00$mp$currentMonth"))?;
@@ -1180,16 +1182,7 @@ fn month_start(date: NaiveDate) -> Result<NaiveDate> {
 }
 
 fn shift_month(date: NaiveDate, months: i32) -> Result<NaiveDate> {
-    let month_index = date.year() * 12 + date.month0() as i32 + months;
-    let year = month_index.div_euclid(12);
-    let month0 = month_index.rem_euclid(12);
-    NaiveDate::from_ymd_opt(year, month0 as u32 + 1, 1).ok_or_else(|| {
-        anyhow!(
-            "failed to shift month {} by {}",
-            date.format("%Y-%m-%d"),
-            months
-        )
-    })
+    Ok(crate::client::shift_month(date, months))
 }
 
 fn days_in_month(date: NaiveDate) -> u32 {
