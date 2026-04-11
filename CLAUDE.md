@@ -65,6 +65,11 @@ All write commands default to **dry-run**. `--execute` required for live submiss
 5. Add MCP tool in `crates/shaon-mcp/src/lib.rs` if appropriate
 6. Add `--json` support and tests
 
+## Design principles
+
+- **No backwards compatibility** unless explicitly requested. Prefer pristine implementations over migration shims, deprecation wrappers, or compatibility layers. If a type or API needs to change, change it directly.
+- **No `#[serde(default)]` for migration**. If a field is required, make it required. Don't add defaults just to avoid breaking old serialized data.
+
 ## Credentials
 
-Stored in OS keychain (`shaon-cli` service). Session cookies encrypted at rest (AES-256-GCM, random DEK in keychain). Binary must be codesigned with stable identifier (`com.avivsinai.shaon`) for silent macOS keychain access.
+Stored in OS keychain (`shaon-cli` service). Session cookies encrypted at rest (AES-256-GCM, random DEK in keychain). Binary must be codesigned with stable identifier (`com.avivsinai.shaon`) for silent macOS keychain access. Environment variables `SHAON_PASSWORD` and `SHAON_SESSION_KEY` bypass keychain access for headless/CI environments.
