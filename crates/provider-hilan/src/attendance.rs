@@ -5,6 +5,10 @@ use serde::Serialize;
 
 use crate::client::{format_form_fields_for_display, HilanClient};
 
+/// Default attendance type labels synthesized by the parser.
+const LABEL_WORK_DAY: &str = "work day";
+const LABEL_VACATION: &str = "vacation";
+
 /// Keywords that indicate an attendance type in calendar cells.
 ///
 /// Shared between `try_parse_day_row` and `parse_calendar_grid` to
@@ -372,14 +376,20 @@ async fn load_full_grid_async(
         entries.keys().collect::<Vec<_>>()
     );
 
+    // First pass: check panels with known grid IDs
     for ((entry_type, entry_id), content) in &entries {
-        if entry_type != "updatePanel" {
-            continue;
-        }
-        if entry_id.contains("upGrid")
-            || entry_id.contains("reportsGrid_bodyUpdate")
-            || content.contains("row_")
+        if entry_type == "updatePanel"
+            && (entry_id.contains("upGrid") || entry_id.contains("reportsGrid_bodyUpdate"))
         {
+            let panel_days = parse_calendar_html(content, month)?;
+            if !panel_days.is_empty() {
+                return Ok(panel_days);
+            }
+        }
+    }
+    // Fallback: scan all updatePanel content for row data
+    for ((entry_type, _), content) in &entries {
+        if entry_type == "updatePanel" && content.contains("row_") {
             let panel_days = parse_calendar_html(content, month)?;
             if !panel_days.is_empty() {
                 return Ok(panel_days);
@@ -707,7 +717,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
             if icon_class.contains("fh-x") {
                 // "x" icon = system auto-filled as vacation
                 if attendance_type.is_none() {
-                    attendance_type = Some("vacation".to_string());
+                    attendance_type = Some(LABEL_VACATION.to_string());
                 }
             } else if icon_class.contains("fh-error") || icon_class.contains("fh-warning") {
                 has_error = true;
@@ -733,7 +743,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
         // If we have a clock-in time but no attendance type, it's a work day
         let exit_time = None;
         if entry_time.is_some() && attendance_type.is_none() {
-            attendance_type = Some("work day".to_string());
+            attendance_type = Some(LABEL_WORK_DAY.to_string());
         }
 
         let source = if is_auto_filled {
@@ -929,7 +939,6 @@ fn source_from_calendar_state(
 fn is_holiday_text(value: &str) -> bool {
     let lower = value.to_lowercase();
     lower.contains("חג")
-        || lower.contains("ערב חג")
         || lower.contains("d.off")
         || lower.contains("day off")
         || lower
