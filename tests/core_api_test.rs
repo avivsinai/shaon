@@ -34,6 +34,7 @@ impl AttendanceProvider for DummyProvider {
                 exit_time: None,
                 attendance_type: Some("work day".to_string()),
                 total_hours: None,
+                source: Default::default(),
             }],
         })
     }

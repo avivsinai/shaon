@@ -150,7 +150,11 @@ pub async fn build_overview<P: AttendanceProvider>(
 
     let summary = OverviewSummary {
         total_work_days,
-        reported: calendar.days.iter().filter(|day| day.is_reported()).count() as u32,
+        reported: calendar
+            .days
+            .iter()
+            .filter(|day| day.is_work_day() && day.is_reported() && is_past(day))
+            .count() as u32,
         missing: missing_days.len() as u32,
         errors: error_days.len() as u32,
     };
@@ -562,10 +566,12 @@ pub fn print_calendar(calendar: &MonthCalendar) {
     for day in &calendar.days {
         let entry = day.entry_time.as_deref().unwrap_or("-");
         let exit = day.exit_time.as_deref().unwrap_or("-");
-        let attendance_type = day.attendance_type.as_deref().unwrap_or("-");
+        let attendance_type = display_attendance_label(day);
         let hours = day.total_hours.as_deref().unwrap_or("-");
         let status = if day.has_error {
             "x"
+        } else if day.is_auto_filled() {
+            "auto"
         } else if day.is_reported() {
             "ok"
         } else {
@@ -584,13 +590,43 @@ pub fn print_calendar(calendar: &MonthCalendar) {
         );
     }
 
-    let total = calendar.days.len();
-    let errors = calendar.days.iter().filter(|day| day.has_error).count();
-    let reported = calendar.days.iter().filter(|day| day.is_reported()).count();
-    let missing = total.saturating_sub(reported).saturating_sub(errors);
+    let total = calendar.days.iter().filter(|day| day.is_work_day()).count();
+    let errors = calendar
+        .days
+        .iter()
+        .filter(|day| day.is_work_day() && day.has_error)
+        .count();
+    let reported = calendar
+        .days
+        .iter()
+        .filter(|day| day.is_work_day() && day.is_reported())
+        .count();
+    let missing = calendar
+        .days
+        .iter()
+        .filter(|day| day.is_work_day() && !day.has_error && !day.is_reported())
+        .count();
 
     println!();
-    println!("{total} days: {reported} reported, {errors} errors, {missing} missing");
+    println!("{total} work days: {reported} reported, {errors} errors, {missing} missing");
+}
+
+pub fn display_attendance_label(day: &CalendarDay) -> String {
+    match day.source {
+        crate::AttendanceSource::SystemAutoFill => day
+            .attendance_type
+            .as_deref()
+            .map(|kind| format!("{kind} (auto)"))
+            .unwrap_or_else(|| "auto".to_string()),
+        crate::AttendanceSource::Holiday => day
+            .attendance_type
+            .clone()
+            .unwrap_or_else(|| "holiday".to_string()),
+        _ => day
+            .attendance_type
+            .clone()
+            .unwrap_or_else(|| "-".to_string()),
+    }
 }
 
 pub fn print_attendance_types(types: &[AttendanceType]) {
@@ -785,10 +821,11 @@ fn auto_fill_change(date: NaiveDate, options: &AutoFillOptions) -> AttendanceCha
 }
 
 fn is_day_missing(day: &CalendarDay) -> bool {
-    day.entry_time.is_none()
-        && day.exit_time.is_none()
-        && day.attendance_type.is_none()
-        && day.total_hours.is_none()
+    day.is_auto_filled()
+        || (day.entry_time.is_none()
+            && day.exit_time.is_none()
+            && day.attendance_type.is_none()
+            && day.total_hours.is_none())
 }
 
 fn is_day_partial(day: &CalendarDay) -> bool {

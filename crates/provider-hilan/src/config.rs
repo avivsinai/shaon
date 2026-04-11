@@ -157,7 +157,16 @@ impl Config {
     }
 
     /// Load the persisted cookie-encryption key from the OS keychain, if present.
+    ///
+    /// If `SHAON_SESSION_KEY` is set (64 hex chars), it is used instead of the keychain.
     pub fn get_session_key(&self) -> Result<Option<[u8; SESSION_KEY_LEN]>> {
+        // Allow env-var override to avoid keychain prompts in headless/CI environments
+        if let Ok(hex) = std::env::var("SHAON_SESSION_KEY") {
+            if !hex.is_empty() {
+                return decode_session_key(&hex).map(Some);
+            }
+        }
+
         let entry = session_keyring_entry(&self.subdomain, &self.username)?;
         match entry.get_password() {
             Ok(encoded) => decode_session_key(&encoded).map(Some),
@@ -167,6 +176,8 @@ impl Config {
     }
 
     /// Load or create the persisted cookie-encryption key in the OS keychain.
+    ///
+    /// If `SHAON_SESSION_KEY` is set, uses that instead of the keychain.
     pub fn get_or_create_session_key(&self) -> Result<[u8; SESSION_KEY_LEN]> {
         if let Some(existing) = self.get_session_key()? {
             return Ok(existing);

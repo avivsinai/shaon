@@ -31,6 +31,22 @@ pub struct AbsenceSymbol {
     pub display_name: Option<String>,
 }
 
+/// How the attendance data for a day was determined.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AttendanceSource {
+    /// The user explicitly reported this day (chose a type, entered times, etc.).
+    UserReported,
+    /// The system auto-filled this day (typically as vacation) because the user
+    /// didn't report. Indicated by `cED` class + `fh-x` icon in Hilan calendar.
+    SystemAutoFill,
+    /// A holiday or day-off set by the organization, not by the user.
+    Holiday,
+    /// No attendance data at all — the day is truly unreported.
+    #[default]
+    Unreported,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CalendarDay {
     pub date: NaiveDate,
@@ -41,11 +57,20 @@ pub struct CalendarDay {
     pub exit_time: Option<String>,
     pub attendance_type: Option<String>,
     pub total_hours: Option<String>,
+    /// How this day's data was determined (user-reported, system auto-fill, etc.).
+    #[serde(default)]
+    pub source: AttendanceSource,
 }
 
 impl CalendarDay {
+    /// Returns true if the user actively reported this day.
     pub fn is_reported(&self) -> bool {
-        self.entry_time.is_some() || self.attendance_type.is_some()
+        self.source == AttendanceSource::UserReported || self.source == AttendanceSource::Holiday
+    }
+
+    /// Returns true if the system auto-filled this day (user didn't report).
+    pub fn is_auto_filled(&self) -> bool {
+        self.source == AttendanceSource::SystemAutoFill
     }
 
     pub fn is_work_day(&self) -> bool {

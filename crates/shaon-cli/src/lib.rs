@@ -1090,20 +1090,30 @@ fn print_calendar_verbose(calendar: &hr_core::MonthCalendar) {
         calendar.month.format("%Y-%m"),
         calendar.employee_id
     );
-    println!("Date        Day    Entry  Exit   Type             Hours  Error");
-    println!("----------  -----  -----  -----  ---------------  -----  -----");
+    println!("Date        Day    Entry  Exit   Type                  Source     Hours  Error");
+    println!("----------  -----  -----  -----  --------------------  ---------  -----  -----");
 
     for day in &calendar.days {
         println!(
-            "{:<10}  {:<5}  {:<5}  {:<5}  {:<15}  {:<5}  {}",
+            "{:<10}  {:<5}  {:<5}  {:<5}  {:<20}  {:<9}  {:<5}  {}",
             day.date.format("%Y-%m-%d"),
             day.day_name,
             day.entry_time.as_deref().unwrap_or(""),
             day.exit_time.as_deref().unwrap_or(""),
-            day.attendance_type.as_deref().unwrap_or(""),
+            use_cases::display_attendance_label(day),
+            attendance_source_label(day.source),
             day.total_hours.as_deref().unwrap_or(""),
             if day.has_error { "yes" } else { "" },
         );
+    }
+}
+
+fn attendance_source_label(source: hr_core::AttendanceSource) -> &'static str {
+    match source {
+        hr_core::AttendanceSource::UserReported => "user",
+        hr_core::AttendanceSource::SystemAutoFill => "auto",
+        hr_core::AttendanceSource::Holiday => "holiday",
+        hr_core::AttendanceSource::Unreported => "",
     }
 }
 

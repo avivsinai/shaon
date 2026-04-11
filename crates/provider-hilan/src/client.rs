@@ -29,6 +29,8 @@ pub struct HilanClient {
     org_id: Option<String>,
     session_candidate: bool,
     cookie_store: Arc<CookieStoreMutex>,
+    /// Timestamp of the last HTTP request, for rate-pacing.
+    last_request_at: Option<tokio::time::Instant>,
 }
 
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -69,9 +71,14 @@ struct LoginResponse {
 
 impl HilanClient {
     pub fn new(config: Config) -> Result<Self> {
-        // Load persisted cookies if available
+        // Load persisted cookies if available.
+        // When SHAON_PASSWORD is set and no SHAON_SESSION_KEY is available,
+        // skip cookie loading to avoid keychain prompts in headless/CI environments.
+        let has_env_session_key = std::env::var("SHAON_SESSION_KEY").is_ok_and(|v| !v.is_empty());
+        let has_env_password = std::env::var("SHAON_PASSWORD").is_ok_and(|v| !v.is_empty());
+        let skip_cookie_cache = has_env_password && !has_env_session_key;
         let cookie_path = crate::config::subdomain_dir(&config.subdomain).join("cookies.json");
-        let cookie_store = if cookie_path.exists() {
+        let cookie_store = if cookie_path.exists() && !skip_cookie_cache {
             match load_cookie_store(&config, &cookie_path) {
                 Ok(store) => {
                     tracing::debug!("loaded session cookies from {}", cookie_path.display());
@@ -127,6 +134,7 @@ impl HilanClient {
             org_id: None,
             session_candidate: has_session_candidate,
             cookie_store,
+            last_request_at: None,
         })
     }
 
@@ -251,6 +259,7 @@ impl HilanClient {
     }
 
     /// Persist session cookies to disk for reuse across CLI invocations.
+    /// Skips persistence when the session key isn't available to avoid keychain prompts.
     fn save_cookies(&self) {
         let cookie_dir = crate::config::subdomain_dir(&self.config.subdomain);
         if fs::create_dir_all(&cookie_dir).is_err() {
@@ -567,6 +576,9 @@ impl HilanClient {
     /// When `retryable` is `false` the request is sent exactly once — no retries
     /// on transient errors and no re-login on session expiry. Use `false` for
     /// state-changing write submissions that must not be replayed.
+    /// Minimum delay between consecutive HTTP requests to avoid WAF/rate-limit blocks.
+    const REQUEST_PACE_MS: u64 = 200;
+
     async fn send_with_retry(
         &mut self,
         label: &str,
@@ -574,8 +586,19 @@ impl HilanClient {
         build_request: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
     ) -> Result<(reqwest::StatusCode, String)> {
         const MAX_RETRIES: u32 = 3;
+
+        // Rate-pace: ensure minimum delay between requests
+        if let Some(last) = self.last_request_at {
+            let elapsed = last.elapsed();
+            let min_delay = Duration::from_millis(Self::REQUEST_PACE_MS);
+            if elapsed < min_delay {
+                tokio::time::sleep(min_delay - elapsed).await;
+            }
+        }
+
         let mut attempt = 0u32;
         loop {
+            self.last_request_at = Some(tokio::time::Instant::now());
             let result = build_request(&self.client)
                 .send()
                 .await
@@ -588,7 +611,16 @@ impl HilanClient {
                 }
                 Err(e) => return Err(e),
                 Ok(resp) => {
-                    if retryable && is_login_redirect(&resp) && attempt < MAX_RETRIES {
+                    let needs_reauth = is_login_redirect(&resp)
+                        || resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                        || resp.status() == reqwest::StatusCode::FORBIDDEN;
+
+                    if retryable && needs_reauth && attempt < MAX_RETRIES {
+                        tracing::debug!(
+                            "session expired (status={}, url={}), re-authenticating",
+                            resp.status(),
+                            resp.url()
+                        );
                         self.session_candidate = false;
                         self.login().await?;
                         attempt += 1;
@@ -632,7 +664,10 @@ impl HilanClient {
                 }
                 Err(e) => return Err(e),
                 Ok(resp) => {
-                    if is_login_redirect(&resp) && attempt < MAX_RETRIES {
+                    let needs_reauth = is_login_redirect(&resp)
+                        || resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                        || resp.status() == reqwest::StatusCode::FORBIDDEN;
+                    if needs_reauth && attempt < MAX_RETRIES {
                         self.session_candidate = false;
                         self.login().await?;
                         attempt += 1;
@@ -729,6 +764,94 @@ impl HilanClient {
         Ok(text)
     }
 
+    /// POST an .aspx page using ASP.NET `__doPostBack` semantics.
+    ///
+    /// Starts with `base_fields`, applies `overrides`, then sets
+    /// `__EVENTTARGET`/`__EVENTARGUMENT` before submitting the full form.
+    ///
+    /// This is used for read-only navigation flows such as calendar month
+    /// changes, where the browser would normally call `__doPostBack(...)`.
+    pub async fn post_aspx_event(
+        &mut self,
+        url: &str,
+        base_fields: &BTreeMap<String, String>,
+        overrides: &[(&str, &str)],
+        event_target: &str,
+        event_argument: &str,
+        retryable: bool,
+    ) -> Result<String> {
+        tracing::debug!(
+            "POST (aspx event) {} (target={}, {} base fields, {} overrides)",
+            url,
+            event_target,
+            base_fields.len(),
+            overrides.len()
+        );
+        let mut merged: BTreeMap<String, String> = base_fields.clone();
+        for &(key, value) in overrides {
+            merged.insert(key.to_string(), value.to_string());
+        }
+        merged.insert("__EVENTTARGET".to_string(), event_target.to_string());
+        merged.insert("__EVENTARGUMENT".to_string(), event_argument.to_string());
+        let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
+
+        let (status, text) = self
+            .send_with_retry(&format!("POST {url}"), retryable, |c| {
+                c.post(url).form(&form_pairs)
+            })
+            .await?;
+        if !status.is_success() {
+            bail!("POST {url} returned HTTP {status}");
+        }
+        Ok(text)
+    }
+
+    /// POST an ASP.NET async postback (UpdatePanel / ScriptManager).
+    ///
+    /// Sends the form with `__ASYNCPOST=true` and the ScriptManager field
+    /// `{script_manager}|{event_target}`. The response is in ASP.NET delta
+    /// format (pipe-delimited), which this method parses to extract the
+    /// requested UpdatePanel content.
+    pub async fn post_aspx_async(
+        &mut self,
+        url: &str,
+        base_fields: &BTreeMap<String, String>,
+        overrides: &[(&str, &str)],
+        script_manager: &str,
+        event_target: &str,
+    ) -> Result<String> {
+        tracing::debug!(
+            "POST (aspx async) {} (target={}, sm={}, {} base fields, {} overrides)",
+            url,
+            event_target,
+            script_manager,
+            base_fields.len(),
+            overrides.len()
+        );
+        let mut merged: BTreeMap<String, String> = base_fields.clone();
+        for &(key, value) in overrides {
+            merged.insert(key.to_string(), value.to_string());
+        }
+        merged.insert("__EVENTTARGET".to_string(), event_target.to_string());
+        merged.insert("__EVENTARGUMENT".to_string(), String::new());
+        merged.insert("__ASYNCPOST".to_string(), "true".to_string());
+        merged.insert(
+            script_manager.to_string(),
+            format!("{script_manager}|{event_target}"),
+        );
+        let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
+
+        let (status, text) = self
+            .send_with_retry(&format!("POST {url} (async)"), true, |c| {
+                c.post(url).form(&form_pairs)
+            })
+            .await?;
+        if !status.is_success() {
+            bail!("POST {url} (async) returned HTTP {status}");
+        }
+        Ok(text)
+    }
+
     /// Call an ASMX JSON API endpoint.
     ///
     /// `POST /Hilannetv2/Services/Public/WS/{service}.asmx/{method}`
@@ -758,6 +881,74 @@ impl HilanClient {
 
 /// Parse all form fields from an ASP.NET WebForms page.
 ///
+/// Parse an ASP.NET async postback (UpdatePanel) delta response.
+///
+/// The delta format is a sequence of pipe-delimited fields:
+/// `length|type|id|content|length|type|id|content|...`
+///
+/// Types: `updatePanel`, `hiddenField`, `scriptBlock`, `pageTitle`, etc.
+/// Returns a map of `(type, id) → content` for all entries.
+pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
+    let mut result = BTreeMap::new();
+    let mut pos = 0;
+    let bytes = delta.as_bytes();
+
+    while pos < bytes.len() {
+        // Read length (digits until '|')
+        let len_end = match delta[pos..].find('|') {
+            Some(i) => pos + i,
+            None => break,
+        };
+        let len_str = &delta[pos..len_end];
+        let content_len: usize = match len_str.parse() {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        pos = len_end + 1;
+
+        // Read type (until '|')
+        let type_end = match delta[pos..].find('|') {
+            Some(i) => pos + i,
+            None => break,
+        };
+        let entry_type = delta[pos..type_end].to_string();
+        pos = type_end + 1;
+
+        // Read id (until '|')
+        let id_end = match delta[pos..].find('|') {
+            Some(i) => pos + i,
+            None => break,
+        };
+        let entry_id = delta[pos..id_end].to_string();
+        pos = id_end + 1;
+
+        // Read content (exactly content_len chars)
+        if pos + content_len > delta.len() {
+            break;
+        }
+        let content = delta[pos..pos + content_len].to_string();
+        pos += content_len;
+
+        // Skip trailing '|'
+        if pos < delta.len() && bytes[pos] == b'|' {
+            pos += 1;
+        }
+
+        result.insert((entry_type, entry_id), content);
+    }
+
+    result
+}
+
+/// Extract the HTML content of a specific UpdatePanel from a delta response.
+pub fn extract_update_panel(delta: &str, panel_id: &str) -> Option<String> {
+    let entries = parse_aspx_delta(delta);
+    entries
+        .into_iter()
+        .find(|((t, id), _)| t == "updatePanel" && id.contains(panel_id))
+        .map(|(_, content)| content)
+}
+
 /// Looks for `<form id="aspnetForm">` first; falls back to the first `<form>` if not found.
 /// Extracts hidden inputs, text inputs, checkboxes, selects, and textareas.
 /// Skips `input[type=submit]` (buttons are added explicitly by the caller).
@@ -1076,7 +1267,10 @@ fn is_transient_status(status: reqwest::StatusCode) -> bool {
 /// indicating session expiry. Checks the final URL after redirect following.
 fn is_login_redirect(resp: &reqwest::Response) -> bool {
     let url = resp.url().as_str().to_lowercase();
-    url.contains("/login") || url.contains("/signin") || url.contains("/logon")
+    url.contains("/login")
+        || url.contains("/signin")
+        || url.contains("/logon")
+        || url.contains("/hilancenter")
 }
 
 /// Sleep with exponential backoff: 500ms, 1s, 2s, ...
@@ -1126,6 +1320,7 @@ mod tests {
             org_id: None,
             session_candidate,
             cookie_store,
+            last_request_at: None,
         }
     }
 
@@ -1355,5 +1550,95 @@ mod tests {
         drop(requests);
         handle.join().unwrap();
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn post_aspx_event_sets_event_target_and_overrides() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("aspx-event");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![http_response(
+            "<html>ok</html>",
+            "text/html; charset=utf-8",
+        )]);
+
+        let mut client = build_test_client(base_url.clone(), true);
+        let base_fields = BTreeMap::from([
+            ("__VIEWSTATE".to_string(), "abc".to_string()),
+            ("__EVENTTARGET".to_string(), String::new()),
+            ("__EVENTARGUMENT".to_string(), String::new()),
+            (
+                "ctl00$mp$currentMonth".to_string(),
+                "01/04/2026".to_string(),
+            ),
+        ]);
+
+        client
+            .post_aspx_event(
+                &format!("{base_url}/calendarpage.aspx"),
+                &base_fields,
+                &[("ctl00$mp$currentMonth", "01/03/2026")],
+                "ctl00_mp_calendar_prev",
+                "",
+                true,
+            )
+            .await
+            .unwrap();
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, "/calendarpage.aspx");
+        assert!(requests[0].body.contains("__VIEWSTATE=abc"));
+        assert!(requests[0]
+            .body
+            .contains("__EVENTTARGET=ctl00_mp_calendar_prev"));
+        assert!(requests[0].body.contains("__EVENTARGUMENT="));
+        assert!(requests[0]
+            .body
+            .contains("ctl00%24mp%24currentMonth=01%2F03%2F2026"));
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn parse_aspx_delta_extracts_update_panels() {
+        // Simplified ASP.NET delta format
+        let delta = "4|updatePanel|grid|<tr>|12|hiddenField|__VS|viewstate123|";
+        let entries = parse_aspx_delta(delta);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries.get(&("updatePanel".to_string(), "grid".to_string())),
+            Some(&"<tr>".to_string())
+        );
+        assert_eq!(
+            entries.get(&("hiddenField".to_string(), "__VS".to_string())),
+            Some(&"viewstate123".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_aspx_delta_handles_empty() {
+        let entries = parse_aspx_delta("");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn extract_update_panel_finds_matching_panel() {
+        let delta = "20|updatePanel|upGrid|<div>grid data</div>|5|hiddenField|__VS|state|";
+        let panel = extract_update_panel(delta, "upGrid");
+        assert_eq!(panel, Some("<div>grid data</div>".to_string()));
+    }
+
+    #[test]
+    fn extract_update_panel_returns_none_for_missing() {
+        let delta = "5|updatePanel|other|hello|";
+        let panel = extract_update_panel(delta, "upGrid");
+        assert!(panel.is_none());
     }
 }
