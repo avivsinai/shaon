@@ -9,7 +9,7 @@ use crate::client::HilanClient;
 // Data types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BootstrapInfo {
     pub user_id: String,
     pub employee_id: u32,
@@ -214,12 +214,19 @@ fn parse_error_task_link(link: &str) -> Option<ErrorTask> {
 /// Calls `HEmployeeStripApiapi.asmx/GetData` and extracts identity fields
 /// from the `PrincipalUser` object in the response.
 pub async fn bootstrap(client: &mut HilanClient) -> Result<BootstrapInfo> {
+    if let Some(info) = client.cached_bootstrap() {
+        return Ok(info);
+    }
+
     let text: String = client
         .asmx_call("HEmployeeStripApiapi", "GetData")
         .await
         .context("bootstrap: GetData")?;
 
-    parse_bootstrap_info(&text).context("parse JSON from HEmployeeStripApiapi/GetData")
+    let info =
+        parse_bootstrap_info(&text).context("parse JSON from HEmployeeStripApiapi/GetData")?;
+    client.cache_bootstrap(info.clone());
+    Ok(info)
 }
 
 /// Fetch the pending-tasks count from the home page API.

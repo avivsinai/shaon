@@ -8,163 +8,175 @@ description: >
   to fill/fix attendance records — even if they don't say "shaon" explicitly.
 ---
 
-# Shaon CLI
+# Shaon
 
-Rust CLI for automating Hilanet — attendance reporting, payslips, salary, and HR data.
+Claude Code plugin skill for the `shaon` repo and binary.
 
-## How to run
+## What To Use
 
-If installed as a plugin:
+- Use the **CLI** when you want explicit commands, JSON output, or shell scripting
+- Use the **MCP server** when the client wants typed stdio tools
+- Use this **skill** when the user is working inside Claude Code and wants natural-language help around attendance, payslips, or salary
+
+## How To Load The Plugin
+
+For local development against this repo:
+
 ```bash
-plugins/shaon/scripts/run.sh <command> [args]
+claude --plugin-dir /absolute/path/to/shaon
 ```
 
-If installed as a binary (cargo install, brew, or direct):
+Once Claude Code starts, the explicit plugin skill name is:
+
+```text
+/shaon:shaon
+```
+
+Example:
+
+```text
+/shaon:shaon show my missing attendance days for 2026-04
+```
+
+The skill also auto-triggers on relevant keywords such as `shaon`, `attendance`, `clock in`, `payslip`, `salary`, `work hours`, and `שעון נוכחות`.
+
+## CLI Entry Points
+
+If working from a repo checkout, prefer:
+
+```bash
+scripts/run.sh <command> [args]
+```
+
+If installed globally:
+
 ```bash
 shaon <command> [args]
 ```
 
-The wrapper script auto-builds from source, caches the binary, and codesigns on macOS.
+On macOS, `scripts/run.sh` is the safest local path because it rebuilds and reuses the signed cached binary.
 
-## First-time setup
+## First-Time Setup
 
-Create `~/.shaon/config.toml` with the non-secret settings:
+Create `~/.shaon/config.toml`:
 
 ```toml
-subdomain = "mycompany"        # your employer's Hilanet subdomain
-username = "123456789"         # Israeli ID number
+subdomain = "mycompany"
+username = "123456789"
 # password lives in keychain, not here
 payslip_folder = "/path/to/payslips"   # optional
 payslip_format = "%Y-%m.pdf"           # optional
 ```
 
-Then run:
+Then authenticate:
 
 ```bash
 shaon auth
 ```
 
-This tests the configured account and stores the password in the OS keychain. No plaintext passwords are required on disk.
+If the config still contains a plaintext password:
 
-If the config still contains a plaintext password field, migrate it explicitly:
 ```bash
 shaon auth --migrate
 ```
 
-## Output modes
+## Core CLI Commands
 
-All commands support `--json` for machine-parseable output. Always use `--json` when you need to process the results programmatically.
+### Read commands
+
+| Command | Example |
+|---------|---------|
+| `status` | `shaon status --month 2026-04` |
+| `errors` | `shaon errors --month 2026-04` |
+| `overview` | `shaon overview --month 2026-04 --json` |
+| `types` | `shaon types` |
+| `absences` | `shaon absences` |
+| `sheet` | `shaon sheet` |
+| `corrections` | `shaon corrections` |
+| `report <name>` | `shaon report ErrorsReportNEW` |
+| `payslip` | `shaon payslip --month 2026-03` |
+| `salary` | `shaon salary --months 6` |
+
+### Write commands
+
+All writes are preview-only by default. Use `--execute` to submit.
+
+| Command | Example |
+|---------|---------|
+| `clock-in` | `shaon clock-in --execute` |
+| `clock-out` | `shaon clock-out --execute` |
+| `fill` | `shaon fill --from 2026-04-01 --to 2026-04-05 --type "work from home" --hours 09:00-18:00 --execute` |
+| `fix` | `shaon fix 2026-04-08 --type "regular" --hours 09:00-18:00 --execute` |
+| `auto-fill` | `shaon auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00 --execute` |
+
+## Output Modes
+
+Use `--json` whenever an agent needs machine-readable output:
 
 ```bash
-shaon status --month 2026-04 --json    # structured JSON to stdout
-shaon status --month 2026-04           # human-readable table
+shaon overview --month 2026-04 --json
+shaon status --month 2026-04 --json
 ```
 
-## Safety model
+## MCP Server
 
-All write commands default to **dry-run preview**. You must pass `--execute` to actually submit. Never assume execution happened unless you passed `--execute` AND the CLI returned success.
-
-- `fill` automatically skips weekends (Fri/Sat). Use `--include-weekends` to override.
-- `clock-in` preserves existing exit time and comment data.
-
-## Commands
-
-### Read commands (safe, no side effects)
-
-| Command | What it does | Example |
-|---------|-------------|---------|
-| `status` | Monthly attendance calendar | `shaon status --month 2026-04` |
-| `errors` | Days with attendance errors | `shaon errors --month 2026-04` |
-| `types` | List cached attendance types | `shaon types` |
-| `report` | Fetch a named report | `shaon report ErrorsReportNEW` |
-| `sheet` | Hours analysis sheet | `shaon sheet` |
-| `corrections` | Correction/change log | `shaon corrections` |
-| `absences` | Absence type symbols | `shaon absences` |
-| `payslip` | Download payslip PDF | `shaon payslip --month 2026-03` |
-| `salary` | Salary summary with trend | `shaon salary --months 3` |
-| `overview` | Full context in one call (identity, summary, types, errors, suggestions) | `shaon overview --json` |
-
-### Write commands (require `--execute` for live submission)
-
-| Command | What it does | Example |
-|---------|-------------|---------|
-| `clock-in` | Report entry for today | `shaon clock-in --execute` |
-| `clock-out` | Report exit for today | `shaon clock-out --execute` |
-| `fill` | Fill attendance for date range | `shaon fill --from 2026-04-01 --to 2026-04-05 --type "Work from Home" --execute` |
-| `fix` | Fix an error day | `shaon fix 2026-04-08 --type "regular" --hours 09:00-18:00 --execute` |
-| `auto-fill` | Batch fill all missing days in a month | `shaon auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00 --execute` |
-
-### Setup & utility commands
-
-| Command | What it does |
-|---------|-------------|
-| `auth` | Set up keychain credentials (interactive) |
-| `auth --migrate` | Move plaintext password to keychain |
-| `sync-types` | Refresh attendance type cache (auto-syncs with 24h TTL) |
-| `completions` | Generate shell completions (`bash`, `zsh`, `fish`) |
-| `serve` | Start MCP server (stdio transport) for AI agent integration |
-
-### Available report names
-
-Use these with `shaon report <name>`:
-- `ErrorsReportNEW` — attendance errors
-- `MissingReportNEW` — missing reports
-- `AttendanceStatusReportNew2` — attendance status
-- `AbsenceReportNEW` — absences
-- `AllReportNEW` — all attendance data
-- `ManualReportingReportNEW` — manual corrections
-
-## Common agent workflows
-
-### Fastest path: overview + auto-fill (recommended)
+The repo also ships a stdio MCP server:
 
 ```bash
-# 1. Get full context in one call — identity, summary, types, errors, suggestions
+shaon serve
+```
+
+Current MCP tools cover:
+
+- status
+- errors
+- types
+- clock-in / clock-out
+- fill / auto-fill
+- salary
+- sheet / corrections / absences
+- overview
+
+CLI-only features today:
+
+- `payslip`
+- `report`
+- `fix`
+- `auth`
+- `sync-types`
+- `completions`
+
+## Agent Workflows
+
+### Review the current month
+
+```bash
 shaon overview --json
+```
 
-# 2. Auto-fill all missing days (preview first)
+### Auto-fill missing days
+
+```bash
 shaon auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00
-
-# 3. Execute if preview looks right
 shaon auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00 --execute
 ```
 
-`auto-fill` has a safety cap of 10 days by default. Use `--max-days N` to override.
-
-### Manual path: status + fill
+### Download a payslip
 
 ```bash
-# 1. See current month status
-shaon status --month 2026-04 --json
-
-# 2. Check for errors
-shaon errors --month 2026-04 --json
-
-# 3. Fill specific days
-shaon fill --from 2026-04-07 --to 2026-04-11 --type "regular" --hours 09:00-18:00 --execute
-```
-
-### Quick clock in/out
-
-```bash
-shaon clock-in --execute
-# ... at end of day ...
-shaon clock-out --execute
-```
-
-### Download payslip
-
-```bash
-shaon payslip --month 2026-03 --output ~/Downloads/march.pdf
+shaon payslip --month 2026-03 --output ~/Downloads/2026-03.pdf
 ```
 
 ## Troubleshooting
 
-- **CAPTCHA**: If login returns a CAPTCHA error, the user must solve it in their browser at their employer's Hilanet URL and retry.
-- **Type resolution fails**: Run `shaon sync-types` to refresh the cache, or pass a numeric type code directly.
-- **Keychain access prompts on macOS**: The binary needs codesigning. `scripts/run.sh` handles this automatically. If running from `cargo run`, sign manually: `codesign -s - target/release/shaon`.
-- **Session expired**: The CLI re-authenticates automatically. If it persists, run `shaon auth` to refresh credentials.
+- **CAPTCHA**: the user must solve it in the browser first
+- **Type resolution fails**: run `shaon sync-types` or pass the numeric type code directly
+- **Keychain prompts on macOS**: prefer `scripts/run.sh`; for stable local signing run `scripts/setup-codesign.sh` once
+- **Headless automation**: use `SHAON_PASSWORD` and `SHAON_SESSION_KEY`
+- **Session expired**: rerun `shaon auth` if automatic reauthentication is not enough
 
-## Protocol reference
+## Further Reading
 
-For endpoint details and the reverse-engineered Hilanet protocol, see `@PROTOCOL.md`.
+- [README.md](../../README.md)
+- [ARCHITECTURE.md](../../ARCHITECTURE.md)
+- [PROTOCOL.md](../../PROTOCOL.md)

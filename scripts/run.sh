@@ -93,14 +93,30 @@ if needs_rebuild "$BIN_PATH"; then
         exit 1
     fi
 
+    # Codesign on macOS so the keyring crate can access the Keychain.
+    # Prefer the self-signed identity created by scripts/setup-codesign.sh
+    # (ACL sticks across rebuilds); fall back to ad-hoc only when the identity
+    # is not installed. If it's installed but signing fails, surface a clear
+    # warning instead of silently regressing to the old cdhash-churn behavior.
+    #
+    # We sign the fresh cargo output directly (before copy). That way anyone
+    # invoking "$TARGET_DIR/release/shaon" (direct CDP experiments, sub-agents,
+    # example binaries copied from the same tree) gets the stable identity too.
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1; then
+        if security find-identity -v -p codesigning 2>/dev/null | grep -q "shaon-cli-signer"; then
+            if ! codesign -s "shaon-cli-signer" -f --identifier "com.avivsinai.shaon" "$SOURCE_BIN" 2>/dev/null; then
+                echo "[shaon] WARNING: signing with shaon-cli-signer failed. Falling back to ad-hoc;" >&2
+                echo "[shaon]          macOS keychain will re-prompt for 'Always Allow' on every rebuild." >&2
+                echo "[shaon]          Re-run scripts/setup-codesign.sh to reinstall the signing identity." >&2
+                codesign -s - -f --identifier "com.avivsinai.shaon" "$SOURCE_BIN" 2>/dev/null || true
+            fi
+        else
+            codesign -s - -f --identifier "com.avivsinai.shaon" "$SOURCE_BIN" 2>/dev/null || true
+        fi
+    fi
+
     cp "$SOURCE_BIN" "$BIN_PATH.tmp"
     chmod +x "$BIN_PATH.tmp"
-
-    # Ad-hoc codesign on macOS so the keyring crate can access the Keychain
-    # without triggering a system prompt on every invocation.
-    if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1; then
-        codesign -s - -f --identifier "com.avivsinai.shaon" "$BIN_PATH.tmp" 2>/dev/null || true
-    fi
 
     mv "$BIN_PATH.tmp" "$BIN_PATH"
     echo "[shaon] Cached binary at $BIN_PATH" >&2
