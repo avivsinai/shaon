@@ -25,7 +25,7 @@ This policy applies to:
 
 ## Security Measures
 
-- Credentials stored in OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager)
+- By default, credentials are stored in the OS keychain for local interactive use
 - No plaintext passwords in config files
 - All HTTP traffic over TLS (rustls, no cert bypass)
 - Binary ad-hoc codesigned on macOS for keychain access

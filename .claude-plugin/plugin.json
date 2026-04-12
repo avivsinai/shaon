@@ -1,7 +1,7 @@
 {
   "name": "shaon",
   "version": "0.8.0",
-  "description": "Rust CLI and Claude Code skill for Hilan (חילן) / Hilanet attendance, reports, payslips, and salary lookup.",
+  "description": "Rust CLI and Claude Code skill for personal attendance, payslip, salary, and related self-service tasks on the user's own Hilan account.",
   "author": {
     "name": "Aviv Sinai"
   },

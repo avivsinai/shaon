@@ -417,7 +417,7 @@ enum PayslipCommand {
         month: Option<String>,
     },
 
-    /// Print the current Hilan password; older downloads may require the password active at download time
+    /// Sensitive: reveals the current Hilan login password in plaintext; use only to open an older password-protected PDF and avoid shared terminals, screenshots, and agent transcripts
     Password,
 }
 

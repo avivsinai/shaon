@@ -1,11 +1,11 @@
 ---
 name: shaon
 description: >
-  Automate Hilan (חילן) / Hilanet for attendance, work hours, missing clock-ins,
-  corrections, payslips, salary, and HR self-service. Trigger on shaon, attendance,
-  clock in/out, payslip, salary slip, work hours, תלוש, תלוש שכר, משכורת,
-  דוח נוכחות, corrections log, forgot to clock in, forgot to report, or any request
-  about an Israeli employer's Hilan portal.
+  Personal attendance, payslip, salary, and related self-service tasks on the
+  user's own Hilan account. Trigger on shaon, attendance, clock in/out, payslip,
+  salary slip, work hours, תלוש, תלוש שכר, משכורת, דוח נוכחות, corrections log,
+  forgot to clock in, forgot to report, or any request about the user's own
+  Israeli employer self-service portal.
 ---
 
 # Shaon
@@ -16,8 +16,8 @@ Claude Code skill for the `shaon` repo and binary.
 
 - Prefer the **MCP server** when a tool already covers the domain operation.
 - Fall back to the **CLI** for local-machine or interactive operations:
-  `auth`, `payroll payslip view`, `payroll payslip password`, `reports show`,
-  `cache refresh attendance-types`, `serve`, and `completions`.
+  `auth`, `payroll payslip view`, `reports show`, `cache refresh attendance-types`,
+  `serve`, and `completions`.
 - Use this **skill** to pick the right surface, the right command/tool, and the
   right safety flow.
 
@@ -76,7 +76,6 @@ shaon auth
 | "show a named Hilan report page" | `shaon reports show <name>` |
 | "download my payslip" | `shaon payroll payslip download --month YYYY-MM` |
 | "open my payslip locally" | `shaon payroll payslip view --month YYYY-MM` |
-| "what is the payslip PDF password?" | `shaon payroll payslip password` |
 | "how much did I earn recently?" | `shaon payroll salary --months N` |
 
 `attendance overview` is usually the best first move for an agent because it bundles identity, summary, errors, missing days, and suggested actions.
@@ -125,7 +124,6 @@ CLI-only features:
 
 - `shaon auth`
 - `shaon payroll payslip view`
-- `shaon payroll payslip password`
 - `shaon reports show <name>`
 - `shaon cache refresh attendance-types`
 - `shaon serve`
@@ -161,8 +159,11 @@ shaon attendance report range --from 2026-04-01 --to 2026-04-05 --type "regular"
 ```bash
 shaon payroll payslip download --month 2026-03
 shaon payroll payslip view --month 2026-03
-shaon payroll payslip password
 ```
+
+### Sensitive recovery command
+
+`shaon payroll payslip password` reveals the current Hilan login password in plaintext. Use it only if you explicitly need to open an older password-protected PDF. Avoid shared terminals, screenshots, and agent transcripts.
 
 ## Troubleshooting
 
