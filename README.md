@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 
-Rust CLI + MCP server + Claude Code plugin for automating Hilan (חילן) / Hilanet attendance, payslips, salary summaries, and related HR workflows.
+Rust CLI + MCP server + Claude Code plugin for automating Hilan / Hilanet attendance, payslips, salary summaries, and related HR workflows.
 
 > **Note**
 > shaon automates the Hilanet web interface via reverse-engineered protocol details. It is not affiliated with Hilan Ltd.
@@ -25,9 +25,10 @@ Rust CLI + MCP server + Claude Code plugin for automating Hilan (חילן) / Hil
 
 ## What Shaon Covers
 
-- Attendance reads: status, errors, overview, sheet, corrections, absences
-- Attendance writes: clock in/out, fill ranges, fix error days, auto-fill missing days
-- Payroll reads: payslip download and salary summaries
+- Attendance reads: `attendance status`, `attendance errors`, `attendance overview`, `attendance types`, `attendance absences`
+- Attendance writes: `attendance report today|day|range`, `attendance resolve`, `attendance auto-fill`
+- Reports: `reports sheet`, `reports corrections`, `reports show <name>`
+- Payroll: `payroll payslip download|view|password`, `payroll salary`
 - Automation surfaces: JSON CLI output, stdio MCP server, Claude Code plugin/skill
 - Safe defaults: every write path is preview-only until you pass `--execute` or `execute: true`
 
@@ -96,10 +97,10 @@ For stable local identities across rebuilds:
 
 ```bash
 ./scripts/setup-codesign.sh
-./scripts/run.sh status
+./scripts/run.sh attendance overview
 ```
 
-For headless or CI automation, prefer `SHAON_PASSWORD` and `SHAON_SESSION_KEY` instead of interactive keychain access.
+For advanced headless or CI automation, prefer `SHAON_PASSWORD` and `SHAON_MASTER_KEY` instead of interactive keychain access.
 
 ## Quick Start
 
@@ -120,37 +121,43 @@ payslip_format = "%Y-%m.pdf"
 shaon auth
 ```
 
-This stores the password in the OS keychain and verifies the login.
+This stores bundled credentials in the OS keychain and verifies the login. The local master key is generated automatically; `shaon auth` only prompts for the Hilan password.
 
 ### 3. Common Workflows
 
 ```bash
 # Full monthly context: identity, errors, missing days, suggestions
-shaon overview --month 2026-04
+shaon attendance overview --month 2026-04
 
 # Same, but machine-readable
-shaon overview --month 2026-04 --json
+shaon attendance overview --month 2026-04 --json
 
 # Show the attendance calendar for a month
-shaon status --month 2026-04
+shaon attendance status --month 2026-04
 
 # Preview an auto-fill run, then execute it
-shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00
-shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00 --execute
+shaon attendance auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00
+shaon attendance auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00 --execute
 
 # Clock in / out
-shaon clock-in --execute
-shaon clock-out --execute
+shaon attendance report today --in --execute
+shaon attendance report today --out --execute
 
 # Download the previous month's payslip (default month)
-shaon payslip
+shaon payroll payslip download
 
 # Download a specific payslip to a chosen path
-shaon payslip --month 2026-03 --output ~/Downloads/2026-03.pdf
+shaon payroll payslip download --month 2026-03 --output ~/Downloads/2026-03.pdf
+
+# Open a payslip without leaving decrypted bytes on disk
+shaon payroll payslip view --month 2026-03
+
+# Print the payslip PDF password (same as your Hilan login)
+shaon payroll payslip password
 
 # Show the last 2 salary months (CLI default)
-shaon salary
-shaon salary --months 6
+shaon payroll salary
+shaon payroll salary --months 6
 ```
 
 ## Configuration and Credentials
@@ -167,16 +174,16 @@ shaon salary --months 6
 
 shaon reads secrets in this order:
 
-1. `SHAON_PASSWORD` / `SHAON_SESSION_KEY`
+1. `SHAON_PASSWORD` / `SHAON_MASTER_KEY`
 2. OS keychain entries
 3. legacy plaintext password in `config.toml` only for migration
 
 ### Notes
 
-- Session cookies are encrypted at rest with AES-256-GCM
+- Session cookies are encrypted at rest with AES-256-GCM using an HKDF-derived key
 - `shaon auth --migrate` moves a legacy plaintext password into the keychain
 - If Hilan asks for a CAPTCHA, solve it in the browser and retry
-- `sync-types` is optional; attendance types auto-sync on first use
+- `shaon cache refresh attendance-types` is the hidden admin escape hatch; attendance types auto-sync on first use
 
 ## CLI Guide
 
@@ -192,48 +199,50 @@ shaon <command> --help
 | Command | Purpose |
 |---------|---------|
 | `auth` | test credentials and store password in keychain |
-| `sync-types` | refresh the attendance type cache |
-| `types` | show currently known attendance types |
+| `cache refresh attendance-types` | hidden admin refresh for the attendance type cache |
 | `completions <shell>` | generate shell completions |
 | `serve` | start the stdio MCP server |
 
-### Attendance Read Commands
+### Attendance Commands
 
 | Command | Purpose |
 |---------|---------|
-| `status [--month YYYY-MM]` | monthly attendance calendar |
-| `errors [--month YYYY-MM]` | error days for a month |
-| `overview [--month YYYY-MM] [--detailed]` | identity, summary, errors, missing days, suggestions |
-| `sheet` | analyzed attendance sheet (`HoursAnalysis.aspx`) |
-| `corrections` | correction log (`HoursReportLog.aspx`) |
-| `absences` | absence symbols and display names |
-| `report <name>` | fetch a named Hilan report page and parse the first meaningful HTML table |
-
-### Attendance Write Commands
-
-| Command | Purpose |
-|---------|---------|
-| `clock-in [--type TYPE] [--execute]` | report entry time for today |
-| `clock-out [--execute]` | report exit time for today |
-| `fill --from DATE --to DATE [--type TYPE] [--hours HH:MM-HH:MM] [--include-weekends] [--execute]` | fill a date range |
-| `fix DATE [--type TYPE] [--hours HH:MM-HH:MM] [--report-id UUID] [--error-type N] [--execute]` | fix a specific error day |
-| `auto-fill [--month YYYY-MM] --type TYPE [--hours HH:MM-HH:MM] [--include-weekends] [--max-days N] [--execute]` | fill all missing days in a month |
+| `attendance status [--month YYYY-MM]` | monthly attendance calendar |
+| `attendance errors [--month YYYY-MM]` | error days for a month |
+| `attendance overview [--month YYYY-MM] [--detailed]` | identity, summary, errors, missing days, suggestions |
+| `attendance report today --in|--out [--type TYPE] [--execute]` | report today using the current local time |
+| `attendance report day DATE [--type TYPE] [--hours HH:MM-HH:MM] [--execute]` | report one explicit day |
+| `attendance report range --from DATE --to DATE [--type TYPE] [--hours HH:MM-HH:MM] [--include-weekends] [--execute]` | report a date range |
+| `attendance resolve DATE [--type TYPE] [--hours HH:MM-HH:MM] [--execute]` | resolve a specific error day via auto-detected fix target |
+| `attendance auto-fill [--month YYYY-MM] --type TYPE [--hours HH:MM-HH:MM] [--include-weekends] [--max-days N] [--execute]` | fill all missing days in a month |
+| `attendance types` | show currently known attendance types |
+| `attendance absences` | absence symbols and display names |
 
 All write commands are preview-only by default.
+
+### Reports Commands
+
+| Command | Purpose |
+|---------|---------|
+| `reports sheet` | analyzed attendance sheet (`HoursAnalysis.aspx`) |
+| `reports corrections` | correction log (`HoursReportLog.aspx`) |
+| `reports show <name>` | fetch a named Hilan report page and parse the first meaningful HTML table |
 
 ### Payroll Commands
 
 | Command | Purpose |
 |---------|---------|
-| `payslip [--month YYYY-MM] [--output PATH]` | download a payslip PDF; defaults to the previous month |
-| `salary [--months N]` | salary summary; defaults to `2` months |
+| `payroll payslip download [--month YYYY-MM] [--output PATH]` | download a password-protected payslip PDF; defaults to the previous month |
+| `payroll payslip view [--month YYYY-MM]` | open a payslip in Preview without writing decrypted bytes to disk (macOS) |
+| `payroll payslip password` | print the password used for password-protected payslips |
+| `payroll salary [--months N]` | salary summary; defaults to `2` months |
 
 ### JSON Output
 
 All CLI commands support `--json`.
 
 ```bash
-shaon status --month 2026-04 --json | jq '.days[] | select(.error == true)'
+shaon attendance status --month 2026-04 --json | jq '.days[] | select(.error == true)'
 ```
 
 ## MCP Server
@@ -251,19 +260,21 @@ shaon status --month 2026-04 --json | jq '.days[] | select(.error == true)'
 | `shaon_clock_out` | preview or submit clock-out |
 | `shaon_fill` | preview or submit a date-range fill |
 | `shaon_auto_fill` | preview or submit auto-fill |
+| `shaon_resolve` | preview or submit an error-day resolve |
+| `shaon_payslip_download` | return a password-protected payslip as a saved path, base64 bytes, or both |
 | `shaon_salary` | salary summary |
-| `shaon_sheet` | analyzed attendance sheet |
-| `shaon_corrections` | correction log |
+| `shaon_sheet` | analyzed attendance sheet with a stable report schema |
+| `shaon_corrections` | correction log with a stable report schema |
 | `shaon_absences` | absence symbols |
 | `shaon_overview` | monthly overview |
 
 Current CLI-only capabilities:
 
-- `payslip`
-- `report`
-- `fix`
 - `auth`
-- `sync-types`
+- `payroll payslip view`
+- `payroll payslip password`
+- `reports show <name>`
+- `cache refresh attendance-types`
 - `completions`
 
 ### MCP Client Configuration Example
@@ -323,13 +334,13 @@ Example:
 /shaon:shaon show my missing attendance days for 2026-04
 ```
 
-The skill also auto-triggers on keywords like `shaon`, `attendance`, `clock in`, `payslip`, `salary`, `work hours`, and `שעון נוכחות`.
+The skill also auto-triggers on keywords like `shaon`, `attendance`, `clock in`, `payslip`, `salary`, `work hours`, `שעון נוכחות`, `תלוש`, `תלוש שכר`, `משכורת`, and `דוח נוכחות`.
 
-### Why Use the Skill vs MCP Directly
+### Tool Selection
 
-- Use the **CLI** when you want explicit shell commands or scripting
-- Use the **MCP server** when your agent platform wants typed tools over stdio
-- Use the **Claude Code plugin/skill** when you want natural-language workflows inside Claude Code
+- Prefer the **MCP server** when a tool already covers the domain operation.
+- Fall back to the **CLI** for local-machine or interactive operations such as `auth`, `payroll payslip view`, `payroll payslip password`, `reports show`, `cache refresh attendance-types`, `serve`, and `completions`.
+- Use the **Claude Code plugin/skill** when you want natural-language workflows inside Claude Code and need help choosing the right surface.
 
 For plugin development guidance, see the official Claude Code plugin docs:
 

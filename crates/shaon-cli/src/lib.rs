@@ -2,12 +2,16 @@ use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use hr_core::{
-    AttendanceProvider, AttendanceType as CoreAttendanceType, FixTarget as CoreFixTarget,
-    PayslipProvider, ProviderError, ReportProvider, ReportSpec, SalaryProvider,
-    WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
+    AttendanceProvider, AttendanceType as CoreAttendanceType, DocumentDownload,
+    FixTarget as CoreFixTarget, PayslipProvider, ProviderError, ReportProvider, ReportSpec,
+    ReportTable, SalaryProvider, WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
 };
+use rand::RngCore;
+use secrecy::ExposeSecret;
 use serde::Serialize;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use zeroize::Zeroize;
 
 use hr_core::use_cases;
@@ -74,7 +78,7 @@ struct SuggestedAction {
 const SHEET_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursAnalysis.aspx";
 const CORRECTIONS_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursReportLog.aspx";
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "shaon",
     version,
@@ -183,163 +187,303 @@ impl<'a> ProviderWriteOutput<'a> {
     }
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Authenticate with Hilan (test credentials or manage keychain)
-    Auth {
-        /// Migrate plaintext password from config file to OS keychain
-        #[arg(long)]
-        migrate: bool,
-    },
+#[derive(Serialize)]
+struct ReportResponse {
+    report: ReportMetadata,
+    column_count: usize,
+    row_count: usize,
+    columns: Vec<ReportColumn>,
+    rows: Vec<ReportRow>,
+}
 
-    /// Sync attendance-type ontology from Hilan (optional — types auto-sync on first use)
-    SyncTypes,
+#[derive(Serialize)]
+struct ReportMetadata {
+    kind: String,
+    requested: String,
+    provider_name: String,
+}
 
-    /// Clock in for today
-    ClockIn {
-        /// Attendance type override
-        #[arg(long = "type")]
-        attendance_type: Option<String>,
+#[derive(Serialize)]
+struct ReportColumn {
+    index: usize,
+    name: String,
+}
 
-        #[command(flatten)]
-        write_mode: WriteMode,
-    },
+#[derive(Serialize)]
+struct ReportRow {
+    index: usize,
+    cells: Vec<String>,
+}
 
-    /// Clock out for today
-    ClockOut {
-        #[command(flatten)]
-        write_mode: WriteMode,
-    },
+#[derive(Args, Debug, Clone)]
+struct OverviewArgs {
+    /// Month in YYYY-MM format (defaults to current month)
+    #[arg(long)]
+    month: Option<String>,
 
-    /// Fill attendance for a date range
-    Fill {
-        /// Start date (YYYY-MM-DD)
-        #[arg(long)]
-        from: String,
-        /// End date (YYYY-MM-DD)
-        #[arg(long)]
-        to: String,
-        /// Attendance type override
-        #[arg(long = "type")]
-        attendance_type: Option<String>,
-        /// Fixed hours (e.g. "09:00-18:00")
-        #[arg(long)]
-        hours: Option<String>,
-        /// Include Friday and Saturday (Israeli weekend) instead of skipping them
-        #[arg(long)]
-        include_weekends: bool,
+    /// Include full per-day calendar data in output
+    #[arg(long)]
+    detailed: bool,
+}
 
-        #[command(flatten)]
-        write_mode: WriteMode,
-    },
+#[derive(Args, Debug, Clone)]
+struct AttendanceMonthArgs {
+    /// Month in YYYY-MM format (defaults to current month)
+    #[arg(long)]
+    month: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct AttendanceReportTodayArgs {
+    /// Report an entry timestamp for now
+    #[arg(long = "in", conflicts_with = "out")]
+    r#in: bool,
+
+    /// Report an exit timestamp for now
+    #[arg(long, conflicts_with = "in")]
+    out: bool,
+
+    /// Attendance type override for `--in`
+    #[arg(long = "type")]
+    attendance_type: Option<String>,
+
+    #[command(flatten)]
+    write_mode: WriteMode,
+}
+
+#[derive(Args, Debug, Clone)]
+struct AttendanceReportDayArgs {
+    /// Day to report (YYYY-MM-DD)
+    day: String,
+
+    /// Attendance type override
+    #[arg(long = "type")]
+    attendance_type: Option<String>,
+
+    /// Fixed hours (e.g. "09:00-18:00")
+    #[arg(long)]
+    hours: Option<String>,
+
+    #[command(flatten)]
+    write_mode: WriteMode,
+}
+
+#[derive(Args, Debug, Clone)]
+struct AttendanceReportRangeArgs {
+    /// Start date (YYYY-MM-DD)
+    #[arg(long)]
+    from: String,
+
+    /// End date (YYYY-MM-DD)
+    #[arg(long)]
+    to: String,
+
+    /// Attendance type override
+    #[arg(long = "type")]
+    attendance_type: Option<String>,
+
+    /// Fixed hours (e.g. "09:00-18:00")
+    #[arg(long)]
+    hours: Option<String>,
+
+    /// Include Friday and Saturday (Israeli weekend) instead of skipping them
+    #[arg(long)]
+    include_weekends: bool,
+
+    #[command(flatten)]
+    write_mode: WriteMode,
+}
+
+#[derive(Args, Debug, Clone)]
+struct AttendanceResolveArgs {
+    /// Day to resolve (YYYY-MM-DD)
+    day: String,
+
+    /// Attendance type override
+    #[arg(long = "type")]
+    attendance_type: Option<String>,
+
+    /// Fixed hours (e.g. "09:00-18:00")
+    #[arg(long)]
+    hours: Option<String>,
+
+    #[command(flatten)]
+    write_mode: WriteMode,
+}
+
+#[derive(Args, Debug, Clone)]
+struct AutoFillArgs {
+    /// Month to auto-fill (default: current month)
+    #[arg(long)]
+    month: Option<String>,
+
+    /// Attendance type (required unless --hours is provided)
+    #[arg(long, short = 't')]
+    r#type: Option<String>,
+
+    /// Hours range (e.g., "09:00-18:00")
+    #[arg(long)]
+    hours: Option<String>,
+
+    /// Include weekends (Fri/Sat) -- skipped by default
+    #[arg(long)]
+    include_weekends: bool,
+
+    /// Safety cap: max days to fill in one run (default: 10)
+    #[arg(long, default_value = "10")]
+    max_days: u32,
+
+    #[command(flatten)]
+    write_mode: WriteMode,
+}
+
+#[derive(Args, Debug, Clone)]
+struct SalaryArgs {
+    /// Number of months to show (default: 2)
+    #[arg(long, default_value = "2")]
+    months: u32,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum AttendanceReportCommand {
+    /// Report attendance for today using the current local time
+    Today(AttendanceReportTodayArgs),
+
+    /// Report attendance for a single day
+    Day(AttendanceReportDayArgs),
+
+    /// Report attendance for a date range
+    Range(AttendanceReportRangeArgs),
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum AttendanceCommand {
+    /// Show attendance status for a month
+    Status(AttendanceMonthArgs),
 
     /// Show attendance errors for a month
-    Errors {
-        /// Month in YYYY-MM format (defaults to current)
-        #[arg(long)]
-        month: Option<String>,
+    Errors(AttendanceMonthArgs),
+
+    /// Get overview for a month: identity, summary, errors, missing days, suggested actions
+    Overview(OverviewArgs),
+
+    /// Report attendance explicitly for today, one day, or a range
+    Report {
+        #[command(subcommand)]
+        command: AttendanceReportCommand,
     },
 
-    /// Fix a single day's attendance
-    Fix {
-        /// Day to fix (YYYY-MM-DD)
-        day: String,
-        /// Attendance type override
-        #[arg(long = "type")]
-        attendance_type: Option<String>,
-        /// Fixed hours (e.g. "09:00-18:00")
-        #[arg(long)]
-        hours: Option<String>,
+    /// Automatically fill all missing days in a month (dry-run by default)
+    AutoFill(AutoFillArgs),
 
-        /// Error-wizard report ID. Defaults to the sampled missing-standard-day flow.
-        #[arg(long, default_value = "00000000-0000-0000-0000-000000000000")]
-        report_id: String,
+    /// Resolve a single error day using the provider-discovered fix target
+    Resolve(AttendanceResolveArgs),
 
-        /// Error-wizard type. Defaults to the sampled missing-standard-day flow.
-        #[arg(long, default_value = "63")]
-        error_type: String,
+    /// List available attendance types (from cache or server)
+    Types,
 
-        #[command(flatten)]
-        write_mode: WriteMode,
-    },
+    /// Show absences initial data (symbols and display names)
+    Absences,
+}
 
-    /// Show attendance status for a month
-    Status {
-        /// Month in YYYY-MM format (defaults to current)
-        #[arg(long)]
-        month: Option<String>,
-    },
-
-    /// Download payslip PDF
-    Payslip {
+#[derive(Subcommand, Debug, Clone)]
+enum PayslipCommand {
+    /// Download a password-protected payslip PDF
+    Download {
         /// Month in YYYY-MM format (defaults to previous month)
         #[arg(long)]
         month: Option<String>,
+
         /// Output file path
         #[arg(long)]
         output: Option<PathBuf>,
     },
 
-    /// Show salary summary for recent months
-    Salary {
-        /// Number of months to show (default: 2)
-        #[arg(long, default_value = "2")]
-        months: u32,
+    /// Open a payslip in the system PDF viewer without writing decrypted bytes to disk
+    View {
+        /// Month in YYYY-MM format (defaults to previous month)
+        #[arg(long)]
+        month: Option<String>,
     },
 
+    /// Print the password for password-protected payslip PDFs
+    Password,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PayrollCommand {
+    /// Download, inspect, or unlock payslips
+    Payslip {
+        #[command(subcommand)]
+        command: PayslipCommand,
+    },
+
+    /// Show salary summary for recent months
+    Salary(SalaryArgs),
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum ReportsCommand {
     /// Fetch a named Hilan report
-    Report {
+    Show {
         /// Report name (e.g. ErrorsReportNEW, MissingReportNEW)
         name: String,
     },
-
-    /// Show absences initial data (symbols and display names)
-    Absences,
 
     /// Show the analyzed attendance sheet
     Sheet,
 
     /// Show the attendance correction log
     Corrections,
+}
 
-    /// List available attendance types (from cache or server)
-    Types,
+#[derive(Subcommand, Debug, Clone)]
+enum CacheRefreshCommand {
+    /// Refresh the attendance-type ontology cache
+    AttendanceTypes,
+}
 
-    /// Get overview for a month: identity, summary, errors, missing days, suggested actions
-    Overview {
-        /// Month in YYYY-MM format (defaults to current month)
+#[derive(Subcommand, Debug, Clone)]
+enum CacheCommand {
+    /// Refresh locally cached admin data
+    Refresh {
+        #[command(subcommand)]
+        command: CacheRefreshCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum Commands {
+    /// Authenticate with Hilan (test credentials or manage keychain)
+    Auth {
+        /// Migrate plaintext password from config file into bundled keychain credentials
         #[arg(long)]
-        month: Option<String>,
-
-        /// Include full per-day calendar data in output
-        #[arg(long)]
-        detailed: bool,
+        migrate: bool,
     },
 
-    /// Automatically fill all missing days in a month (dry-run by default)
-    AutoFill {
-        /// Month to auto-fill (default: current month)
-        #[arg(long)]
-        month: Option<String>,
+    /// Attendance reads and writes
+    Attendance {
+        #[command(subcommand)]
+        command: AttendanceCommand,
+    },
 
-        /// Attendance type (required unless --hours is provided)
-        #[arg(long, short = 't')]
-        r#type: Option<String>,
+    /// Payroll reads and payslip workflows
+    Payroll {
+        #[command(subcommand)]
+        command: PayrollCommand,
+    },
 
-        /// Hours range (e.g., "09:00-18:00")
-        #[arg(long)]
-        hours: Option<String>,
+    /// Attendance-adjacent reports
+    Reports {
+        #[command(subcommand)]
+        command: ReportsCommand,
+    },
 
-        /// Include weekends (Fri/Sat) -- skipped by default
-        #[arg(long)]
-        include_weekends: bool,
-
-        /// Safety cap: max days to fill in one run (default: 10)
-        #[arg(long, default_value = "10")]
-        max_days: u32,
-
-        #[command(flatten)]
-        write_mode: WriteMode,
+    /// Hidden admin cache operations
+    #[command(hide = true)]
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
     },
 
     /// Start MCP server (stdio transport)
@@ -359,7 +503,7 @@ pub async fn run() -> Result<()> {
     // MCP serve mode: bypass normal config/client init — each tool call
     // creates its own client. All logging goes to stderr so stdout stays
     // clean for the JSON-RPC protocol stream.
-    if matches!(cli.command, Commands::Serve) {
+    if matches!(&cli.command, Commands::Serve) {
         return run_mcp_server().await;
     }
 
@@ -376,9 +520,9 @@ pub async fn run() -> Result<()> {
         .init();
 
     // Handle completions before config loading — no credentials needed.
-    if let Commands::Completions { shell } = cli.command {
+    if let Commands::Completions { shell } = &cli.command {
         let mut cmd = Cli::command();
-        clap_complete::generate(shell, &mut cmd, "shaon", &mut std::io::stdout());
+        clap_complete::generate(*shell, &mut cmd, "shaon", &mut std::io::stdout());
         return Ok(());
     }
 
@@ -391,193 +535,72 @@ pub async fn run() -> Result<()> {
     };
 
     let subdomain = config.subdomain.clone();
-    let mut client = provider_hilan::build_provider(config)?.into_inner();
     let json = cli.json;
 
     match cli.command {
-        Commands::Auth { migrate } => {
-            if migrate {
-                // Migrate plaintext password to keychain
-                let config = client.config_mut();
-                config.migrate_to_keychain()?;
-            } else {
-                // Interactive: prompt for password if not already in keychain
-                match client.config().get_password() {
-                    Ok(_) => {
-                        eprintln!("Password already available. Testing login...");
-                    }
-                    Err(_) => {
-                        let mut password = rpassword::prompt_password(
-                            "Enter your Hilan password (input is hidden): ",
-                        )
-                        .context("read password from terminal")?;
-                        client.config().store_password_in_keychain(&password)?;
-                        password.zeroize();
-                        eprintln!("Password stored in OS keychain.");
-                    }
-                }
-                client.login().await?;
-                if json {
-                    print_json(&serde_json::json!({"status": "ok"}))?;
-                }
-            }
+        Commands::Auth { migrate } => run_auth(config, migrate, json).await?,
+        Commands::Attendance { command } => {
+            let client = provider_hilan::build_provider(config)?.into_inner();
+            run_attendance_command(command, client, &subdomain, json).await?;
         }
-        Commands::SyncTypes => {
-            client.ensure_authenticated().await?;
-            let ont = ontology::sync_from_calendar(&mut client, &subdomain).await?;
-            if json {
-                print_json(&ont)?;
-            } else {
-                ont.print_table();
-            }
+        Commands::Payroll { command } => {
+            let client = provider_hilan::build_provider(config)?.into_inner();
+            run_payroll_command(command, client, json).await?;
         }
-        Commands::ClockIn {
-            attendance_type,
-            write_mode,
-        } => {
-            let execute = write_mode.should_execute();
-            if attendance_type.is_some() {
-                client.ensure_authenticated().await?;
-            }
-            let type_code =
-                resolve_attendance_type_code(&mut client, &subdomain, attendance_type.as_deref())
-                    .await?;
-            let submit = attendance::AttendanceSubmit {
-                date: Local::now().date_naive(),
-                attendance_type_code: type_code,
-                entry_time: Some(current_local_time_hhmm()),
-                exit_time: None,
-                comment: None,
-                clear_entry: false,
-                clear_exit: false,
-                clear_comment: false,
-                default_work_day: attendance_type.is_none(),
-            };
-            let preview = attendance::submit_day(&mut client, &submit, execute).await?;
-            if json {
-                print_json(&WriteOutput::new("clock-in", &preview))?;
-            } else {
-                print_submit_preview("clock-in", &preview);
-            }
+        Commands::Reports { command } => {
+            let client = provider_hilan::build_provider(config)?.into_inner();
+            run_reports_command(command, client, json).await?;
         }
-        Commands::ClockOut { write_mode } => {
-            let execute = write_mode.should_execute();
-            let submit = attendance::AttendanceSubmit {
-                date: Local::now().date_naive(),
-                attendance_type_code: None,
-                entry_time: None,
-                exit_time: Some(current_local_time_hhmm()),
-                comment: None,
-                clear_entry: false,
-                clear_exit: false,
-                clear_comment: false,
-                default_work_day: false,
-            };
-            let preview = attendance::submit_day(&mut client, &submit, execute).await?;
-            if json {
-                print_json(&WriteOutput::new("clock-out", &preview))?;
-            } else {
-                print_submit_preview("clock-out", &preview);
-            }
+        Commands::Cache { command } => {
+            let client = provider_hilan::build_provider(config)?.into_inner();
+            run_cache_command(command, client, &subdomain, json).await?;
         }
-        Commands::Fill {
-            from,
-            to,
-            attendance_type,
-            hours,
-            include_weekends,
-            write_mode,
-        } => {
-            let from_date = parse_date(&from)?;
-            let to_date = parse_date(&to)?;
-            let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
-            let mut provider = HilanProvider::from_client(client);
-            let type_code =
-                use_cases::resolve_attendance_type(&mut provider, attendance_type.as_deref())
-                    .await
-                    .map_err(provider_error)?
-                    .map(|resolved| resolved.code);
-            let previews = use_cases::fill_range(
-                &mut provider,
-                from_date,
-                to_date,
-                use_cases::FillRangeOptions {
-                    attendance_type_code: type_code,
-                    hours: hours_range,
-                    include_weekends,
-                    mode: write_mode.provider_mode(),
-                },
-            )
-            .await
-            .map_err(provider_error)?;
+        Commands::Serve => unreachable!("handled above"),
+        Commands::Completions { .. } => unreachable!("handled above"),
+    }
 
-            if json {
-                let outputs: Vec<ProviderWriteOutput<'_>> = previews
-                    .iter()
-                    .map(|preview| ProviderWriteOutput::new("fill", preview))
-                    .collect();
-                print_json(&outputs)?;
-            } else {
-                for preview in &previews {
-                    print_provider_preview("fill", preview);
-                }
+    Ok(())
+}
+
+async fn run_auth(mut config: Config, migrate: bool, json: bool) -> Result<()> {
+    if migrate {
+        config.migrate_to_keychain()?;
+    } else {
+        match config.get_password() {
+            Ok(_) => {
+                eprintln!("Password already available. Testing login...");
+            }
+            Err(_) => {
+                let mut password =
+                    rpassword::prompt_password("Enter your Hilan password (input is hidden): ")
+                        .context("read password from terminal")?;
+                let mut local_master_key = [0_u8; provider_hilan::config::LOCAL_MASTER_KEY_LEN];
+                rand::rngs::OsRng.fill_bytes(&mut local_master_key);
+                config.store_credentials(&password, &local_master_key)?;
+                local_master_key.zeroize();
+                password.zeroize();
+                eprintln!("Credentials stored in OS keychain.");
             }
         }
-        Commands::Errors { month } => {
-            let month = parse_month_or_current(month.as_deref())?;
-            let mut provider = HilanProvider::from_client(client);
-            let cal = provider
-                .month_calendar(month)
-                .await
-                .map_err(provider_error)?;
-            if json {
-                print_json(&cal)?;
-            } else {
-                use_cases::print_error_days(&cal);
-            }
-        }
-        Commands::Fix {
-            day,
-            attendance_type,
-            hours,
-            report_id,
-            error_type,
-            write_mode,
-        } => {
-            let date = parse_date(&day)?;
-            let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
-            let mut provider = HilanProvider::from_client(client);
-            let type_code =
-                use_cases::resolve_attendance_type(&mut provider, attendance_type.as_deref())
-                    .await
-                    .map_err(provider_error)?
-                    .map(|resolved| resolved.code);
-            let target = CoreFixTarget {
-                date,
-                issue_kind: None,
-                provider_ref: format!("{report_id}:{error_type}"),
-                metadata: std::collections::BTreeMap::from([
-                    ("report_id".to_string(), report_id),
-                    ("error_type".to_string(), error_type),
-                ]),
-            };
-            let preview = use_cases::fix_day(
-                &mut provider,
-                &target,
-                type_code,
-                hours_range,
-                write_mode.provider_mode(),
-            )
-            .await
-            .map_err(provider_error)?;
-            if json {
-                print_json(&ProviderWriteOutput::new("fix", &preview))?;
-            } else {
-                print_provider_preview("fix", &preview);
-            }
-        }
-        Commands::Status { month } => {
-            let month = parse_month_or_current(month.as_deref())?;
+    }
+
+    let mut client = provider_hilan::build_provider(config)?.into_inner();
+    client.login().await?;
+    if json {
+        print_json(&serde_json::json!({"status": "ok"}))?;
+    }
+    Ok(())
+}
+
+async fn run_attendance_command(
+    command: AttendanceCommand,
+    client: HilanClient,
+    subdomain: &str,
+    json: bool,
+) -> Result<()> {
+    match command {
+        AttendanceCommand::Status(args) => {
+            let month = parse_month_or_current(args.month.as_deref())?;
             let mut provider = HilanProvider::from_client(client);
             let cal = provider
                 .month_calendar(month)
@@ -589,28 +612,269 @@ pub async fn run() -> Result<()> {
                 use_cases::print_calendar(&cal);
             }
         }
-        Commands::Payslip { month, output } => {
-            let month = parse_month_or_previous(month.as_deref())?;
+        AttendanceCommand::Errors(args) => {
+            let month = parse_month_or_current(args.month.as_deref())?;
             let mut provider = HilanProvider::from_client(client);
-            let download = provider
-                .download_payslip(month, output.as_deref())
+            let cal = provider
+                .month_calendar(month)
                 .await
                 .map_err(provider_error)?;
             if json {
-                print_json(&download)?;
+                print_json(&cal)?;
             } else {
-                println!(
-                    "Saved payslip for {} to {} ({} bytes)",
-                    download.month.format("%Y-%m"),
-                    download.path.display(),
-                    download.size_bytes
-                );
+                use_cases::print_error_days(&cal);
             }
         }
-        Commands::Salary { months } => {
+        AttendanceCommand::Overview(args) => {
+            let mut provider = HilanProvider::from_client(client);
+            run_overview(&mut provider, args.month.as_deref(), args.detailed, json).await?;
+        }
+        AttendanceCommand::Report { command } => {
+            run_attendance_report_command(command, client, subdomain, json).await?;
+        }
+        AttendanceCommand::AutoFill(args) => {
+            let month_date = parse_month_or_current(args.month.as_deref())?;
+            let hours_range = args.hours.as_deref().map(parse_hours_range).transpose()?;
+            let mut provider = HilanProvider::from_client(client);
+
+            if args.r#type.is_none() && hours_range.is_none() {
+                let mut msg = String::from("attendance auto-fill requires --type or --hours.\n");
+                match use_cases::describe_attendance_types(&mut provider).await {
+                    Ok(help) => msg.push_str(&help),
+                    Err(_) => {
+                        msg.push_str(
+                            "Use `shaon attendance types` to inspect available types, or pass --type <code>.",
+                        );
+                    }
+                }
+                bail!("{msg}");
+            }
+
+            let resolved_type =
+                use_cases::resolve_attendance_type(&mut provider, args.r#type.as_deref())
+                    .await
+                    .map_err(provider_error)?;
+            let cal = provider
+                .month_calendar(month_date)
+                .await
+                .map_err(provider_error)?;
+            let result = use_cases::auto_fill(
+                &mut provider,
+                &cal,
+                use_cases::AutoFillOptions {
+                    type_code: resolved_type.as_ref().map(|resolved| resolved.code.clone()),
+                    type_display: resolved_type
+                        .map(|resolved| resolved.display)
+                        .unwrap_or_default(),
+                    hours: hours_range,
+                    include_weekends: args.include_weekends,
+                    mode: args.write_mode.provider_mode(),
+                    max_days: args.max_days,
+                    today: Local::now().date_naive(),
+                },
+            )
+            .await
+            .map_err(provider_error)?;
+
+            if json {
+                print_json(&result)?;
+            } else {
+                use_cases::print_auto_fill(&result);
+            }
+        }
+        AttendanceCommand::Resolve(args) => {
+            let date = parse_date(&args.day)?;
+            let hours_range = args.hours.as_deref().map(parse_hours_range).transpose()?;
+            let mut provider = HilanProvider::from_client(client);
+            let type_code =
+                use_cases::resolve_attendance_type(&mut provider, args.attendance_type.as_deref())
+                    .await
+                    .map_err(provider_error)?
+                    .map(|resolved| resolved.code);
+            let month = date.with_day(1).expect("valid day has month start");
+            let overview =
+                use_cases::build_overview(&mut provider, month, Local::now().date_naive())
+                    .await
+                    .map_err(provider_error)?;
+            let target = find_fix_target_for_date(&overview, date)?;
+            let preview = use_cases::fix_day(
+                &mut provider,
+                &target,
+                type_code,
+                hours_range,
+                args.write_mode.provider_mode(),
+            )
+            .await
+            .map_err(provider_error)?;
+            if json {
+                print_json(&ProviderWriteOutput::new("resolve", &preview))?;
+            } else {
+                print_provider_preview("resolve", &preview);
+            }
+        }
+        AttendanceCommand::Types => {
+            let mut provider = HilanProvider::from_client(client);
+            let types = provider.attendance_types().await.map_err(provider_error)?;
+            if json {
+                print_json(&types)?;
+            } else {
+                use_cases::print_attendance_types(&types);
+            }
+        }
+        AttendanceCommand::Absences => {
+            let mut provider = HilanProvider::from_client(client);
+            let symbols = use_cases::load_absence_symbols(&mut provider)
+                .await
+                .map_err(provider_error)?;
+            if json {
+                print_json(&symbols)?;
+            } else {
+                use_cases::print_absence_symbols(&symbols);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_attendance_report_command(
+    command: AttendanceReportCommand,
+    mut client: HilanClient,
+    subdomain: &str,
+    json: bool,
+) -> Result<()> {
+    match command {
+        AttendanceReportCommand::Today(args) => {
+            if !args.r#in && !args.out {
+                bail!("attendance report today requires one of --in or --out");
+            }
+            if args.out && args.attendance_type.is_some() {
+                bail!("--type is only supported with `shaon attendance report today --in`");
+            }
+
+            let execute = args.write_mode.should_execute();
+            if args.r#in {
+                if args.attendance_type.is_some() {
+                    client.ensure_authenticated().await?;
+                }
+                let type_code = resolve_attendance_type_code(
+                    &mut client,
+                    subdomain,
+                    args.attendance_type.as_deref(),
+                )
+                .await?;
+                let submit = attendance::AttendanceSubmit {
+                    date: Local::now().date_naive(),
+                    attendance_type_code: type_code,
+                    entry_time: Some(current_local_time_hhmm()),
+                    exit_time: None,
+                    comment: None,
+                    clear_entry: false,
+                    clear_exit: false,
+                    clear_comment: false,
+                    default_work_day: args.attendance_type.is_none(),
+                };
+                let preview = attendance::submit_day(&mut client, &submit, execute).await?;
+                if json {
+                    print_json(&WriteOutput::new("report-today-in", &preview))?;
+                } else {
+                    print_submit_preview("report-today-in", &preview);
+                }
+            } else {
+                let submit = attendance::AttendanceSubmit {
+                    date: Local::now().date_naive(),
+                    attendance_type_code: None,
+                    entry_time: None,
+                    exit_time: Some(current_local_time_hhmm()),
+                    comment: None,
+                    clear_entry: false,
+                    clear_exit: false,
+                    clear_comment: false,
+                    default_work_day: false,
+                };
+                let preview = attendance::submit_day(&mut client, &submit, execute).await?;
+                if json {
+                    print_json(&WriteOutput::new("report-today-out", &preview))?;
+                } else {
+                    print_submit_preview("report-today-out", &preview);
+                }
+            }
+        }
+        AttendanceReportCommand::Day(args) => {
+            let date = parse_date(&args.day)?;
+            let hours_range = args.hours.as_deref().map(parse_hours_range).transpose()?;
+            let mut provider = HilanProvider::from_client(client);
+            let type_code =
+                use_cases::resolve_attendance_type(&mut provider, args.attendance_type.as_deref())
+                    .await
+                    .map_err(provider_error)?
+                    .map(|resolved| resolved.code);
+            let change = build_day_change(date, type_code, hours_range)?;
+            let preview = provider
+                .submit_day(&change, args.write_mode.provider_mode())
+                .await
+                .map_err(provider_error)?;
+            if json {
+                print_json(&ProviderWriteOutput::new("report-day", &preview))?;
+            } else {
+                print_provider_preview("report-day", &preview);
+            }
+        }
+        AttendanceReportCommand::Range(args) => {
+            let from_date = parse_date(&args.from)?;
+            let to_date = parse_date(&args.to)?;
+            if from_date > to_date {
+                bail!("--from must be before or equal to --to");
+            }
+            let hours_range = args.hours.as_deref().map(parse_hours_range).transpose()?;
+            let mut provider = HilanProvider::from_client(client);
+            let type_code =
+                use_cases::resolve_attendance_type(&mut provider, args.attendance_type.as_deref())
+                    .await
+                    .map_err(provider_error)?
+                    .map(|resolved| resolved.code);
+            let previews = use_cases::fill_range(
+                &mut provider,
+                from_date,
+                to_date,
+                use_cases::FillRangeOptions {
+                    attendance_type_code: type_code,
+                    hours: hours_range,
+                    include_weekends: args.include_weekends,
+                    mode: args.write_mode.provider_mode(),
+                },
+            )
+            .await
+            .map_err(provider_error)?;
+
+            if json {
+                let outputs: Vec<ProviderWriteOutput<'_>> = previews
+                    .iter()
+                    .map(|preview| ProviderWriteOutput::new("report-range", preview))
+                    .collect();
+                print_json(&outputs)?;
+            } else {
+                for preview in &previews {
+                    print_provider_preview("report-range", preview);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_payroll_command(
+    command: PayrollCommand,
+    client: HilanClient,
+    json: bool,
+) -> Result<()> {
+    match command {
+        PayrollCommand::Payslip { command } => run_payslip_command(command, client, json).await?,
+        PayrollCommand::Salary(args) => {
             let mut provider = HilanProvider::from_client(client);
             let summary = provider
-                .salary_summary(months)
+                .salary_summary(args.months)
                 .await
                 .map_err(provider_error)?;
             if json {
@@ -631,125 +895,205 @@ pub async fn run() -> Result<()> {
                 }
             }
         }
-        Commands::Report { name } => {
+    }
+
+    Ok(())
+}
+
+async fn run_payslip_command(
+    command: PayslipCommand,
+    mut client: HilanClient,
+    json: bool,
+) -> Result<()> {
+    match command {
+        PayslipCommand::Download { month, output } => {
+            let month = parse_month_or_previous(month.as_deref())?;
             let mut provider = HilanProvider::from_client(client);
-            let table = provider
-                .report(ReportSpec::Named(name))
+            let download = provider
+                .download_payslip(month, output.as_deref())
                 .await
                 .map_err(provider_error)?;
+            print_payslip_download(download, json)?;
+        }
+        PayslipCommand::View { month } => {
+            let month = parse_month_or_previous(month.as_deref())?;
+            let bytes = client.viewable_payslip_pdf_bytes(month).await?;
+            open_pdf_in_system_viewer(&bytes)?;
             if json {
-                print_json(&table)?;
+                print_json(&serde_json::json!({
+                    "status": "ok",
+                    "month": month.format("%Y-%m").to_string(),
+                    "viewer": viewer_name(),
+                }))?;
             } else {
-                use_cases::print_report_table(&table);
+                println!(
+                    "Opened payslip for {} in {}.",
+                    month.format("%Y-%m"),
+                    viewer_name()
+                );
             }
         }
-        Commands::Absences => {
-            let mut provider = HilanProvider::from_client(client);
-            let symbols = use_cases::load_absence_symbols(&mut provider)
-                .await
-                .map_err(provider_error)?;
+        PayslipCommand::Password => {
+            let password = client.config().get_password()?;
             if json {
-                print_json(&symbols)?;
+                print_json(&serde_json::json!({
+                    "password": password.expose_secret(),
+                }))?;
             } else {
-                use_cases::print_absence_symbols(&symbols);
+                println!("{}", password.expose_secret());
             }
         }
-        Commands::Sheet => {
-            let mut provider = HilanProvider::from_client(client);
-            let table = provider
-                .report(ReportSpec::Path(SHEET_REPORT_PATH.to_string()))
-                .await
-                .map_err(provider_error)?;
-            if json {
-                print_json(&table)?;
-            } else {
-                use_cases::print_report_table(&table);
-            }
-        }
-        Commands::Corrections => {
-            let mut provider = HilanProvider::from_client(client);
-            let table = provider
-                .report(ReportSpec::Path(CORRECTIONS_REPORT_PATH.to_string()))
-                .await
-                .map_err(provider_error)?;
-            if json {
-                print_json(&table)?;
-            } else {
-                use_cases::print_report_table(&table);
-            }
-        }
-        Commands::Types => {
-            let mut provider = HilanProvider::from_client(client);
-            let types = provider.attendance_types().await.map_err(provider_error)?;
-            if json {
-                print_json(&types)?;
-            } else {
-                use_cases::print_attendance_types(&types);
-            }
-        }
-        Commands::Overview { month, detailed } => {
-            let mut provider = HilanProvider::from_client(client);
-            run_overview(&mut provider, month.as_deref(), detailed, json).await?;
-        }
-        Commands::AutoFill {
-            month,
-            r#type,
-            hours,
-            include_weekends,
-            max_days,
-            write_mode,
+    }
+
+    Ok(())
+}
+
+async fn run_reports_command(
+    command: ReportsCommand,
+    client: HilanClient,
+    json: bool,
+) -> Result<()> {
+    let (kind, requested, spec) = match command {
+        ReportsCommand::Show { name } => ("named", name.clone(), ReportSpec::Named(name)),
+        ReportsCommand::Sheet => (
+            "sheet",
+            "sheet".to_string(),
+            ReportSpec::Path(SHEET_REPORT_PATH.to_string()),
+        ),
+        ReportsCommand::Corrections => (
+            "corrections",
+            "corrections".to_string(),
+            ReportSpec::Path(CORRECTIONS_REPORT_PATH.to_string()),
+        ),
+    };
+
+    let mut provider = HilanProvider::from_client(client);
+    let table = provider.report(spec).await.map_err(provider_error)?;
+    if json {
+        print_json(&build_report_response(kind, &requested, &table))?;
+    } else {
+        use_cases::print_report_table(&table);
+    }
+
+    Ok(())
+}
+
+async fn run_cache_command(
+    command: CacheCommand,
+    mut client: HilanClient,
+    subdomain: &str,
+    json: bool,
+) -> Result<()> {
+    match command {
+        CacheCommand::Refresh {
+            command: CacheRefreshCommand::AttendanceTypes,
         } => {
-            let month_date = parse_month_or_current(month.as_deref())?;
-            let hours_range = hours.as_deref().map(parse_hours_range).transpose()?;
-            let mut provider = HilanProvider::from_client(client);
-
-            if r#type.is_none() && hours_range.is_none() {
-                let mut msg = String::from("auto-fill requires --type or --hours.\n");
-                match use_cases::describe_attendance_types(&mut provider).await {
-                    Ok(help) => msg.push_str(&help),
-                    Err(_) => {
-                        msg.push_str(
-                            "Use `shaon types` to inspect available types, or pass --type <code>.",
-                        );
-                    }
-                }
-                bail!("{msg}");
-            }
-
-            let resolved_type =
-                use_cases::resolve_attendance_type(&mut provider, r#type.as_deref())
-                    .await
-                    .map_err(provider_error)?;
-            let cal = provider
-                .month_calendar(month_date)
-                .await
-                .map_err(provider_error)?;
-            let result = use_cases::auto_fill(
-                &mut provider,
-                &cal,
-                use_cases::AutoFillOptions {
-                    type_code: resolved_type.as_ref().map(|resolved| resolved.code.clone()),
-                    type_display: resolved_type
-                        .map(|resolved| resolved.display)
-                        .unwrap_or_default(),
-                    hours: hours_range,
-                    include_weekends,
-                    mode: write_mode.provider_mode(),
-                    max_days,
-                    today: Local::now().date_naive(),
-                },
-            )
-            .await
-            .map_err(provider_error)?;
-
+            client.ensure_authenticated().await?;
+            let ont = ontology::sync_from_calendar(&mut client, subdomain).await?;
             if json {
-                print_json(&result)?;
+                print_json(&ont)?;
             } else {
-                use_cases::print_auto_fill(&result);
+                ont.print_table();
             }
         }
-        Commands::Serve => unreachable!("handled above"),
-        Commands::Completions { .. } => unreachable!("handled above"),
+    }
+
+    Ok(())
+}
+
+fn build_day_change(
+    date: NaiveDate,
+    attendance_type_code: Option<String>,
+    hours: Option<(String, String)>,
+) -> Result<hr_core::AttendanceChange> {
+    let (entry_time, exit_time) = match hours {
+        Some((entry, exit)) => (Some(entry), Some(exit)),
+        None => (None, None),
+    };
+    let use_default_attendance_type = attendance_type_code.is_none() && entry_time.is_some();
+
+    if attendance_type_code.is_none() && entry_time.is_none() {
+        bail!("attendance report day requires --type or --hours");
+    }
+
+    Ok(hr_core::AttendanceChange {
+        date,
+        attendance_type_code,
+        use_default_attendance_type,
+        entry_time,
+        exit_time,
+        comment: None,
+        clear_entry: false,
+        clear_exit: false,
+        clear_comment: false,
+    })
+}
+
+fn find_fix_target_for_date(
+    overview: &use_cases::OverviewData,
+    date: NaiveDate,
+) -> Result<CoreFixTarget> {
+    let mut matches = overview
+        .error_days
+        .iter()
+        .filter(|entry| entry.day.date == date)
+        .filter_map(|entry| entry.fix_target.clone());
+
+    match (matches.next(), matches.next()) {
+        (Some(target), None) => Ok(target),
+        (Some(_), Some(_)) => bail!(
+            "Found multiple fix targets for {}. Inspect `shaon attendance errors --month {}` and retry.",
+            date.format("%Y-%m-%d"),
+            date.format("%Y-%m")
+        ),
+        _ => bail!(
+            "No fix target found for {}. Run `shaon attendance errors --month {}` first and confirm the day is still fixable.",
+            date.format("%Y-%m-%d"),
+            date.format("%Y-%m")
+        ),
+    }
+}
+
+fn build_report_response(kind: &str, requested: &str, table: &ReportTable) -> ReportResponse {
+    ReportResponse {
+        report: ReportMetadata {
+            kind: kind.to_string(),
+            requested: requested.to_string(),
+            provider_name: table.name.clone(),
+        },
+        column_count: table.headers.len(),
+        row_count: table.rows.len(),
+        columns: table
+            .headers
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ReportColumn {
+                index,
+                name: name.clone(),
+            })
+            .collect(),
+        rows: table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, cells)| ReportRow {
+                index,
+                cells: cells.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn print_payslip_download(download: DocumentDownload, json: bool) -> Result<()> {
+    if json {
+        print_json(&download)?;
+    } else {
+        println!(
+            "Saved password-protected payslip for {} to {} ({} bytes)",
+            download.month.format("%Y-%m"),
+            download.path.display(),
+            download.size_bytes
+        );
     }
 
     Ok(())
@@ -757,6 +1101,42 @@ pub async fn run() -> Result<()> {
 
 async fn run_mcp_server() -> Result<()> {
     shaon_mcp::serve_stdio().await
+}
+
+#[cfg(target_os = "macos")]
+fn open_pdf_in_system_viewer(bytes: &[u8]) -> Result<()> {
+    let mut child = Command::new("/usr/bin/open")
+        .args(["-f", "-a", "Preview"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("launch Preview for payslip view")?;
+
+    let mut stdin = child.stdin.take().context("open Preview stdin")?;
+    stdin
+        .write_all(bytes)
+        .context("stream payslip PDF to Preview")?;
+    drop(stdin);
+
+    let status = child.wait().context("wait for Preview launcher")?;
+    if !status.success() {
+        bail!("Preview launcher exited with status {status}");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_pdf_in_system_viewer(_bytes: &[u8]) -> Result<()> {
+    bail!("`shaon payroll payslip view` is currently supported only on macOS");
+}
+
+#[cfg(target_os = "macos")]
+fn viewer_name() -> &'static str {
+    "Preview"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn viewer_name() -> &'static str {
+    "the system PDF viewer"
 }
 
 fn parse_month_or_previous(month: Option<&str>) -> Result<NaiveDate> {
@@ -1029,13 +1409,7 @@ fn print_overview_human(ctx: &OverviewResponse) {
         println!();
         println!("Error days:");
         for ed in &ctx.error_days {
-            match &ed.fix_params {
-                Some(params) => println!(
-                    "  {} ({}) -- {} [reportId={}, errorType={}]",
-                    ed.date, ed.day_name, ed.error_message, params.report_id, params.error_type
-                ),
-                None => println!("  {} ({}) -- {}", ed.date, ed.day_name, ed.error_message),
-            }
+            println!("  {} ({}) -- {}", ed.date, ed.day_name, ed.error_message);
         }
     }
 
@@ -1046,13 +1420,13 @@ fn print_overview_human(ctx: &OverviewResponse) {
             let cmd_hint = match action.kind.as_str() {
                 "fix_errors" => {
                     let m = action.params["month"].as_str().unwrap_or("?");
-                    format!("shaon errors --month {m}")
+                    format!("shaon attendance errors --month {m}")
                 }
                 "fill_missing" => {
                     let from = action.params["from"].as_str().unwrap_or("?");
                     let to = action.params["to"].as_str().unwrap_or("?");
                     format!(
-                        "shaon fill --from {from} --to {to} --type <type> --hours <HH:MM-HH:MM>"
+                        "shaon attendance report range --from {from} --to {to} --type <type> --hours <HH:MM-HH:MM>"
                     )
                 }
                 _ => format!("{}: {}", action.kind, action.reason),
@@ -1119,4 +1493,122 @@ fn attendance_source_label(source: hr_core::AttendanceSource) -> &'static str {
 
 fn provider_error(err: ProviderError) -> anyhow::Error {
     anyhow::anyhow!("{err}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hr_core::{AttendanceSource, CalendarDay, MonthCalendar, UserIdentity};
+    use std::collections::BTreeMap;
+
+    fn sample_overview(targets: Vec<CoreFixTarget>) -> use_cases::OverviewData {
+        let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let calendar_day = CalendarDay {
+            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            day_name: "Thu".to_string(),
+            has_error: true,
+            error_message: Some("missing report".to_string()),
+            entry_time: None,
+            exit_time: None,
+            attendance_type: None,
+            total_hours: None,
+            source: AttendanceSource::Unreported,
+        };
+
+        use_cases::OverviewData {
+            identity: UserIdentity {
+                user_id: "123".to_string(),
+                employee_id: "123".to_string(),
+                display_name: "Test User".to_string(),
+                is_manager: false,
+            },
+            month,
+            calendar: MonthCalendar {
+                month,
+                employee_id: "123".to_string(),
+                days: vec![calendar_day.clone()],
+            },
+            attendance_types: Vec::new(),
+            summary: use_cases::OverviewSummary {
+                total_work_days: 1,
+                reported: 0,
+                missing: 1,
+                errors: 1,
+            },
+            error_days: vec![use_cases::OverviewErrorDay {
+                day: calendar_day,
+                fix_target: targets.into_iter().next(),
+            }],
+            missing_days: Vec::new(),
+            suggested_actions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn attendance_report_day_parses() {
+        let cli = Cli::try_parse_from([
+            "shaon",
+            "attendance",
+            "report",
+            "day",
+            "2026-04-10",
+            "--hours",
+            "09:00-18:00",
+        ])
+        .expect("parse command");
+
+        match cli.command {
+            Commands::Attendance {
+                command:
+                    AttendanceCommand::Report {
+                        command:
+                            AttendanceReportCommand::Day(AttendanceReportDayArgs { day, hours, .. }),
+                    },
+            } => {
+                assert_eq!(day, "2026-04-10");
+                assert_eq!(hours.as_deref(), Some("09:00-18:00"));
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn top_level_overview_is_rejected() {
+        let err = Cli::try_parse_from(["shaon", "overview"]).expect_err("old alias should fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("unrecognized subcommand"));
+    }
+
+    #[test]
+    fn find_fix_target_for_date_returns_the_matching_target() {
+        let target = CoreFixTarget {
+            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            issue_kind: Some("missing_report".to_string()),
+            provider_ref: "report:error".to_string(),
+            metadata: BTreeMap::from([
+                ("report_id".to_string(), "report".to_string()),
+                ("error_type".to_string(), "error".to_string()),
+            ]),
+        };
+        let overview = sample_overview(vec![target.clone()]);
+
+        let found =
+            find_fix_target_for_date(&overview, NaiveDate::from_ymd_opt(2026, 4, 10).unwrap())
+                .expect("find target");
+
+        assert_eq!(found, target);
+    }
+
+    #[test]
+    fn find_fix_target_for_date_fails_when_missing() {
+        let overview = sample_overview(Vec::new());
+
+        let err =
+            find_fix_target_for_date(&overview, NaiveDate::from_ymd_opt(2026, 4, 10).unwrap())
+                .expect_err("missing target should fail");
+
+        assert!(err
+            .to_string()
+            .contains("No fix target found for 2026-04-10"));
+    }
 }
