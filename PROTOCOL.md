@@ -184,7 +184,7 @@ H-XSRF-Token is present as a hidden field on .aspx pages but currently always em
 ```json
 {
   "Menu": {
-    "WelcomeText": "שלום, אביב סיני",
+    "WelcomeText": "שלום, משתמש",
     "LastLoginText": "חיבורך הקודם למערכת: יום שני 10:22",
     "Modules": [...],
     "Tabs": [...]  // Full navigation structure

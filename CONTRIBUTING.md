@@ -86,6 +86,17 @@ Prefer stable descriptions over fragile hard-coded counts.
 - Never submit to Hilan without explicit `--execute`.
 - Never store credentials in code or test fixtures.
 
+## Responsible Contributions
+
+`shaon` is designed for single-user personal automation. Please do not contribute features that:
+
+- Aggregate multiple users' data
+- Scrape third parties' accounts
+- Bypass CAPTCHA, MFA, or other security measures
+- Circumvent Hilan's terms of service
+
+If in doubt, open an issue first to discuss.
+
 ## Reporting Issues
 
 Open a GitHub issue with:

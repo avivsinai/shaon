@@ -21,6 +21,16 @@ Claude Code skill for the `shaon` repo and binary.
 - Use this **skill** to pick the right surface, the right command/tool, and the
   right safety flow.
 
+## Human-attested writes
+
+All write commands (`attendance report today/day/range`, `attendance auto-fill`, `attendance resolve`) submit under the user's identity against their real employer's system. When driving these, ALWAYS:
+
+1. Run with `--dry-run` (the default) first.
+2. Show the resulting preview to the user.
+3. Require the user to explicitly confirm in the conversation before rerunning with `--execute`.
+
+Never autonomously rerun a write with `--execute`. The legal actor is the user, not the agent.
+
 ## CLI Entry Point
 
 If working from a repo checkout, prefer:
@@ -77,8 +87,8 @@ shaon auth
 
 | Intent | Command |
 |--------|---------|
-| clock in now | `shaon attendance report today --in --execute` |
-| clock out now | `shaon attendance report today --out --execute` |
+| clock in now | `shaon attendance report today --in` |
+| clock out now | `shaon attendance report today --out` |
 | report one explicit day | `shaon attendance report day YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
 | report a range | `shaon attendance report range --from YYYY-MM-DD --to YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
 | auto-fill missing days in a month | `shaon attendance auto-fill --month YYYY-MM --type "regular" --hours 09:00-18:00` |
@@ -88,6 +98,7 @@ shaon auth
 
 - Every write is **preview-only by default**.
 - The agent should show the preview summary to the user before rerunning with `--execute` or `execute: true`.
+- The agent must wait for explicit user confirmation before any live submit.
 - `attendance report range` and `attendance auto-fill` skip Fri/Sat unless explicitly overridden.
 - `attendance auto-fill` is capped at `--max-days 10` by default to prevent accidental bulk edits.
 
@@ -133,6 +144,7 @@ shaon attendance overview --json
 ```bash
 shaon attendance errors --month 2026-04 --json
 shaon attendance resolve 2026-04-09 --type "regular" --hours 09:00-18:00
+# After explicit user confirmation:
 shaon attendance resolve 2026-04-09 --type "regular" --hours 09:00-18:00 --execute
 ```
 
@@ -140,6 +152,7 @@ shaon attendance resolve 2026-04-09 --type "regular" --hours 09:00-18:00 --execu
 
 ```bash
 shaon attendance report range --from 2026-04-01 --to 2026-04-05 --type "regular" --hours 09:00-18:00
+# After explicit user confirmation:
 shaon attendance report range --from 2026-04-01 --to 2026-04-05 --type "regular" --hours 09:00-18:00 --execute
 ```
 

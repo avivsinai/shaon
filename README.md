@@ -11,8 +11,13 @@
 
 `shaon` is a Rust CLI, MCP server, and Claude Code plugin for Hilan / Hilanet. It covers attendance status, missing or broken days, reporting and correction flows, payslips, salary summaries, and related HR tasks.
 
-> **Note**
-> shaon automates the Hilanet web interface. It is not affiliated with Hilan Ltd.
+## Responsibility and Scope
+
+You are responsible for all attendance submissions, payslip downloads, and credential handling performed with this tool. Use is conditional on your compliance with your employer's policies and your Hilanet customer's terms of service. `shaon` is intended for automating your own single-user account; multi-user, aggregation, and third-party-data use are out of scope.
+
+`shaon` is an independent open-source project. It is not endorsed by, affiliated with, or sponsored by Hilan Ltd.
+
+The software is provided "AS IS" under the MIT License, without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
 
 ## Install
 
@@ -104,9 +109,11 @@ shaon payroll payslip password
 
 ## Safety
 
+- Treat attendance writes as human-attested actions under your identity.
 - Write commands preview by default.
-- Use `--execute` in the CLI, or `execute: true` over MCP, only after reviewing the preview.
+- Use `--execute` in the CLI, or `execute: true` over MCP, only after reviewing the preview and explicitly deciding to submit it.
 - Bulk flows such as `attendance auto-fill` stay capped unless you raise the limit explicitly.
+- CAPTCHA challenges must be solved manually in the browser.
 
 For the exact live surface, use:
 
