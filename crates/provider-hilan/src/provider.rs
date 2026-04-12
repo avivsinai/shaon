@@ -97,6 +97,13 @@ impl HilanProvider {
     fn provider_error(code: &'static str, err: anyhow::Error) -> ProviderError {
         ProviderError::new(code, err.to_string())
     }
+
+    fn should_fix_via_calendar_submit(_report_id: &str, _error_type: &str) -> bool {
+        // The browser always uses the error wizard URL (EmployeeErrorHandling.aspx)
+        // for tasks returned by HHomeTasksApiapi/GetData, even when reportId is the
+        // empty UUID and errorType=63. Always route through fix_error_day.
+        false
+    }
 }
 
 #[async_trait]
@@ -162,18 +169,25 @@ impl AttendanceProvider for HilanProvider {
     ) -> Result<WritePreview, ProviderError> {
         let submit = Self::change_to_submit(change);
         let (report_id, error_type) = Self::fix_params(target)?;
-        attendance::fix_error_day(
-            &mut self.client,
-            &submit,
-            &report_id,
-            &error_type,
-            mode.should_execute(),
-        )
-        .await
-        .map(|preview| {
-            Self::preview_with_summary(preview, "fixed attendance error for", change.date)
-        })
-        .map_err(|err| Self::provider_error("attendance_fix_failed", err))
+        let preview = if Self::should_fix_via_calendar_submit(&report_id, &error_type) {
+            attendance::submit_day(&mut self.client, &submit, mode.should_execute()).await
+        } else {
+            attendance::fix_error_day(
+                &mut self.client,
+                &submit,
+                &report_id,
+                &error_type,
+                mode.should_execute(),
+            )
+            .await
+        }
+        .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+
+        Ok(Self::preview_with_summary(
+            preview,
+            "fixed attendance error for",
+            change.date,
+        ))
     }
 }
 
@@ -311,5 +325,17 @@ mod tests {
         assert_eq!(err.code, "invalid_fix_target");
         assert!(err.message.contains("2026-04-10"));
         assert!(err.details.is_some());
+    }
+
+    #[test]
+    fn all_error_tasks_use_error_wizard_path() {
+        // Browser-verified: even errorType=63 with empty reportId uses the error wizard.
+        assert!(!HilanProvider::should_fix_via_calendar_submit(
+            "00000000-0000-0000-0000-000000000000",
+            "63",
+        ));
+        assert!(!HilanProvider::should_fix_via_calendar_submit(
+            "report-1", "63",
+        ));
     }
 }
