@@ -1,9 +1,10 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{Datelike, Local, NaiveDate};
 use hr_core::use_cases;
 use hr_core::{
-    AttendanceChange, AttendanceProvider, FixTarget, ProviderError, ReportProvider, ReportSpec,
-    SalaryProvider, WriteMode, WritePreview,
+    AttendanceChange, AttendanceProvider, FixTarget, PayslipProvider, ProviderError,
+    ReportProvider, ReportSpec, SalaryProvider, WriteMode, WritePreview,
 };
 use provider_hilan::{Config, HilanProvider};
 use rmcp::{
@@ -12,6 +13,8 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 const SHEET_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursAnalysis.aspx";
 const CORRECTIONS_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursReportLog.aspx";
@@ -103,9 +106,33 @@ pub struct SalaryParam {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ResolveParam {
+    #[schemars(description = "Day to resolve in YYYY-MM-DD format")]
+    pub date: String,
+    #[schemars(description = "Attendance type override")]
+    pub r#type: Option<String>,
+    #[schemars(description = "Hours range in HH:MM-HH:MM format (e.g. '09:00-18:00')")]
+    pub hours: Option<String>,
+    #[schemars(description = "Set to true to actually submit (default: false/preview)")]
+    pub execute: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct OverviewParam {
     #[schemars(description = "Month in YYYY-MM format (default: current month)")]
     pub month: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PayslipDownloadParam {
+    #[schemars(description = "Month in YYYY-MM format (default: previous month)")]
+    pub month: Option<String>,
+    #[schemars(description = "Optional output path for saving the PDF locally")]
+    pub output_path: Option<String>,
+    #[schemars(
+        description = "Include base64-encoded PDF bytes in the response. Defaults to true when output_path is omitted."
+    )]
+    pub include_bytes: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +221,15 @@ fn parse_month_or_current(value: Option<&str>) -> Result<NaiveDate, ToolError> {
     }
 }
 
+fn parse_month_or_previous(value: Option<&str>) -> Result<NaiveDate, ToolError> {
+    match value {
+        Some(v) => parse_month(v),
+        None => Ok(provider_hilan::client::previous_month_start(
+            Local::now().date_naive(),
+        )),
+    }
+}
+
 fn parse_date(value: &str) -> Result<NaiveDate, ToolError> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|e| ToolError::new("invalid_date", format!("invalid date '{value}': {e}")))
@@ -244,6 +280,36 @@ fn write_preview_json(action: &str, preview: &WritePreview) -> serde_json::Value
     })
 }
 
+fn find_fix_target_for_date(
+    overview: &use_cases::OverviewData,
+    date: NaiveDate,
+) -> Result<FixTarget, ToolError> {
+    let mut matches = overview
+        .error_days
+        .iter()
+        .filter(|entry| entry.day.date == date)
+        .filter_map(|entry| entry.fix_target.clone());
+
+    match (matches.next(), matches.next()) {
+        (Some(target), None) => Ok(target),
+        (Some(_), Some(_)) => Err(ToolError::new(
+            "multiple_fix_targets",
+            format!(
+                "multiple fix targets found for {}. Inspect shaon_errors for that month first.",
+                date.format("%Y-%m-%d")
+            ),
+        )),
+        _ => Err(ToolError::new(
+            "fix_target_not_found",
+            format!(
+                "no fix target found for {}. Inspect shaon_errors for {} first.",
+                date.format("%Y-%m-%d"),
+                date.format("%Y-%m")
+            ),
+        )),
+    }
+}
+
 fn fix_params_json(target: &FixTarget) -> Option<serde_json::Value> {
     let provider_ref_parts = target.provider_ref.split_once(':');
     let report_id = target
@@ -264,6 +330,52 @@ fn fix_params_json(target: &FixTarget) -> Option<serde_json::Value> {
         })),
         _ => None,
     }
+}
+
+fn report_response_json(
+    kind: &str,
+    requested: &str,
+    table: &hr_core::ReportTable,
+) -> serde_json::Value {
+    serde_json::json!({
+        "report": {
+            "kind": kind,
+            "requested": requested,
+            "provider_name": table.name,
+        },
+        "column_count": table.headers.len(),
+        "row_count": table.rows.len(),
+        "columns": table.headers.iter().enumerate().map(|(index, name)| {
+            serde_json::json!({
+                "index": index,
+                "name": name,
+            })
+        }).collect::<Vec<_>>(),
+        "rows": table.rows.iter().enumerate().map(|(index, cells)| {
+            serde_json::json!({
+                "index": index,
+                "cells": cells,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            ToolError::new(
+                "payslip_write_failed",
+                format!("failed to create {}: {e}", parent.display()),
+            )
+        })?;
+    }
+
+    fs::write(path, bytes).map_err(|e| {
+        ToolError::new(
+            "payslip_write_failed",
+            format!("failed to write {}: {e}", path.display()),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +654,44 @@ impl ShaonMcpServer {
         .await
     }
 
+    #[tool(
+        description = "Resolve a single attendance error day. Auto-detects the provider fix target from overview data. Defaults to dry-run preview. CAUTION: write operation."
+    )]
+    async fn shaon_resolve(&self, Parameters(req): Parameters<ResolveParam>) -> String {
+        json_or_error(|| async {
+            let mut provider = new_provider().await?;
+            let date = parse_date(&req.date)?;
+            let month = date.with_day(1).ok_or_else(|| {
+                ToolError::new(
+                    "invalid_date",
+                    format!("failed to derive month from {}", req.date),
+                )
+            })?;
+            let hours = req.hours.as_deref().map(parse_hours_range).transpose()?;
+            let type_code =
+                use_cases::resolve_attendance_type(&mut provider, req.r#type.as_deref())
+                    .await
+                    .map_err(ToolError::from)?
+                    .map(|resolved| resolved.code);
+            let overview =
+                use_cases::build_overview(&mut provider, month, Local::now().date_naive())
+                    .await
+                    .map_err(ToolError::from)?;
+            let target = find_fix_target_for_date(&overview, date)?;
+            let preview = use_cases::fix_day(
+                &mut provider,
+                &target,
+                type_code,
+                hours,
+                write_mode(req.execute.unwrap_or(false)),
+            )
+            .await
+            .map_err(ToolError::from)?;
+            Ok(write_preview_json("resolve", &preview))
+        })
+        .await
+    }
+
     #[tool(description = "Get salary summary for recent months.")]
     async fn shaon_salary(&self, Parameters(req): Parameters<SalaryParam>) -> String {
         json_or_error(|| async {
@@ -571,7 +721,64 @@ impl ShaonMcpServer {
         .await
     }
 
-    #[tool(description = "Show the attendance timesheet (hours analysis).")]
+    #[tool(
+        description = "Download a password-protected payslip PDF. Returns a saved path, base64 bytes, or both."
+    )]
+    async fn shaon_payslip_download(
+        &self,
+        Parameters(req): Parameters<PayslipDownloadParam>,
+    ) -> String {
+        json_or_error(|| async {
+            let month = parse_month_or_previous(req.month.as_deref())?;
+            let output_path = req.output_path.as_ref().map(PathBuf::from);
+            let include_bytes = req.include_bytes.unwrap_or(output_path.is_none());
+
+            if !include_bytes && output_path.is_none() {
+                return Err(ToolError::new(
+                    "invalid_payslip_request",
+                    "set include_bytes=true or provide output_path",
+                ));
+            }
+
+            if include_bytes {
+                let mut client = new_provider().await?.into_inner();
+                let bytes = client
+                    .password_protected_payslip_bytes(month)
+                    .await
+                    .map_err(|err| ToolError::new("payslip_download_failed", err.to_string()))?;
+                if let Some(path) = output_path.as_deref() {
+                    write_bytes_to_path(path, &bytes)?;
+                }
+                Ok(serde_json::json!({
+                    "month": month.format("%Y-%m").to_string(),
+                    "mime_type": "application/pdf",
+                    "password_protected": true,
+                    "size_bytes": bytes.len(),
+                    "path": output_path.as_ref().map(|path| path.display().to_string()),
+                    "bytes_base64": STANDARD.encode(&bytes),
+                }))
+            } else {
+                let mut provider = new_provider().await?;
+                let output = output_path
+                    .as_deref()
+                    .expect("guard ensures output_path exists when include_bytes=false");
+                let download = provider
+                    .download_payslip(month, Some(output))
+                    .await
+                    .map_err(ToolError::from)?;
+                Ok(serde_json::json!({
+                    "month": download.month.format("%Y-%m").to_string(),
+                    "mime_type": "application/pdf",
+                    "password_protected": true,
+                    "size_bytes": download.size_bytes,
+                    "path": download.path.display().to_string(),
+                }))
+            }
+        })
+        .await
+    }
+
+    #[tool(description = "Show the analyzed attendance sheet as a stable report table schema.")]
     async fn shaon_sheet(&self) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
@@ -579,17 +786,12 @@ impl ShaonMcpServer {
                 .report(ReportSpec::Path(SHEET_REPORT_PATH.to_string()))
                 .await
                 .map_err(ToolError::from)?;
-            serde_json::to_value(&table).map_err(|e| {
-                ToolError::new(
-                    "serialization_failed",
-                    format!("failed to serialize report: {e}"),
-                )
-            })
+            Ok(report_response_json("sheet", "sheet", &table))
         })
         .await
     }
 
-    #[tool(description = "Show the attendance correction log (manual reporting history).")]
+    #[tool(description = "Show the attendance correction log as a stable report table schema.")]
     async fn shaon_corrections(&self) -> String {
         json_or_error(|| async {
             let mut provider = new_provider().await?;
@@ -597,12 +799,7 @@ impl ShaonMcpServer {
                 .report(ReportSpec::Path(CORRECTIONS_REPORT_PATH.to_string()))
                 .await
                 .map_err(ToolError::from)?;
-            serde_json::to_value(&table).map_err(|e| {
-                ToolError::new(
-                    "serialization_failed",
-                    format!("failed to serialize report: {e}"),
-                )
-            })
+            Ok(report_response_json("corrections", "corrections", &table))
         })
         .await
     }
@@ -751,7 +948,7 @@ impl ServerHandler for ShaonMcpServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Shaon attendance & payslip server. \
                  Read tools return JSON data. \
-                 Write tools (clock_in, clock_out, fill, auto_fill) default to dry-run; \
+                 Write tools (clock_in, clock_out, fill, auto_fill, resolve) default to dry-run; \
                  set execute=true to submit.",
         )
     }

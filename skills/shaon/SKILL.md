@@ -1,46 +1,27 @@
 ---
 name: shaon
 description: >
-  Automate Hilan (חילן) / Hilanet — Israeli HR & attendance system. Use this skill whenever the user
-  mentions shaon, attendance reporting, presence, clock in/out, payslip, salary slip,
-  work hours, שעון נוכחות, חילן, or any task related to their Israeli employer's HR portal.
-  Also trigger when the user asks about their work schedule, missing attendance days, or wants
-  to fill/fix attendance records — even if they don't say "shaon" explicitly.
+  Automate Hilan (חילן) / Hilanet for attendance, work hours, missing clock-ins,
+  corrections, payslips, salary, and HR self-service. Trigger on shaon, attendance,
+  clock in/out, payslip, salary slip, work hours, תלוש, תלוש שכר, משכורת,
+  דוח נוכחות, corrections log, forgot to clock in, forgot to report, or any request
+  about an Israeli employer's Hilan portal.
 ---
 
 # Shaon
 
-Claude Code plugin skill for the `shaon` repo and binary.
+Claude Code skill for the `shaon` repo and binary.
 
-## What To Use
+## Tool Selection
 
-- Use the **CLI** when you want explicit commands, JSON output, or shell scripting
-- Use the **MCP server** when the client wants typed stdio tools
-- Use this **skill** when the user is working inside Claude Code and wants natural-language help around attendance, payslips, or salary
+- Prefer the **MCP server** when a tool already covers the domain operation.
+- Fall back to the **CLI** for local-machine or interactive operations:
+  `auth`, `payroll payslip view`, `payroll payslip password`, `reports show`,
+  `cache refresh attendance-types`, `serve`, and `completions`.
+- Use this **skill** to pick the right surface, the right command/tool, and the
+  right safety flow.
 
-## How To Load The Plugin
-
-For local development against this repo:
-
-```bash
-claude --plugin-dir /absolute/path/to/shaon
-```
-
-Once Claude Code starts, the explicit plugin skill name is:
-
-```text
-/shaon:shaon
-```
-
-Example:
-
-```text
-/shaon:shaon show my missing attendance days for 2026-04
-```
-
-The skill also auto-triggers on relevant keywords such as `shaon`, `attendance`, `clock in`, `payslip`, `salary`, `work hours`, and `שעון נוכחות`.
-
-## CLI Entry Points
+## CLI Entry Point
 
 If working from a repo checkout, prefer:
 
@@ -63,7 +44,7 @@ Create `~/.shaon/config.toml`:
 ```toml
 subdomain = "mycompany"
 username = "123456789"
-# password lives in keychain, not here
+# password lives in the keychain, not here
 payslip_folder = "/path/to/payslips"   # optional
 payslip_format = "%Y-%m.pdf"           # optional
 ```
@@ -80,100 +61,112 @@ If the config still contains a plaintext password:
 shaon auth --migrate
 ```
 
-## Core CLI Commands
+## Pick The Right Read Command
 
-### Read commands
+| User intent | Use |
+|-------------|-----|
+| "what's my current month state?" | `shaon attendance overview --json` |
+| "show me the raw calendar / what did Hilan record per day?" | `shaon attendance status --month YYYY-MM` |
+| "what errors do I need to fix?" | `shaon attendance errors --month YYYY-MM` |
+| "what attendance types can I report?" | `shaon attendance types` |
+| "what absence symbols mean?" | `shaon attendance absences` |
+| "show the analyzed hours sheet" | `shaon reports sheet` |
+| "show the manual correction log / audit trail" | `shaon reports corrections` |
+| "show a named Hilan report page" | `shaon reports show <name>` |
+| "download my payslip" | `shaon payroll payslip download --month YYYY-MM` |
+| "open my payslip locally" | `shaon payroll payslip view --month YYYY-MM` |
+| "what is the payslip PDF password?" | `shaon payroll payslip password` |
+| "how much did I earn recently?" | `shaon payroll salary --months N` |
 
-| Command | Example |
-|---------|---------|
-| `status` | `shaon status --month 2026-04` |
-| `errors` | `shaon errors --month 2026-04` |
-| `overview` | `shaon overview --month 2026-04 --json` |
-| `types` | `shaon types` |
-| `absences` | `shaon absences` |
-| `sheet` | `shaon sheet` |
-| `corrections` | `shaon corrections` |
-| `report <name>` | `shaon report ErrorsReportNEW` |
-| `payslip` | `shaon payslip --month 2026-03` |
-| `salary` | `shaon salary --months 6` |
+`attendance overview` is usually the best first move for an agent because it bundles identity, summary, errors, missing days, and suggested actions.
 
-### Write commands
+## Write Commands
 
-All writes are preview-only by default. Use `--execute` to submit.
+### Explicit reporting
 
-| Command | Example |
-|---------|---------|
-| `clock-in` | `shaon clock-in --execute` |
-| `clock-out` | `shaon clock-out --execute` |
-| `fill` | `shaon fill --from 2026-04-01 --to 2026-04-05 --type "work from home" --hours 09:00-18:00 --execute` |
-| `fix` | `shaon fix 2026-04-08 --type "regular" --hours 09:00-18:00 --execute` |
-| `auto-fill` | `shaon auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00 --execute` |
+| Intent | Command |
+|--------|---------|
+| clock in now | `shaon attendance report today --in --execute` |
+| clock out now | `shaon attendance report today --out --execute` |
+| report one explicit day | `shaon attendance report day YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
+| report a range | `shaon attendance report range --from YYYY-MM-DD --to YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
+| auto-fill missing days in a month | `shaon attendance auto-fill --month YYYY-MM --type "regular" --hours 09:00-18:00` |
+| resolve an existing error day | `shaon attendance resolve YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
 
-## Output Modes
+### Safety Model
 
-Use `--json` whenever an agent needs machine-readable output:
+- Every write is **preview-only by default**.
+- The agent should show the preview summary to the user before rerunning with `--execute` or `execute: true`.
+- `attendance report range` and `attendance auto-fill` skip Fri/Sat unless explicitly overridden.
+- `attendance auto-fill` is capped at `--max-days 10` by default to prevent accidental bulk edits.
 
-```bash
-shaon overview --month 2026-04 --json
-shaon status --month 2026-04 --json
-```
-
-## MCP Server
-
-The repo also ships a stdio MCP server:
-
-```bash
-shaon serve
-```
+## MCP Coverage
 
 Current MCP tools cover:
 
-- status
-- errors
-- types
-- clock-in / clock-out
-- fill / auto-fill
-- salary
-- sheet / corrections / absences
-- overview
+- `shaon_status`
+- `shaon_errors`
+- `shaon_types`
+- `shaon_clock_in`
+- `shaon_clock_out`
+- `shaon_fill`
+- `shaon_auto_fill`
+- `shaon_resolve`
+- `shaon_payslip_download`
+- `shaon_salary`
+- `shaon_sheet`
+- `shaon_corrections`
+- `shaon_absences`
+- `shaon_overview`
 
-CLI-only features today:
+CLI-only features:
 
-- `payslip`
-- `report`
-- `fix`
-- `auth`
-- `sync-types`
-- `completions`
+- `shaon auth`
+- `shaon payroll payslip view`
+- `shaon payroll payslip password`
+- `shaon reports show <name>`
+- `shaon cache refresh attendance-types`
+- `shaon serve`
+- `shaon completions`
 
 ## Agent Workflows
 
-### Review the current month
+### Review the month first
 
 ```bash
-shaon overview --json
+shaon attendance overview --json
 ```
 
-### Auto-fill missing days
+### Fix an attendance error safely
 
 ```bash
-shaon auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00
-shaon auto-fill --month 2026-04 --type "regular" --hours 09:00-18:00 --execute
+shaon attendance errors --month 2026-04 --json
+shaon attendance resolve 2026-04-09 --type "regular" --hours 09:00-18:00
+shaon attendance resolve 2026-04-09 --type "regular" --hours 09:00-18:00 --execute
 ```
 
-### Download a payslip
+### Fill a missing range safely
 
 ```bash
-shaon payslip --month 2026-03 --output ~/Downloads/2026-03.pdf
+shaon attendance report range --from 2026-04-01 --to 2026-04-05 --type "regular" --hours 09:00-18:00
+shaon attendance report range --from 2026-04-01 --to 2026-04-05 --type "regular" --hours 09:00-18:00 --execute
+```
+
+### Hebrew payslip workflow
+
+```bash
+shaon payroll payslip download --month 2026-03
+shaon payroll payslip view --month 2026-03
+shaon payroll payslip password
 ```
 
 ## Troubleshooting
 
-- **CAPTCHA**: the user must solve it in the browser first
-- **Type resolution fails**: run `shaon sync-types` or pass the numeric type code directly
-- **Keychain prompts on macOS**: prefer `scripts/run.sh`; for stable local signing run `scripts/setup-codesign.sh` once
-- **Headless automation**: use `SHAON_PASSWORD` and `SHAON_SESSION_KEY`
-- **Session expired**: rerun `shaon auth` if automatic reauthentication is not enough
+- **CAPTCHA**: the user must solve it in the browser first.
+- **Type resolution fails**: run `shaon cache refresh attendance-types` or pass the numeric type code directly.
+- **Keychain prompts on macOS**: prefer `scripts/run.sh`; for stable local signing run `scripts/setup-codesign.sh` once.
+- **Advanced headless automation**: use `SHAON_PASSWORD` and `SHAON_MASTER_KEY`.
+- **Session expired**: rerun `shaon auth` if automatic reauthentication is not enough.
 
 ## Further Reading
 

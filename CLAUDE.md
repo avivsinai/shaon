@@ -58,7 +58,7 @@ Root `src/` is a compatibility facade re-exporting the workspace crates.
 - All writes default to preview
 - CLI requires `--execute` for live submission
 - MCP requires `execute: true` for live submission
-- `fill` / `auto-fill` skip Fri/Sat unless explicitly overridden
+- `attendance report range` / `attendance auto-fill` skip Fri/Sat unless explicitly overridden
 - State-changing requests must not be retried automatically
 
 ## Documentation Maintenance
@@ -83,5 +83,5 @@ When possible, document stable concepts instead of fragile counts.
 
 - Passwords live in the OS keychain by default (`shaon-cli` service)
 - Session cookies are encrypted at rest with AES-256-GCM
-- `SHAON_PASSWORD` and `SHAON_SESSION_KEY` are the headless / CI escape hatches
+- `SHAON_PASSWORD` and `SHAON_MASTER_KEY` are the headless / CI escape hatches
 - On macOS, `scripts/run.sh` uses the stable local signing identity from `scripts/setup-codesign.sh` when available

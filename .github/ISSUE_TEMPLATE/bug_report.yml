@@ -38,7 +38,7 @@ body:
       label: Steps to reproduce
       description: Minimal steps to trigger the bug.
       placeholder: |
-        1. Run `shaon status --month 2026-04`
+        1. Run `shaon attendance status --month 2026-04`
         2. ...
     validations:
       required: true
