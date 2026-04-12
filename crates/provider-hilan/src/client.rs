@@ -792,6 +792,46 @@ impl HilanClient {
         .await
     }
 
+    /// POST an ASP.NET async UpdatePanel write with full browser fidelity.
+    ///
+    /// Sends `__ASYNCPOST=true`, ScriptManager field, `X-MicrosoftAjax: Delta=true` header,
+    /// and `X-Requested-With: XMLHttpRequest`. Used for error wizard and calendar save flows
+    /// which require the server to see the request as an AJAX postback.
+    pub async fn post_aspx_async_write(
+        &mut self,
+        url: &str,
+        base_fields: &BTreeMap<String, String>,
+        overrides: &[(&str, &str)],
+        script_manager: &str,
+        event_target: &str,
+        retryable: bool,
+    ) -> Result<String> {
+        let sm_value = format!("{script_manager}|{event_target}");
+        let mut merged: BTreeMap<String, String> = base_fields.clone();
+        for &(key, value) in overrides {
+            merged.insert(key.to_string(), value.to_string());
+        }
+        merged.insert("__EVENTTARGET".to_string(), String::new());
+        merged.insert("__EVENTARGUMENT".to_string(), String::new());
+        merged.insert("__ASYNCPOST".to_string(), "true".to_string());
+        merged.insert(script_manager.to_string(), sm_value);
+        let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
+
+        let (status, text) = self
+            .send_with_retry(&format!("POST {url} (async write)"), retryable, |c| {
+                c.post(url)
+                    .header("X-MicrosoftAjax", "Delta=true")
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .header("Cache-Control", "no-cache")
+                    .form(&form_pairs)
+            })
+            .await?;
+        if !status.is_success() {
+            bail!("POST {url} (async write) returned HTTP {status}");
+        }
+        Ok(text)
+    }
+
     /// Merge base fields + overrides + extras, POST the form, and return the body.
     async fn post_aspx_merged(
         &mut self,
