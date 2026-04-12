@@ -1774,7 +1774,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
- "cookie_store 0.21.1",
+ "cookie_store 0.22.1",
  "hkdf",
  "hr-core",
  "keyring",
