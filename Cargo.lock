@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "hr-core"
-version = "1.0.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "provider-hilan"
-version = "1.0.0"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2464,7 +2464,7 @@ dependencies = [
 
 [[package]]
 name = "shaon"
-version = "1.0.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2481,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "shaon-cli"
-version = "1.0.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2501,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "shaon-mcp"
-version = "1.0.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "base64",

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | VERSION=v1.0.0 bash
+#   curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | VERSION=v0.8.0 bash
 #   curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | INSTALL_DIR="$HOME/bin" bash
 
 REPO="avivsinai/shaon"

@@ -60,12 +60,22 @@ struct ErrorDay {
     day_name: String,
     error_message: String,
     fix_params: Option<ErrorFixParams>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fix_params_candidates: Vec<ErrorFixParams>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct ErrorFixParams {
     report_id: String,
     error_type: String,
+}
+
+#[derive(Serialize)]
+struct ErrorsResponse {
+    month: String,
+    employee_id: String,
+    error_count: usize,
+    errors: Vec<ErrorDay>,
 }
 
 /// Structured suggested action — NOT a shell string.
@@ -618,14 +628,14 @@ async fn run_attendance_command(
         AttendanceCommand::Errors(args) => {
             let month = parse_month_or_current(args.month.as_deref())?;
             let mut provider = HilanProvider::from_client(client);
-            let cal = provider
-                .month_calendar(month)
-                .await
-                .map_err(provider_error)?;
+            let overview =
+                use_cases::build_overview(&mut provider, month, Local::now().date_naive())
+                    .await
+                    .map_err(provider_error)?;
             if json {
-                print_json(&cal)?;
+                print_json(&build_errors_response(&overview))?;
             } else {
-                use_cases::print_error_days(&cal);
+                use_cases::print_error_days(&overview.calendar);
             }
         }
         AttendanceCommand::Overview(args) => {
@@ -695,11 +705,8 @@ async fn run_attendance_command(
                     .map_err(provider_error)?
                     .map(|resolved| resolved.code);
             let month = date.with_day(1).expect("valid day has month start");
-            let overview =
-                use_cases::build_overview(&mut provider, month, Local::now().date_naive())
-                    .await
-                    .map_err(provider_error)?;
-            let target = find_fix_target_for_date(&overview, date)?;
+            let fix_targets = provider.fix_targets(month).await.map_err(provider_error)?;
+            let target = find_fix_target_for_date(&fix_targets, date)?;
             let preview = use_cases::fix_day(
                 &mut provider,
                 &target,
@@ -1033,14 +1040,13 @@ fn build_day_change(
 }
 
 fn find_fix_target_for_date(
-    overview: &use_cases::OverviewData,
+    fix_targets: &[CoreFixTarget],
     date: NaiveDate,
 ) -> Result<CoreFixTarget> {
-    let mut matches = overview
-        .error_days
+    let mut matches = fix_targets
         .iter()
-        .filter(|entry| entry.day.date == date)
-        .filter_map(|entry| entry.fix_target.clone());
+        .filter(|target| target.date == date)
+        .cloned();
 
     match (matches.next(), matches.next()) {
         (Some(target), None) => Ok(target),
@@ -1054,6 +1060,39 @@ fn find_fix_target_for_date(
             date.format("%Y-%m-%d"),
             date.format("%Y-%m")
         ),
+    }
+}
+
+fn build_errors_response(overview: &use_cases::OverviewData) -> ErrorsResponse {
+    ErrorsResponse {
+        month: overview.month.format("%Y-%m").to_string(),
+        employee_id: overview.calendar.employee_id.clone(),
+        error_count: overview.error_days.len(),
+        errors: overview
+            .error_days
+            .iter()
+            .map(error_day_from_overview)
+            .collect(),
+    }
+}
+
+fn error_day_from_overview(entry: &use_cases::OverviewErrorDay) -> ErrorDay {
+    let fix_params_candidates = error_fix_params_candidates(&entry.fix_targets);
+    let fix_params = match fix_params_candidates.as_slice() {
+        [candidate] => Some(candidate.clone()),
+        _ => None,
+    };
+
+    ErrorDay {
+        date: entry.day.date.format("%Y-%m-%d").to_string(),
+        day_name: entry.day.day_name.clone(),
+        error_message: entry
+            .day
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "missing report".to_string()),
+        fix_params,
+        fix_params_candidates,
     }
 }
 
@@ -1279,19 +1318,7 @@ async fn run_overview(
     let error_day_details: Vec<ErrorDay> = overview
         .error_days
         .iter()
-        .map(|entry| ErrorDay {
-            date: entry.day.date.format("%Y-%m-%d").to_string(),
-            day_name: entry.day.day_name.clone(),
-            error_message: entry
-                .day
-                .error_message
-                .clone()
-                .unwrap_or_else(|| "missing report".to_string()),
-            fix_params: entry
-                .fix_target
-                .as_ref()
-                .and_then(error_fix_params_from_target),
-        })
+        .map(error_day_from_overview)
         .collect();
 
     let missing_day_strings: Vec<String> = overview
@@ -1461,6 +1488,13 @@ fn error_fix_params_from_target(target: &hr_core::FixTarget) -> Option<ErrorFixP
     }
 }
 
+fn error_fix_params_candidates(targets: &[hr_core::FixTarget]) -> Vec<ErrorFixParams> {
+    targets
+        .iter()
+        .filter_map(error_fix_params_from_target)
+        .collect()
+}
+
 fn print_calendar_verbose(calendar: &hr_core::MonthCalendar) {
     println!(
         "Calendar {} (employee {})",
@@ -1540,7 +1574,7 @@ mod tests {
             },
             error_days: vec![use_cases::OverviewErrorDay {
                 day: calendar_day,
-                fix_target: targets.into_iter().next(),
+                fix_targets: targets,
             }],
             missing_days: Vec::new(),
             suggested_actions: Vec::new(),
@@ -1595,9 +1629,11 @@ mod tests {
         };
         let overview = sample_overview(vec![target.clone()]);
 
-        let found =
-            find_fix_target_for_date(&overview, NaiveDate::from_ymd_opt(2026, 4, 10).unwrap())
-                .expect("find target");
+        let found = find_fix_target_for_date(
+            &overview.error_days[0].fix_targets,
+            NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+        )
+        .expect("find target");
 
         assert_eq!(found, target);
     }
@@ -1606,12 +1642,77 @@ mod tests {
     fn find_fix_target_for_date_fails_when_missing() {
         let overview = sample_overview(Vec::new());
 
-        let err =
-            find_fix_target_for_date(&overview, NaiveDate::from_ymd_opt(2026, 4, 10).unwrap())
-                .expect_err("missing target should fail");
+        let err = find_fix_target_for_date(
+            &overview.error_days[0].fix_targets,
+            NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+        )
+        .expect_err("missing target should fail");
 
         assert!(err
             .to_string()
             .contains("No fix target found for 2026-04-10"));
+    }
+
+    #[test]
+    fn find_fix_target_for_date_fails_when_multiple_targets_match() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let overview = sample_overview(vec![
+            CoreFixTarget {
+                date,
+                issue_kind: Some("missing_report".to_string()),
+                provider_ref: "report-1:63".to_string(),
+                metadata: BTreeMap::from([
+                    ("report_id".to_string(), "report-1".to_string()),
+                    ("error_type".to_string(), "63".to_string()),
+                ]),
+            },
+            CoreFixTarget {
+                date,
+                issue_kind: Some("missing_report".to_string()),
+                provider_ref: "report-2:18".to_string(),
+                metadata: BTreeMap::from([
+                    ("report_id".to_string(), "report-2".to_string()),
+                    ("error_type".to_string(), "18".to_string()),
+                ]),
+            },
+        ]);
+
+        let err = find_fix_target_for_date(&overview.error_days[0].fix_targets, date)
+            .expect_err("multiple targets should fail");
+
+        assert!(err
+            .to_string()
+            .contains("Found multiple fix targets for 2026-04-10"));
+    }
+
+    #[test]
+    fn build_errors_response_preserves_multiple_fix_param_candidates() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let overview = sample_overview(vec![
+            CoreFixTarget {
+                date,
+                issue_kind: Some("missing_report".to_string()),
+                provider_ref: "report-1:63".to_string(),
+                metadata: BTreeMap::from([
+                    ("report_id".to_string(), "report-1".to_string()),
+                    ("error_type".to_string(), "63".to_string()),
+                ]),
+            },
+            CoreFixTarget {
+                date,
+                issue_kind: Some("missing_report".to_string()),
+                provider_ref: "report-2:18".to_string(),
+                metadata: BTreeMap::from([
+                    ("report_id".to_string(), "report-2".to_string()),
+                    ("error_type".to_string(), "18".to_string()),
+                ]),
+            },
+        ]);
+
+        let response = build_errors_response(&overview);
+
+        assert_eq!(response.error_count, 1);
+        assert_eq!(response.errors[0].fix_params, None);
+        assert_eq!(response.errors[0].fix_params_candidates.len(), 2);
     }
 }

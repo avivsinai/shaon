@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-04-12
+## [0.8.0] - 2026-04-12
 ### Added
 - `attendance report day` makes single-day reporting first-class instead of routing through a one-day range fill.
 - MCP now exposes `shaon_resolve` for error-day fixes and `shaon_payslip_download` for password-protected payslip retrieval.
@@ -149,5 +149,5 @@ Initial public release.
 
 [0.3.0]: https://github.com/avivsinai/shaon/releases/tag/v0.3.0
 [0.4.0]: https://github.com/avivsinai/shaon/releases/tag/v0.4.0
-[1.0.0]: https://github.com/avivsinai/shaon/releases/tag/v1.0.0
-[Unreleased]: https://github.com/avivsinai/shaon/compare/v1.0.0...HEAD
+[0.8.0]: https://github.com/avivsinai/shaon/releases/tag/v0.8.0
+[Unreleased]: https://github.com/avivsinai/shaon/compare/v0.8.0...HEAD

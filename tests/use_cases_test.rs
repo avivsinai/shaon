@@ -121,8 +121,8 @@ async fn overview_is_planned_from_provider_traits() {
     assert_eq!(overview.error_days.len(), 1);
     assert_eq!(
         overview.error_days[0]
-            .fix_target
-            .as_ref()
+            .fix_targets
+            .first()
             .and_then(|target| target.metadata.get("report_id"))
             .map(String::as_str),
         Some("report-1")
