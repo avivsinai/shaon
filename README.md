@@ -5,59 +5,49 @@
 </p>
 
 [![CI](https://github.com/avivsinai/shaon/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/shaon/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/avivsinai/shaon?display_name=tag)](https://github.com/avivsinai/shaon/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 
-Rust CLI for Hilan (חילן) attendance reporting, payslips, and HR automation.
+Rust CLI + MCP server + Claude Code plugin for automating Hilan (חילן) / Hilanet attendance, payslips, salary summaries, and related HR workflows.
 
-> **Note**: This project automates the Hilanet web interface via reverse-engineered protocol.
-> It is not affiliated with Hilan Ltd.
+> **Note**
+> shaon automates the Hilanet web interface via reverse-engineered protocol details. It is not affiliated with Hilan Ltd.
 
-## Table of Contents
+## Documentation
 
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Commands](#commands)
-- [Configuration](#configuration)
-- [Architecture](#architecture)
-- [Safety Model](#safety-model)
-- [AI Agent Integration](#ai-agent-integration)
-- [Verifying Downloads](#verifying-downloads)
-- [Contributing](#contributing)
-- [License](#license)
+- [README.md](README.md): end-user install, setup, CLI, MCP, and Claude Code usage
+- [ARCHITECTURE.md](ARCHITECTURE.md): crate boundaries, runtime surfaces, and maintenance map
+- [PROTOCOL.md](PROTOCOL.md): low-level Hilanet HTTP / WebForms / ASMX protocol notes
+- [skills/shaon/SKILL.md](skills/shaon/SKILL.md): the Claude Code skill text shipped by this repo
+- [CLAUDE.md](CLAUDE.md): maintainer instructions for coding agents and contributors
+- [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow and safety requirements
 
-## Features
+## What Shaon Covers
 
-- **19 commands** covering attendance, reports, payslips, salary, and agent workflows
-- **Safe by default** — all write commands require `--execute` to submit
-- **JSON output mode** for scripting and AI agents
-- **OS keychain credential storage** with legacy plaintext migration
-- **MCP server mode** for AI agent integration
-- **Claude Code skill + plugin** for natural-language attendance automation
-- **Full ASP.NET form replay** for attendance pages and error-wizard flows
-- **Direct ASMX JSON calls** where Hilan exposes machine-friendly endpoints
-
-For the protocol map and reverse-engineering notes, see [PROTOCOL.md](PROTOCOL.md).
+- Attendance reads: status, errors, overview, sheet, corrections, absences
+- Attendance writes: clock in/out, fill ranges, fix error days, auto-fill missing days
+- Payroll reads: payslip download and salary summaries
+- Automation surfaces: JSON CLI output, stdio MCP server, Claude Code plugin/skill
+- Safe defaults: every write path is preview-only until you pass `--execute` or `execute: true`
 
 ## Installation
 
-### From Source
+### Quick Install Script
 
 ```bash
-git clone https://github.com/avivsinai/shaon.git
-cd shaon
-cargo build -p shaon --release
-# Binary is at target/release/shaon
+curl -fsSL https://raw.githubusercontent.com/avivsinai/shaon/main/scripts/install.sh | bash
 ```
 
-### Install With Cargo
+The installer downloads the latest release asset, verifies `SHA256SUMS.txt`, and installs `shaon` into a user-local bin directory.
+
+### Homebrew
 
 ```bash
-cargo install --path .
+brew install avivsinai/tap/shaon
 ```
 
-### Pre-built Binaries
+### Prebuilt Archives
 
 Download the latest release from [GitHub Releases](https://github.com/avivsinai/shaon/releases).
 
@@ -78,218 +68,305 @@ tar xzf shaon-x86_64-unknown-linux-gnu.tar.gz
 sudo mv shaon /usr/local/bin/
 ```
 
-### Local Development Wrapper
+### Build From Source
 
-The repo includes a wrapper that builds and caches the release binary under
-`~/.cache/shaon/<version>/shaon`:
+```bash
+git clone https://github.com/avivsinai/shaon.git
+cd shaon
+cargo build -p shaon --release
+```
+
+The binary will be at `target/release/shaon`.
+
+### Development Wrapper
+
+For repo checkouts, especially on macOS, prefer the wrapper:
 
 ```bash
 ./scripts/run.sh --help
 ```
 
-For a stable local command name during development:
+It builds, caches, and launches the release binary from `~/.cache/shaon/<version>/shaon`.
+
+### macOS Signing and Keychain Behavior
+
+GitHub release and Homebrew binaries are ad-hoc signed in CI because this project does not ship with an Apple Developer ID certificate. That is enough for Keychain access, but the code hash changes on each upgrade, so macOS may ask you to re-approve access after installing a new release.
+
+For stable local identities across rebuilds:
 
 ```bash
-mkdir -p ~/bin
-ln -sf "$PWD/scripts/run.sh" ~/bin/shaon
+./scripts/setup-codesign.sh
+./scripts/run.sh status
 ```
+
+For headless or CI automation, prefer `SHAON_PASSWORD` and `SHAON_SESSION_KEY` instead of interactive keychain access.
 
 ## Quick Start
 
-```bash
-# Set up credentials (stores password in OS keychain)
-shaon auth
-
-# Get full context in one call — identity, status, errors, suggestions
-shaon overview
-
-# Show the current month's attendance status
-shaon status
-
-# Auto-fill all missing days (preview first, then --execute)
-shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00
-shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00 --execute
-
-# Clock in/out
-shaon clock-in --execute
-shaon clock-out --execute
-
-# JSON output for scripting
-shaon status --json | jq '.days[] | select(.has_error)'
-
-# Download payslip
-shaon payslip
-
-# Show salary summary
-shaon salary --months 3
-```
-
-## Commands
-
-### Setup and Discovery
-
-| Command | Description |
-|---------|-------------|
-| `auth` | Authenticate with Hilan (test credentials) |
-| `sync-types` | Sync attendance-type ontology from Hilan |
-| `types` | Show cached attendance types |
-
-### Attendance Reads
-
-| Command | Description |
-|---------|-------------|
-| `status [--month YYYY-MM]` | Show monthly attendance status |
-| `errors [--month YYYY-MM]` | Show attendance errors |
-| `report <NAME>` | Fetch a named generic report page |
-| `sheet` | Show hours analysis (`HoursAnalysis.aspx`) |
-| `corrections` | Show correction log (`HoursReportLog.aspx`) |
-| `absences` | Show initial absence symbols data |
-
-### Attendance Writes
-
-| Command | Description |
-|---------|-------------|
-| `clock-in [--type TYPE] [--execute]` | Clock in for today |
-| `clock-out [--execute]` | Clock out for today |
-| `fill --from DATE --to DATE [--type TYPE] [--hours HH:MM-HH:MM] [--execute]` | Fill attendance for a date range |
-| `fix DATE [--type TYPE] [--hours HH:MM-HH:MM] [--report-id UUID] [--error-type N] [--execute]` | Fix a specific attendance error |
-| `auto-fill [--month YYYY-MM] --type TYPE [--hours HH:MM-HH:MM] [--execute]` | Fill all missing days in a month |
-
-All write commands are **preview-only by default**. Pass `--execute` to submit.
-`fill` and `auto-fill` skip weekends (Fri/Sat) unless `--include-weekends` is passed.
-
-### Agent Workflows
-
-| Command | Description |
-|---------|-------------|
-| `overview [--month YYYY-MM]` | Full context in one call: identity, summary, types, errors, suggestions |
-| `serve` | Start MCP server (stdio transport) for AI agent integration |
-| `completions <SHELL>` | Generate shell completions (bash, zsh, fish) |
-
-### Payroll
-
-| Command | Description |
-|---------|-------------|
-| `payslip [--month YYYY-MM] [--output PATH]` | Download payslip PDF |
-| `salary [--months N]` | Show salary summaries |
-
-## Configuration
-
-`shaon` reads a TOML config file from:
-
-| Path | Purpose |
-|------|---------|
-| `~/.shaon/config.toml` | Canonical config location |
-| `~/.shaon/<subdomain>/` | Per-org state (`cookies.json`, `types.json`) |
-
-Example:
+### 1. Create `~/.shaon/config.toml`
 
 ```toml
-subdomain = "mycompany"         # your employer's Hilanet subdomain
-username = "27"                  # your employee ID
+subdomain = "mycompany"
+username = "123456789"
 
 # optional
 payslip_folder = "/Users/you/Downloads/payslips"
 payslip_format = "%Y-%m.pdf"
 ```
 
-Then run `shaon auth` to store your password in the OS keychain. No plaintext
-passwords are stored on disk.
+### 2. Authenticate
 
-Notes:
+```bash
+shaon auth
+```
 
-- Session cookies are encrypted at rest (AES-256-GCM with a random key in the keychain)
-- Types auto-sync on first use — `sync-types` is optional for manual refresh
-- CAPTCHA is not bypassed; if Hilan asks for one, solve it in the browser first
+This stores the password in the OS keychain and verifies the login.
+
+### 3. Common Workflows
+
+```bash
+# Full monthly context: identity, errors, missing days, suggestions
+shaon overview --month 2026-04
+
+# Same, but machine-readable
+shaon overview --month 2026-04 --json
+
+# Show the attendance calendar for a month
+shaon status --month 2026-04
+
+# Preview an auto-fill run, then execute it
+shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00
+shaon auto-fill --month 2026-04 --type "work from home" --hours 09:00-18:00 --execute
+
+# Clock in / out
+shaon clock-in --execute
+shaon clock-out --execute
+
+# Download the previous month's payslip (default month)
+shaon payslip
+
+# Download a specific payslip to a chosen path
+shaon payslip --month 2026-03 --output ~/Downloads/2026-03.pdf
+
+# Show the last 2 salary months (CLI default)
+shaon salary
+shaon salary --months 6
+```
+
+## Configuration and Credentials
+
+### Files and Directories
+
+| Path | Purpose |
+|------|---------|
+| `~/.shaon/config.toml` | canonical config |
+| `~/.shaon/<subdomain>/cookies.json` | encrypted session cookies |
+| `~/.shaon/<subdomain>/types.json` | cached attendance type ontology |
+
+### Credential Sources
+
+shaon reads secrets in this order:
+
+1. `SHAON_PASSWORD` / `SHAON_SESSION_KEY`
+2. OS keychain entries
+3. legacy plaintext password in `config.toml` only for migration
+
+### Notes
+
+- Session cookies are encrypted at rest with AES-256-GCM
+- `shaon auth --migrate` moves a legacy plaintext password into the keychain
+- If Hilan asks for a CAPTCHA, solve it in the browser and retry
+- `sync-types` is optional; attendance types auto-sync on first use
+
+## CLI Guide
+
+For the exact live surface, use:
+
+```bash
+shaon --help
+shaon <command> --help
+```
+
+### Setup and Utility Commands
+
+| Command | Purpose |
+|---------|---------|
+| `auth` | test credentials and store password in keychain |
+| `sync-types` | refresh the attendance type cache |
+| `types` | show currently known attendance types |
+| `completions <shell>` | generate shell completions |
+| `serve` | start the stdio MCP server |
+
+### Attendance Read Commands
+
+| Command | Purpose |
+|---------|---------|
+| `status [--month YYYY-MM]` | monthly attendance calendar |
+| `errors [--month YYYY-MM]` | error days for a month |
+| `overview [--month YYYY-MM] [--detailed]` | identity, summary, errors, missing days, suggestions |
+| `sheet` | analyzed attendance sheet (`HoursAnalysis.aspx`) |
+| `corrections` | correction log (`HoursReportLog.aspx`) |
+| `absences` | absence symbols and display names |
+| `report <name>` | fetch a named Hilan report page and parse the first meaningful HTML table |
+
+### Attendance Write Commands
+
+| Command | Purpose |
+|---------|---------|
+| `clock-in [--type TYPE] [--execute]` | report entry time for today |
+| `clock-out [--execute]` | report exit time for today |
+| `fill --from DATE --to DATE [--type TYPE] [--hours HH:MM-HH:MM] [--include-weekends] [--execute]` | fill a date range |
+| `fix DATE [--type TYPE] [--hours HH:MM-HH:MM] [--report-id UUID] [--error-type N] [--execute]` | fix a specific error day |
+| `auto-fill [--month YYYY-MM] --type TYPE [--hours HH:MM-HH:MM] [--include-weekends] [--max-days N] [--execute]` | fill all missing days in a month |
+
+All write commands are preview-only by default.
+
+### Payroll Commands
+
+| Command | Purpose |
+|---------|---------|
+| `payslip [--month YYYY-MM] [--output PATH]` | download a payslip PDF; defaults to the previous month |
+| `salary [--months N]` | salary summary; defaults to `2` months |
+
+### JSON Output
+
+All CLI commands support `--json`.
+
+```bash
+shaon status --month 2026-04 --json | jq '.days[] | select(.error == true)'
+```
+
+## MCP Server
+
+`shaon serve` exposes a stdio MCP server implemented in `crates/shaon-mcp`.
+
+### Current MCP Tools
+
+| Tool | Purpose |
+|------|---------|
+| `shaon_status` | monthly attendance calendar |
+| `shaon_errors` | error days only |
+| `shaon_types` | attendance types |
+| `shaon_clock_in` | preview or submit clock-in |
+| `shaon_clock_out` | preview or submit clock-out |
+| `shaon_fill` | preview or submit a date-range fill |
+| `shaon_auto_fill` | preview or submit auto-fill |
+| `shaon_salary` | salary summary |
+| `shaon_sheet` | analyzed attendance sheet |
+| `shaon_corrections` | correction log |
+| `shaon_absences` | absence symbols |
+| `shaon_overview` | monthly overview |
+
+Current CLI-only capabilities:
+
+- `payslip`
+- `report`
+- `fix`
+- `auth`
+- `sync-types`
+- `completions`
+
+### MCP Client Configuration Example
+
+Using the repo wrapper:
+
+```json
+{
+  "mcpServers": {
+    "shaon": {
+      "command": "/absolute/path/to/shaon/scripts/run.sh",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Using an installed binary:
+
+```json
+{
+  "mcpServers": {
+    "shaon": {
+      "command": "shaon",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### MCP Behavior Notes
+
+- Tool results are JSON payloads
+- Tool errors are wrapped in an `error` envelope with `code`, `message`, `retryable`, and optional `details`
+- Write tools stay in preview mode unless the request includes `execute: true`
+- Each tool loads local config and keychain state on demand
+
+## Claude Code Plugin and Skill
+
+This repo ships a Claude Code plugin manifest at `.claude-plugin/plugin.json` and a skill at `skills/shaon/SKILL.md`.
+
+### Local Plugin Development
+
+```bash
+claude --plugin-dir /absolute/path/to/shaon
+```
+
+Once Claude Code starts, the explicit plugin skill name is:
+
+```text
+/shaon:shaon
+```
+
+Example:
+
+```text
+/shaon:shaon show my missing attendance days for 2026-04
+```
+
+The skill also auto-triggers on keywords like `shaon`, `attendance`, `clock in`, `payslip`, `salary`, `work hours`, and `שעון נוכחות`.
+
+### Why Use the Skill vs MCP Directly
+
+- Use the **CLI** when you want explicit shell commands or scripting
+- Use the **MCP server** when your agent platform wants typed tools over stdio
+- Use the **Claude Code plugin/skill** when you want natural-language workflows inside Claude Code
+
+For plugin development guidance, see the official Claude Code plugin docs:
+
+- https://code.claude.com/docs/en/plugins
+- https://code.claude.com/docs/en/discover-plugins
 
 ## Architecture
 
-```
-shaon/
-├── crates/
-│   ├── hr-core/         # Provider-agnostic DTOs, traits, and use cases
-│   ├── provider-hilan/  # Hilan transport, parsing, config, adapter, fixtures
-│   ├── shaon-cli/       # CLI frontend
-│   └── shaon-mcp/       # MCP frontend
-├── src/
-│   ├── lib.rs           # Compatibility facade re-exporting the workspace crates
-│   └── main.rs          # Thin binary entrypoint
-├── examples/
-│   └── overview.rs      # Library consumer example
-├── scripts/
-│   └── run.sh           # Build-and-cache wrapper
-├── skills/
-│   └── shaon/SKILL.md   # Claude Code skill definition
-├── .claude-plugin/
-│   └── plugin.json      # Claude Code plugin manifest
-└── tests/
-    └── *.rs             # Facade and use-case integration tests
-```
+For the maintainable view of the codebase, read [ARCHITECTURE.md](ARCHITECTURE.md).
 
-`hr-core` is the stable boundary for downstream code. `provider-hilan`
-implements that contract over Hilan's ASP.NET and ASMX surfaces. The root
-`shaon` crate intentionally stays as a convenience facade so existing
-`shaon::core`, `shaon::provider`, `shaon::use_cases`, and `shaon::mcp`
-imports keep working while the internal workspace stays modular.
+Short version:
 
-For a minimal consumer, see [`examples/overview.rs`](examples/overview.rs).
+- `crates/hr-core`: provider-agnostic traits, DTOs, and use-cases
+- `crates/provider-hilan`: Hilan-specific transport, parsing, session, config, and protocol replay
+- `crates/shaon-cli`: human-facing CLI
+- `crates/shaon-mcp`: stdio MCP server
+- root `src/`: compatibility facade and binary entrypoint
 
-## Safety Model
-
-All write commands are **safe by default**.
-
-- `clock-in`, `clock-out`, `fill`, and `fix` print the reconstructed request
-  payload and **do not submit** anything until `--execute` is passed.
-- Passing both `--execute` and `--dry-run` is an error.
-- The CLI never mutates Hilan state without explicit opt-in.
-
-## AI Agent Integration
-
-### Claude Code Skill
-
-The repo ships a Claude Code skill at `skills/shaon/SKILL.md` and a plugin
-manifest at `.claude-plugin/plugin.json`. Install it with:
-
-```bash
-# Via skills.sh
-npx skills add avivsinai/shaon
-
-# Or install manually
-/plugin marketplace add avivsinai/skills-marketplace
-/plugin install shaon@avivsinai-marketplace
-```
-
-The skill triggers on keywords like "shaon", "attendance", "clock in/out",
-"payslip", "salary", and "שעון נוכחות".
-
-### Scripting
-
-All commands can be used in shell scripts. Pass `--json` to emit structured
-output for machine consumption.
-
-### MCP Server
-
-Run `shaon serve` to expose Hilan operations as MCP tools for AI agent
-orchestration over stdio transport.
+For endpoint-level details, see [PROTOCOL.md](PROTOCOL.md).
 
 ## Verifying Downloads
 
 After downloading a release binary, verify its checksum:
 
 ```bash
-# Download the checksums file
 curl -LO https://github.com/avivsinai/shaon/releases/latest/download/SHA256SUMS.txt
 
-# Verify (macOS)
+# macOS
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 
-# Verify (Linux)
+# Linux
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

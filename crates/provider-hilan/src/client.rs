@@ -20,6 +20,23 @@ static ORG_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\\?"OrgId\\?"[:\s]*\\?"(\d+)\\?""#).expect("invalid OrgId regex")
 });
 
+// Static scraper selectors used in form + table parsing. Building a Selector
+// allocates; pre-compile once so hot paths don't pay the cost per call.
+static FORM_ASPNET_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(r#"form#aspnetForm"#).expect("valid selector"));
+static FORM_FALLBACK_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("form").expect("valid selector"));
+static FORM_INPUT_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("input").expect("valid selector"));
+static FORM_SELECT_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("select").expect("valid selector"));
+static FORM_OPTION_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("option").expect("valid selector"));
+static FORM_SELECTED_OPTION_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("option[selected]").expect("valid selector"));
+static FORM_TEXTAREA_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("textarea").expect("valid selector"));
+
 use crate::config::Config;
 
 pub struct HilanClient {
@@ -27,6 +44,7 @@ pub struct HilanClient {
     pub(crate) base_url: String,
     config: Config,
     org_id: Option<String>,
+    bootstrap_info: Option<crate::api::BootstrapInfo>,
     session_candidate: bool,
     cookie_store: Arc<CookieStoreMutex>,
     last_request_at: Option<tokio::time::Instant>,
@@ -131,6 +149,7 @@ impl HilanClient {
             base_url,
             config,
             org_id: None,
+            bootstrap_info: None,
             session_candidate: has_session_candidate,
             cookie_store,
             last_request_at: None,
@@ -145,6 +164,21 @@ impl HilanClient {
     /// Mutably borrow the config (e.g. for migration).
     pub fn config_mut(&mut self) -> &mut Config {
         &mut self.config
+    }
+
+    pub(crate) fn cached_bootstrap(&self) -> Option<crate::api::BootstrapInfo> {
+        self.bootstrap_info.clone()
+    }
+
+    pub(crate) fn cache_bootstrap(&mut self, info: crate::api::BootstrapInfo) {
+        self.org_id = Some(info.org_id.clone());
+        self.bootstrap_info = Some(info);
+    }
+
+    fn invalidate_session_state(&mut self) {
+        self.session_candidate = false;
+        self.org_id = None;
+        self.bootstrap_info = None;
     }
 
     /// Ensure we have the minimum state required for authenticated requests.
@@ -320,7 +354,7 @@ impl HilanClient {
     ) -> Result<PayslipDownload> {
         self.ensure_authenticated().await?;
         if self.org_id.is_none() {
-            self.fetch_org_id().await?;
+            self.org_id = Some(crate::api::bootstrap(self).await?.org_id);
         }
 
         let org_id = self
@@ -617,7 +651,7 @@ impl HilanClient {
                             resp.status(),
                             resp.url()
                         );
-                        self.session_candidate = false;
+                        self.invalidate_session_state();
                         self.login().await?;
                         attempt += 1;
                         continue;
@@ -662,7 +696,7 @@ impl HilanClient {
                 Ok(resp) => {
                     let needs_reauth = needs_reauth(&resp);
                     if needs_reauth && attempt < MAX_RETRIES {
-                        self.session_candidate = false;
+                        self.invalidate_session_state();
                         self.login().await?;
                         attempt += 1;
                         continue;
@@ -832,6 +866,44 @@ impl HilanClient {
         Ok(text)
     }
 
+    /// POST an ASP.NET async event write with explicit `__EVENTTARGET` / `__EVENTARGUMENT`
+    /// and a caller-supplied ScriptManager value.
+    pub async fn post_aspx_async_event_write(
+        &mut self,
+        url: &str,
+        base_fields: &BTreeMap<String, String>,
+        overrides: &[(&str, &str)],
+        script_manager: &str,
+        script_manager_value: &str,
+        event_target: &str,
+        event_argument: &str,
+        retryable: bool,
+    ) -> Result<String> {
+        let mut merged: BTreeMap<String, String> = base_fields.clone();
+        for &(key, value) in overrides {
+            merged.insert(key.to_string(), value.to_string());
+        }
+        merged.insert("__EVENTTARGET".to_string(), event_target.to_string());
+        merged.insert("__EVENTARGUMENT".to_string(), event_argument.to_string());
+        merged.insert("__ASYNCPOST".to_string(), "true".to_string());
+        merged.insert(script_manager.to_string(), script_manager_value.to_string());
+        let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
+
+        let (status, text) = self
+            .send_with_retry(&format!("POST {url} (async event write)"), retryable, |c| {
+                c.post(url)
+                    .header("X-MicrosoftAjax", "Delta=true")
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .header("Cache-Control", "no-cache")
+                    .form(&form_pairs)
+            })
+            .await?;
+        if !status.is_success() {
+            bail!("POST {url} (async event write) returned HTTP {status}");
+        }
+        Ok(text)
+    }
+
     /// Merge base fields + overrides + extras, POST the form, and return the body.
     async fn post_aspx_merged(
         &mut self,
@@ -929,11 +1001,11 @@ pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
         pos = id_end + 1;
 
         // Read content (exactly content_len chars)
-        if pos + content_len > delta.len() {
+        let Some((content, consumed_bytes)) = take_chars(&delta[pos..], content_len) else {
             break;
-        }
-        let content = delta[pos..pos + content_len].to_string();
-        pos += content_len;
+        };
+        let content = content.to_string();
+        pos += consumed_bytes;
 
         // Skip trailing '|'
         if pos < delta.len() && bytes[pos] == b'|' {
@@ -946,6 +1018,25 @@ pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
     result
 }
 
+fn take_chars(s: &str, char_len: usize) -> Option<(&str, usize)> {
+    if char_len == 0 {
+        return Some((&s[..0], 0));
+    }
+
+    let total_chars = s.chars().count();
+    if char_len > total_chars {
+        return None;
+    }
+
+    let end = if char_len == total_chars {
+        s.len()
+    } else {
+        s.char_indices().nth(char_len).map(|(idx, _)| idx)?
+    };
+
+    Some((&s[..end], end))
+}
+
 /// Looks for `<form id="aspnetForm">` first; falls back to the first `<form>` if not found.
 /// Extracts hidden inputs, text inputs, checkboxes, selects, and textareas.
 /// Skips `input[type=submit]` (buttons are added explicitly by the caller).
@@ -954,20 +1045,17 @@ pub fn parse_aspx_form_fields(html: &str) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
 
     // Try aspnetForm first, fall back to first <form>
-    let form_sel = Selector::parse(r#"form#aspnetForm"#).unwrap();
-    let form_fallback_sel = Selector::parse("form").unwrap();
     let form_root = document
-        .select(&form_sel)
+        .select(&FORM_ASPNET_SEL)
         .next()
-        .or_else(|| document.select(&form_fallback_sel).next());
+        .or_else(|| document.select(&FORM_FALLBACK_SEL).next());
 
     let Some(form) = form_root else {
         return fields;
     };
 
     // hidden + text inputs
-    let input_sel = Selector::parse("input").unwrap();
-    for input in form.select(&input_sel) {
+    for input in form.select(&FORM_INPUT_SEL) {
         let el = input.value();
         let input_type = el.attr("type").unwrap_or("text").to_lowercase();
         let Some(name) = el.attr("name") else {
@@ -999,11 +1087,7 @@ pub fn parse_aspx_form_fields(html: &str) -> BTreeMap<String, String> {
     }
 
     // select elements
-    let select_sel = Selector::parse("select").unwrap();
-    let option_sel = Selector::parse("option").unwrap();
-    let selected_option_sel = Selector::parse("option[selected]").unwrap();
-
-    for select in form.select(&select_sel) {
+    for select in form.select(&FORM_SELECT_SEL) {
         let Some(name) = select.value().attr("name") else {
             continue;
         };
@@ -1013,9 +1097,9 @@ pub fn parse_aspx_form_fields(html: &str) -> BTreeMap<String, String> {
 
         // Prefer the option with `selected` attribute, otherwise first option
         let chosen = select
-            .select(&selected_option_sel)
+            .select(&FORM_SELECTED_OPTION_SEL)
             .next()
-            .or_else(|| select.select(&option_sel).next());
+            .or_else(|| select.select(&FORM_OPTION_SEL).next());
 
         if let Some(opt) = chosen {
             let value = opt.value().attr("value").unwrap_or("");
@@ -1024,8 +1108,7 @@ pub fn parse_aspx_form_fields(html: &str) -> BTreeMap<String, String> {
     }
 
     // textarea elements
-    let textarea_sel = Selector::parse("textarea").unwrap();
-    for textarea in form.select(&textarea_sel) {
+    for textarea in form.select(&FORM_TEXTAREA_SEL) {
         let Some(name) = textarea.value().attr("name") else {
             continue;
         };
@@ -1279,11 +1362,11 @@ fn needs_reauth(resp: &reqwest::Response) -> bool {
 }
 
 fn is_login_redirect(resp: &reqwest::Response) -> bool {
-    let url = resp.url().as_str().to_lowercase();
-    url.contains("/login")
-        || url.contains("/signin")
-        || url.contains("/logon")
-        || url.contains("/hilancenter")
+    let path = resp.url().path().to_lowercase();
+    path.contains("/login")
+        || path.contains("/signin")
+        || path.contains("/logon")
+        || matches!(path.as_str(), "/hilancenter" | "/hilancenter/")
 }
 
 /// Sleep with exponential backoff: 500ms, 1s, 2s, ...
@@ -1296,6 +1379,8 @@ async fn retry_backoff(attempt: u32, max_retries: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::HilanProvider;
+    use hr_core::{AttendanceChange, AttendanceProvider, FixTarget, WriteMode};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Mutex;
@@ -1331,6 +1416,7 @@ mod tests {
             base_url,
             config,
             org_id: None,
+            bootstrap_info: None,
             session_candidate,
             cookie_store,
             last_request_at: None,
@@ -1418,6 +1504,224 @@ mod tests {
         });
 
         (format!("http://{addr}"), handle, recorded)
+    }
+
+    fn decode_form_component(value: &str) -> String {
+        let raw = value.replace('+', " ");
+        urlencoding::decode(&raw)
+            .expect("decode x-www-form-urlencoded component")
+            .into_owned()
+    }
+
+    fn parse_form_body(body: &str) -> std::collections::BTreeMap<String, String> {
+        body.split('&')
+            .filter(|pair| !pair.is_empty())
+            .map(|pair| {
+                let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+                (decode_form_component(key), decode_form_component(value))
+            })
+            .collect()
+    }
+
+    fn input_field(name: &str, value: &str) -> String {
+        format!(r#"<input type="hidden" name="{name}" value="{value}" />"#)
+    }
+
+    fn bootstrap_response(user_id: &str, employee_id: u32) -> String {
+        format!(
+            r#"{{"PrincipalUser":{{"UserId":"{user_id}","EmployeeId":{employee_id},"Name":"Test User","IsManager":false}},"OrganizationId":"4321"}}"#
+        )
+    }
+
+    fn calendar_row0(employee_id: &str) -> String {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/calendar/calendar-row0.html"
+        ))
+        .replace("999999", employee_id)
+    }
+
+    fn conflict_calendar_row(employee_id: &str) -> String {
+        format!(
+            r#"
+            <tr id="ctl00_mp_RG_Days_{employee_id}_2026_04_EmployeeReports_row_0_1">
+                <td>
+                    <select name="ctl00$mp$RG_Days_{employee_id}_2026_04$cellOf_Symbol.SymbolId_EmployeeReports_row_0_1$Symbol.SymbolId_EmployeeReports_row_0_1">
+                        <option value="0">work day</option>
+                        <option selected="selected" value="481" isabsencesymbol="true">vacation</option>
+                        <option value="120">work from home</option>
+                    </select>
+                </td>
+            </tr>
+            "#
+        )
+    }
+
+    fn row_data_script(date: NaiveDate, entries: &[serde_json::Value]) -> String {
+        let row_data = serde_json::to_string(entries).expect("serialize row data");
+        let escaped = serde_json::to_string(&row_data).expect("escape row data");
+        let escaped = escaped
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .expect("quoted json string");
+
+        format!(
+            r#"<script>$create(Hilan.HilanNet.Web.Controls.HAttendanceGrid.HReportsGridRow.HReportsGridRowBehavior, {{"RowData":"{escaped}","RowDate":"{}-{}-{}"}});</script>"#,
+            date.year(),
+            date.month(),
+            date.day()
+        )
+    }
+
+    fn work_day_row_data(object_id: &str, employee_id: u32) -> serde_json::Value {
+        serde_json::json!({
+            "ID": object_id,
+            "IsRange": false,
+            "EmployeeId": employee_id,
+            "ReportDate": "/Date(1775768400000)/",
+            "IsReportDeleted": false,
+            "Symbol": {
+                "First": "0",
+                "Second": "work day"
+            }
+        })
+    }
+
+    fn conflict_absence_row_data(object_id: &str, employee_id: u32) -> serde_json::Value {
+        serde_json::json!({
+            "ID": object_id,
+            "IsRange": false,
+            "EmployeeId": employee_id,
+            "ReportDate": "/Date(1775768400000)/",
+            "IsReportDeleted": false,
+            "Symbol": {
+                "First": "481",
+                "Second": "vacation"
+            }
+        })
+    }
+
+    fn error_wizard_form_html(employee_id: &str) -> String {
+        let row = calendar_row0(employee_id);
+        format!(
+            r#"
+            <html><body>
+                <form id="aspnetForm">
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                    <table><tbody>{row}</tbody></table>
+                </form>
+            </body></html>
+            "#,
+            input_field("__VIEWSTATE", "wizard-viewstate"),
+            input_field("__VIEWSTATEGENERATOR", "wizard-generator"),
+            input_field("H-XSRF-Token", "wizard-xsrf"),
+            input_field("ctl00$mp$Strip$hCurrentItemId", employee_id),
+            input_field("ctl00$mp$ScriptBox", ""),
+            input_field("Time", "09:00")
+        )
+    }
+
+    fn calendar_form_html(employee_id: &str) -> String {
+        format!(
+            r#"
+            <html><body>
+                <form id="aspnetForm">
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                </form>
+            </body></html>
+            "#,
+            input_field("__VIEWSTATE", "calendar-viewstate"),
+            input_field("__VIEWSTATEGENERATOR", "calendar-generator"),
+            input_field("H-XSRF-Token", "calendar-xsrf"),
+            input_field("ctl00$mp$Strip$hCurrentItemId", employee_id),
+            input_field("ctl00$mp$currentMonth", "01/04/2026"),
+            input_field("__calendarSelectedDays", ""),
+            input_field("ctl00$mp$scriptBox", "")
+        )
+    }
+
+    fn calendar_selection_html(
+        employee_id: &str,
+        date: NaiveDate,
+        include_conflict: bool,
+        employee_short_id: u32,
+    ) -> String {
+        let row0 = calendar_row0(employee_id);
+        let conflict_row = if include_conflict {
+            conflict_calendar_row(employee_id)
+        } else {
+            String::new()
+        };
+        let mut row_data = vec![work_day_row_data("existing-work-day", employee_short_id)];
+        if include_conflict {
+            row_data.push(conflict_absence_row_data(
+                "conflict-vacation",
+                employee_short_id,
+            ));
+        }
+        let row_data_script = row_data_script(date, &row_data);
+
+        format!(
+            r#"
+            <html><body>
+                <form id="aspnetForm">
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                    {}
+                    <table><tbody>{row0}{conflict_row}</tbody></table>
+                    {row_data_script}
+                </form>
+            </body></html>
+            "#,
+            input_field("__VIEWSTATE", "calendar-viewstate"),
+            input_field("__VIEWSTATEGENERATOR", "calendar-generator"),
+            input_field("H-XSRF-Token", "calendar-xsrf"),
+            input_field("ctl00$mp$Strip$hCurrentItemId", employee_id),
+            input_field("ctl00$mp$currentMonth", "01/04/2026"),
+            input_field("__calendarSelectedDays", "9596"),
+            input_field("ctl00$mp$scriptBox", "")
+        )
+    }
+
+    fn change_to_work_from_home(date: NaiveDate) -> AttendanceChange {
+        AttendanceChange {
+            date,
+            attendance_type_code: Some("120".to_string()),
+            use_default_attendance_type: false,
+            entry_time: Some("09:00".to_string()),
+            exit_time: Some("18:00".to_string()),
+            comment: Some("home".to_string()),
+            clear_entry: false,
+            clear_exit: false,
+            clear_comment: false,
+        }
+    }
+
+    fn missing_report_target(date: NaiveDate) -> FixTarget {
+        FixTarget {
+            date,
+            issue_kind: Some("missing".to_string()),
+            provider_ref: "missing-report:63".to_string(),
+            metadata: std::collections::BTreeMap::from([
+                ("report_id".to_string(), "missing-report".to_string()),
+                ("error_type".to_string(), "63".to_string()),
+            ]),
+        }
     }
 
     // -- percent_diff ----------------------------------------------------------
@@ -1567,6 +1871,85 @@ mod tests {
 
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
+    async fn bootstrap_caches_get_data_per_session() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("bootstrap-cache");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![http_response(
+            r#"{"PrincipalUser":{"UserId":"12345","EmployeeId":99,"Name":"Test User","IsManager":false},"OrganizationId":"4321"}"#,
+            "application/json",
+        )]);
+
+        let mut client = build_test_client(base_url, true);
+        let first = crate::api::bootstrap(&mut client).await.unwrap();
+        let second = crate::api::bootstrap(&mut client).await.unwrap();
+
+        assert_eq!(first.org_id, "4321");
+        assert_eq!(second.org_id, "4321");
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(
+            requests[0].path,
+            "/Hilannetv2/Services/Public/WS/HEmployeeStripApiapi.asmx/GetData"
+        );
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn payslip_uses_bootstrap_org_id_without_homepage_scrape() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("payslip-bootstrap-org-id");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            http_response(
+                r#"{"PrincipalUser":{"UserId":"12345","EmployeeId":99,"Name":"Test User","IsManager":false},"OrganizationId":"4321"}"#,
+                "application/json",
+            ),
+            http_response("%PDF-1.7\nmock pdf", "application/pdf"),
+        ]);
+
+        let mut client = build_test_client(base_url, true);
+        let output = home.join("payslip.pdf");
+        let month = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+
+        let download = client.payslip(month, Some(&output)).await.unwrap();
+
+        assert_eq!(download.path, output);
+        assert_eq!(download.month, month);
+        assert_eq!(
+            std::fs::read(&download.path).unwrap(),
+            b"%PDF-1.7\nmock pdf"
+        );
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(
+            requests[0].path,
+            "/Hilannetv2/Services/Public/WS/HEmployeeStripApiapi.asmx/GetData"
+        );
+        assert_eq!(requests[1].method, "GET");
+        assert!(requests[1].path.starts_with(
+            "/Hilannetv2/PersonalFile/PdfPaySlip.aspx?Date=01/03/2026&UserId=432112345"
+        ));
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
     async fn post_aspx_event_sets_event_target_and_overrides() {
         let _env_guard = crate::config::test_env_lock().lock().unwrap();
         let home = test_home_dir("aspx-event");
@@ -1619,6 +2002,287 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn error_wizard_then_calendar_fix_executes_without_delete_when_no_conflict() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("fix-wfh-no-conflict");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let employee_id = "460627";
+        let employee_short_id = 27;
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            http_response(
+                &error_wizard_form_html(employee_id),
+                "text/html; charset=utf-8",
+            ),
+            http_response(
+                &bootstrap_response(employee_id, employee_short_id),
+                "application/json",
+            ),
+            http_response("<html>cleared</html>", "text/html; charset=utf-8"),
+            http_response(&calendar_form_html(employee_id), "text/html; charset=utf-8"),
+            http_response(
+                &calendar_selection_html(employee_id, date, false, employee_short_id),
+                "text/html; charset=utf-8",
+            ),
+            http_response("<html>saved</html>", "text/html; charset=utf-8"),
+        ]);
+
+        let client = build_test_client(base_url, true);
+        let mut provider = HilanProvider::from_client(client);
+        let preview = provider
+            .fix_day(
+                &missing_report_target(date),
+                &change_to_work_from_home(date),
+                WriteMode::Execute,
+            )
+            .await
+            .expect("execute missing-report WFH fix");
+
+        assert!(preview.executed);
+        assert_eq!(preview.summary, "fixed attendance error for 2026-04-10");
+        assert_eq!(
+            preview
+                .provider_debug
+                .as_ref()
+                .and_then(|debug| debug.get("steps"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 6);
+
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(
+            requests[0].path,
+            "/Hilannetv2/EmployeeErrorHandling.aspx?date=10/04/2026&reportId=missing-report&errorType=63&HideStrip=1&HideEmployeeStrip=1"
+        );
+        assert_eq!(requests[1].method, "POST");
+        assert_eq!(
+            requests[1].path,
+            "/Hilannetv2/Services/Public/WS/HEmployeeStripApiapi.asmx/GetData"
+        );
+        assert_eq!(
+            requests[3].path,
+            "/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true"
+        );
+
+        let clear_body = parse_form_body(&requests[2].body);
+        assert_eq!(
+            clear_body.get("__ASYNCPOST").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            clear_body.get("ctl00$ms").map(String::as_str),
+            Some("ctl00$ms|ctl00$mp$RG_Days_460627_2026_04$btnSave")
+        );
+        assert_eq!(
+            clear_body.get("__EVENTTARGET").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            clear_body.get("__EVENTARGUMENT").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            clear_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$cellOf_Symbol.SymbolId_EmployeeReports_row_0_0$Symbol.SymbolId_EmployeeReports_row_0_0")
+                .map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            clear_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$btnSave")
+                .map(String::as_str),
+            Some("שמור וסגור")
+        );
+
+        let refresh_body = parse_form_body(&requests[4].body);
+        assert_eq!(
+            refresh_body.get("__EVENTTARGET").map(String::as_str),
+            Some("ctl00$mp$RefreshSelectedDays")
+        );
+        assert_eq!(
+            refresh_body.get("ctl00$ms").map(String::as_str),
+            Some("ctl00$ms|ctl00$mp$RefreshSelectedDays")
+        );
+        assert_eq!(
+            refresh_body
+                .get("__calendarSelectedDays")
+                .map(String::as_str),
+            Some("9596")
+        );
+
+        let save_body = parse_form_body(&requests[5].body);
+        assert_eq!(
+            save_body.get("__ASYNCPOST").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(save_body.get("__EVENTTARGET").map(String::as_str), Some(""));
+        assert_eq!(
+            save_body.get("__EVENTARGUMENT").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            save_body.get("ctl00$ms").map(String::as_str),
+            Some("ctl00$ms|ctl00$mp$RG_Days_460627_2026_04$btnSave")
+        );
+        assert_eq!(
+            save_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$cellOf_Symbol.SymbolId_EmployeeReports_row_0_0$Symbol.SymbolId_EmployeeReports_row_0_0")
+                .map(String::as_str),
+            Some("120")
+        );
+        assert_eq!(
+            save_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$btnSave")
+                .map(String::as_str),
+            Some("שמירה")
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|request| request.body.contains("DELETE_ROW")),
+            "no-conflict flow should not issue a delete"
+        );
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn error_wizard_then_calendar_fix_deletes_conflict_before_submit() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("fix-wfh-delete-conflict");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let employee_id = "460627";
+        let employee_short_id = 27;
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            http_response(
+                &error_wizard_form_html(employee_id),
+                "text/html; charset=utf-8",
+            ),
+            http_response(
+                &bootstrap_response(employee_id, employee_short_id),
+                "application/json",
+            ),
+            http_response("<html>cleared</html>", "text/html; charset=utf-8"),
+            http_response(&calendar_form_html(employee_id), "text/html; charset=utf-8"),
+            http_response(
+                &calendar_selection_html(employee_id, date, true, employee_short_id),
+                "text/html; charset=utf-8",
+            ),
+            http_response(
+                &calendar_selection_html(employee_id, date, false, employee_short_id),
+                "text/html; charset=utf-8",
+            ),
+            http_response("<html>saved</html>", "text/html; charset=utf-8"),
+        ]);
+
+        let client = build_test_client(base_url, true);
+        let mut provider = HilanProvider::from_client(client);
+        let preview = provider
+            .fix_day(
+                &missing_report_target(date),
+                &change_to_work_from_home(date),
+                WriteMode::Execute,
+            )
+            .await
+            .expect("execute missing-report WFH fix with conflict");
+
+        assert!(preview.executed);
+        assert_eq!(preview.summary, "fixed attendance error for 2026-04-10");
+        assert_eq!(
+            preview
+                .provider_debug
+                .as_ref()
+                .and_then(|debug| debug.get("steps"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(3)
+        );
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 7);
+
+        let delete_body = parse_form_body(&requests[5].body);
+        assert_eq!(
+            delete_body
+                .get("ctl00$mp$RG$Days$460627$2026$04$reportsGrid_action")
+                .map(String::as_str),
+            Some("DELETE_ROW")
+        );
+        assert_eq!(
+            delete_body.get("__EVENTTARGET").map(String::as_str),
+            Some("ctl00$mp$RG_Days_460627_2026_04$reportsGrid")
+        );
+        assert_eq!(
+            delete_body.get("ctl00$ms").map(String::as_str),
+            Some(
+                "ctl00$mp$RG_Days_460627_2026_04$reportsGrid_updatePanel|ctl00$mp$RG_Days_460627_2026_04$reportsGrid"
+            )
+        );
+        let delete_event_argument = delete_body
+            .get("__EVENTARGUMENT")
+            .expect("delete event argument");
+        let delete_payload: serde_json::Value =
+            serde_json::from_str(delete_event_argument).expect("parse delete event argument");
+        assert_eq!(
+            delete_payload
+                .get("ObjectId")
+                .and_then(serde_json::Value::as_str),
+            Some("conflict-vacation")
+        );
+        assert_eq!(
+            delete_payload.get("RowName").and_then(serde_json::Value::as_str),
+            Some(
+                "ctl00$mp$RG_Days_460627_2026_04$cellOf_SysColumn_Delete_EmployeeReports_row_0_1$sysCol_EmployeeReports_row_0_1"
+            )
+        );
+        assert_eq!(
+            delete_payload
+                .get("EmployeeId")
+                .and_then(serde_json::Value::as_u64),
+            Some(27)
+        );
+        assert_eq!(
+            delete_payload
+                .get("ReportDate")
+                .and_then(serde_json::Value::as_str),
+            Some("2026-04-09T21:00:00.000Z")
+        );
+
+        let save_body = parse_form_body(&requests[6].body);
+        assert_eq!(
+            save_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$cellOf_Symbol.SymbolId_EmployeeReports_row_0_0$Symbol.SymbolId_EmployeeReports_row_0_0")
+                .map(String::as_str),
+            Some("120")
+        );
+        assert_eq!(
+            save_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$btnSave")
+                .map(String::as_str),
+            Some("שמירה")
+        );
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn parse_aspx_delta_extracts_update_panels() {
         // Simplified ASP.NET delta format
@@ -1639,5 +2303,25 @@ mod tests {
     fn parse_aspx_delta_handles_empty() {
         let entries = parse_aspx_delta("");
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_aspx_delta_handles_utf8_content_lengths() {
+        let content = "alert('09/04 - קיים דיווח בזמן המדווח');";
+        let delta = format!(
+            "{}|scriptStartupBlock|ScriptContentNoTags|{}|",
+            content.chars().count(),
+            content
+        );
+
+        let entries = parse_aspx_delta(&delta);
+
+        assert_eq!(
+            entries.get(&(
+                "scriptStartupBlock".to_string(),
+                "ScriptContentNoTags".to_string()
+            )),
+            Some(&content.to_string())
+        );
     }
 }

@@ -14,8 +14,9 @@ const SESSION_KEY_LEN: usize = 32;
 
 /// Build a keyring entry with a stable target so macOS Keychain associates the
 /// item with the binary identity rather than a generic account.  The binary
-/// must be ad-hoc codesigned (`codesign -s - -f <binary>`) for silent keychain
-/// access on macOS — otherwise the OS will prompt on every access.
+/// must be codesigned on macOS for silent keychain access. Ad-hoc signing works
+/// for a single build; a stable signing identity avoids repeated prompts across
+/// local rebuilds.
 fn keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
     let account = format!("{}/{}", subdomain, username);
     keyring::Entry::new(KEYRING_SERVICE, &account).context("create keyring entry")

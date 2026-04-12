@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{Datelike, NaiveDate};
 use hr_core::{
@@ -17,6 +17,16 @@ use crate::reports;
 
 pub struct HilanProvider {
     client: HilanClient,
+}
+
+const MISSING_REPORT_ERROR_TYPE: &str = "63";
+const WORK_FROM_HOME_TYPE_CODE: &str = "120";
+const WORK_DAY_TYPE_CODE: &str = "0";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixStrategy {
+    ErrorWizardOnly,
+    ErrorWizardThenCalendar,
 }
 
 impl HilanProvider {
@@ -98,11 +108,58 @@ impl HilanProvider {
         ProviderError::new(code, err.to_string())
     }
 
-    fn should_fix_via_calendar_submit(_report_id: &str, _error_type: &str) -> bool {
-        // The browser always uses the error wizard URL (EmployeeErrorHandling.aspx)
-        // for tasks returned by HHomeTasksApiapi/GetData, even when reportId is the
-        // empty UUID and errorType=63. Always route through fix_error_day.
-        false
+    fn fix_strategy(error_type: &str, submit: &AttendanceSubmit) -> FixStrategy {
+        if error_type == MISSING_REPORT_ERROR_TYPE
+            && submit.attendance_type_code.as_deref() == Some(WORK_FROM_HOME_TYPE_CODE)
+        {
+            FixStrategy::ErrorWizardThenCalendar
+        } else {
+            FixStrategy::ErrorWizardOnly
+        }
+    }
+
+    fn error_clear_submit(submit: &AttendanceSubmit) -> AttendanceSubmit {
+        let mut clear_submit = submit.clone();
+        clear_submit.attendance_type_code = Some(WORK_DAY_TYPE_CODE.to_string());
+        clear_submit.default_work_day = false;
+        clear_submit
+    }
+
+    fn preview_with_steps(
+        steps: &[(&'static str, attendance::SubmitPreview)],
+        action: &str,
+        date: NaiveDate,
+    ) -> WritePreview {
+        let final_step = &steps[steps.len() - 1].1;
+        let step_refs: Vec<(&str, &attendance::SubmitPreview)> = steps
+            .iter()
+            .map(|(label, preview)| (*label, preview))
+            .collect();
+        let payload_display = attendance::render_step_list(&step_refs);
+
+        WritePreview {
+            executed: final_step.executed,
+            summary: if final_step.executed {
+                format!("{action} {}", date.format("%Y-%m-%d"))
+            } else {
+                format!("dry run: {action} {}", date.format("%Y-%m-%d"))
+            },
+            provider_debug: Some(serde_json::json!({
+                "url": final_step.url,
+                "button_name": final_step.button_name,
+                "button_value": final_step.button_value,
+                "employee_id": final_step.employee_id,
+                "payload_display": payload_display,
+                "steps": steps.iter().map(|(label, preview)| serde_json::json!({
+                    "label": label,
+                    "url": preview.url,
+                    "button_name": preview.button_name,
+                    "button_value": preview.button_value,
+                    "employee_id": preview.employee_id,
+                    "payload_display": preview.payload_display,
+                })).collect::<Vec<_>>(),
+            })),
+        }
     }
 }
 
@@ -169,10 +226,8 @@ impl AttendanceProvider for HilanProvider {
     ) -> Result<WritePreview, ProviderError> {
         let submit = Self::change_to_submit(change);
         let (report_id, error_type) = Self::fix_params(target)?;
-        let preview = if Self::should_fix_via_calendar_submit(&report_id, &error_type) {
-            attendance::submit_day(&mut self.client, &submit, mode.should_execute()).await
-        } else {
-            attendance::fix_error_day(
+        match Self::fix_strategy(&error_type, &submit) {
+            FixStrategy::ErrorWizardOnly => attendance::fix_error_day(
                 &mut self.client,
                 &submit,
                 &report_id,
@@ -180,14 +235,110 @@ impl AttendanceProvider for HilanProvider {
                 mode.should_execute(),
             )
             .await
-        }
-        .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+            .map(|preview| {
+                Self::preview_with_summary(preview, "fixed attendance error for", change.date)
+            })
+            .map_err(|err| Self::provider_error("attendance_fix_failed", err)),
+            FixStrategy::ErrorWizardThenCalendar => {
+                let clear_submit = Self::error_clear_submit(&submit);
+                let mut clear_preview = attendance::fix_error_day(
+                    &mut self.client,
+                    &clear_submit,
+                    &report_id,
+                    &error_type,
+                    mode.should_execute(),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "clear Hilan missing-report error before applying work from home for {}",
+                        change.date.format("%Y-%m-%d")
+                    )
+                })
+                .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
 
-        Ok(Self::preview_with_summary(
-            preview,
-            "fixed attendance error for",
-            change.date,
-        ))
+                if !mode.should_execute() {
+                    clear_preview.payload_display.push_str(
+                        "\n\nNote: the follow-up calendar delete/apply steps depend on the post-clear Hilan state and are determined only during --execute.",
+                    );
+                    let steps = [("clear the Hilan error via the error wizard", clear_preview)];
+                    return Ok(Self::preview_with_steps(
+                        &steps,
+                        "fixed attendance error for",
+                        change.date,
+                    ));
+                }
+
+                let mut steps = vec![("clear the Hilan error via the error wizard", clear_preview)];
+                let mut calendar_context =
+                    attendance::load_calendar_submit_context(&mut self.client, change.date)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "load calendar submit context after clearing error for {}",
+                                change.date.format("%Y-%m-%d")
+                            )
+                        })
+                        .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+
+                let desired_type_code = submit
+                    .attendance_type_code
+                    .as_deref()
+                    .expect("work from home fix requires an attendance type");
+                let (delete_previews, refreshed_context) =
+                    attendance::delete_conflicting_absence_reports(
+                        &mut self.client,
+                        calendar_context,
+                        desired_type_code,
+                        mode.should_execute(),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "delete conflicting existing attendance before applying requested type for {}",
+                            change.date.format("%Y-%m-%d")
+                        )
+                    })
+                    .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+                steps.extend(delete_previews.into_iter().map(|preview| {
+                    (
+                        "delete the conflicting calendar row before applying the requested attendance",
+                        preview,
+                    )
+                }));
+                calendar_context = refreshed_context;
+
+                let skip_submit =
+                    attendance::has_matching_report(&calendar_context, desired_type_code);
+
+                if !skip_submit {
+                    let submit_preview = attendance::submit_day_with_context(
+                        &mut self.client,
+                        &submit,
+                        mode.should_execute(),
+                        calendar_context,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "apply requested attendance via calendar page after clearing error for {}",
+                            change.date.format("%Y-%m-%d")
+                        )
+                    })
+                    .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+                    steps.push((
+                        "apply the requested attendance via the calendar page",
+                        submit_preview,
+                    ));
+                }
+
+                Ok(Self::preview_with_steps(
+                    &steps,
+                    "fixed attendance error for",
+                    change.date,
+                ))
+            }
+        }
     }
 }
 
@@ -328,14 +479,72 @@ mod tests {
     }
 
     #[test]
-    fn all_error_tasks_use_error_wizard_path() {
-        // Browser-verified: even errorType=63 with empty reportId uses the error wizard.
-        assert!(!HilanProvider::should_fix_via_calendar_submit(
-            "00000000-0000-0000-0000-000000000000",
-            "63",
-        ));
-        assert!(!HilanProvider::should_fix_via_calendar_submit(
-            "report-1", "63",
-        ));
+    fn missing_report_wfh_uses_two_step_fix_strategy() {
+        let submit = AttendanceSubmit {
+            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            attendance_type_code: Some(WORK_FROM_HOME_TYPE_CODE.to_string()),
+            entry_time: Some("09:00".to_string()),
+            exit_time: Some("18:00".to_string()),
+            comment: None,
+            clear_entry: false,
+            clear_exit: false,
+            clear_comment: false,
+            default_work_day: false,
+        };
+
+        assert_eq!(
+            HilanProvider::fix_strategy(MISSING_REPORT_ERROR_TYPE, &submit),
+            FixStrategy::ErrorWizardThenCalendar
+        );
+    }
+
+    #[test]
+    fn non_wfh_fixes_stay_on_error_wizard() {
+        let submit = AttendanceSubmit {
+            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            attendance_type_code: Some("481".to_string()),
+            entry_time: None,
+            exit_time: None,
+            comment: None,
+            clear_entry: false,
+            clear_exit: false,
+            clear_comment: false,
+            default_work_day: false,
+        };
+
+        assert_eq!(
+            HilanProvider::fix_strategy(MISSING_REPORT_ERROR_TYPE, &submit),
+            FixStrategy::ErrorWizardOnly
+        );
+        assert_eq!(
+            HilanProvider::fix_strategy("18", &submit),
+            FixStrategy::ErrorWizardOnly
+        );
+    }
+
+    #[test]
+    fn error_clear_submit_rewrites_work_from_home_to_work_day() {
+        let submit = AttendanceSubmit {
+            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            attendance_type_code: Some(WORK_FROM_HOME_TYPE_CODE.to_string()),
+            entry_time: Some("09:00".to_string()),
+            exit_time: Some("18:00".to_string()),
+            comment: Some("home".to_string()),
+            clear_entry: false,
+            clear_exit: false,
+            clear_comment: false,
+            default_work_day: false,
+        };
+
+        let cleared = HilanProvider::error_clear_submit(&submit);
+
+        assert_eq!(
+            cleared.attendance_type_code.as_deref(),
+            Some(WORK_DAY_TYPE_CODE)
+        );
+        assert_eq!(cleared.entry_time, submit.entry_time);
+        assert_eq!(cleared.exit_time, submit.exit_time);
+        assert_eq!(cleared.comment, submit.comment);
+        assert!(!cleared.default_work_day);
     }
 }
