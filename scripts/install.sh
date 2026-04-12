@@ -201,6 +201,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 fi
 
 printf '\nNext steps:\n'
+printf '  # If upgrading from <= v0.7.0, run auth once to refresh the keychain entry.\n'
 printf '  shaon auth\n'
 printf '  shaon attendance overview\n'
 printf '  shaon payroll payslip download --month YYYY-MM\n'
