@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-04-12
+### Added
+- **Responsibility and Scope** section in README with user-responsibility language, single-user scope statement, independence disclaimer, and MIT AS-IS / no-warranty language.
+- **Human-attested writes** section in `skills/shaon/SKILL.md` directing agents to run dry-run first, surface the preview, and require explicit user confirmation before any `--execute`.
+- **Responsible Contributions** guardrails in `CONTRIBUTING.md` (no aggregation, no third-party scraping, no CAPTCHA/MFA bypass, no circumvention of provider terms).
+
+### Changed
+- All MCP write-tool descriptions and `execute` field descriptions now read "Human-attested write. Only set `execute=true` after the user has reviewed the dry-run preview and explicitly confirmed submission." — generic MCP clients that do not load the skill see this guidance via the tool schema directly.
+- `shaon_payslip_download` MCP tool: `include_bytes` is now explicit opt-in (previously defaulted to `true` when no `output_path` was supplied). Description warns that MCP responses may be logged.
+- `payroll payslip password` is demoted from common command listings and now carries a **Sensitive** warning everywhere it appears — it reveals the current Hilan login password in plaintext. Help text, README, and skill routing all call this out.
+- `ARCHITECTURE.md` no longer claims "no write happens by accident"; language is now "shaon is designed to make accidental writes hard, not impossible."
+- `PROTOCOL.md` manager / approver / roster protocol notes are explicitly marked as observed-only and out of scope for shaon contributions.
+- Top-level descriptions in README, SKILL.md, and `plugin.json` narrowed to "personal attendance, payslip, salary, and related self-service tasks on the user's own Hilan account."
+- `SECURITY.md`: vulnerability reporting now goes through GitHub Security Advisories; removed public contact email. Credential-storage note rephrased from an absolute claim to "by default, stored in the OS keychain for local interactive use."
+
+### Security
+- Reduced the default agent-visible surface for payslip bytes and the current login password — both are now opt-in with explicit warnings.
+
 ## [0.8.0] - 2026-04-12
 ### Added
 - `attendance report day` makes single-day reporting first-class instead of routing through a one-day range fill.
@@ -154,4 +172,5 @@ Initial public release.
 [0.6.0]: https://github.com/avivsinai/shaon/releases/tag/v0.6.0
 [0.7.0]: https://github.com/avivsinai/shaon/releases/tag/v0.7.0
 [0.8.0]: https://github.com/avivsinai/shaon/releases/tag/v0.8.0
-[Unreleased]: https://github.com/avivsinai/shaon/compare/v0.8.0...HEAD
+[0.8.1]: https://github.com/avivsinai/shaon/releases/tag/v0.8.1
+[Unreleased]: https://github.com/avivsinai/shaon/compare/v0.8.1...HEAD
