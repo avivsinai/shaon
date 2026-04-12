@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - The CLI is now a pristine hierarchical tree: `attendance`, `payroll`, `reports`, plus top-level `auth`, `serve`, and `completions`.
+- `auth` is now the only local credential setup flow. Re-run `shaon auth` if you need to refresh stored credentials.
 - Old flat command names were removed without aliases or migration shims.
 - `attendance resolve` now auto-detects the provider fix target from overview/error data instead of exposing `report_id` / `error_type`.
 - `sheet`, `corrections`, and `reports show` now use a stable JSON report schema instead of raw provider table payloads.
