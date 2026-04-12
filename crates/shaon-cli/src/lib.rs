@@ -9,9 +9,12 @@ use hr_core::{
 use rand::RngCore;
 use secrecy::ExposeSecret;
 use serde::Serialize;
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+#[cfg(target_os = "macos")]
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 use zeroize::Zeroize;
 
 use hr_core::use_cases;
