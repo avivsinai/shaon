@@ -10,6 +10,7 @@ use crate::client::{format_form_fields_for_display, HilanClient};
 /// Default attendance type labels synthesized by the parser.
 const LABEL_WORK_DAY: &str = "work day";
 const LABEL_VACATION: &str = "vacation";
+const EMPTY_OBJECT_ID: &str = "00000000-0000-0000-0000-000000000000";
 
 /// Keywords that indicate an attendance type in calendar cells.
 ///
@@ -1021,7 +1022,7 @@ pub async fn submit_day(
         client.base_url
     );
 
-    replay_submit(client, &url, submit, "שמירה", execute).await
+    replay_submit(client, &url, submit, EMPTY_OBJECT_ID, "שמירה", execute).await
 }
 
 pub async fn fix_error_day(
@@ -1039,13 +1040,14 @@ pub async fn fix_error_day(
         error_type
     );
 
-    replay_submit(client, &url, submit, "שמור וסגור", execute).await
+    replay_submit(client, &url, submit, report_id, "שמור וסגור", execute).await
 }
 
 async fn replay_submit(
     client: &mut HilanClient,
     url: &str,
     submit: &AttendanceSubmit,
+    object_id: &str,
     button_value: &str,
     execute: bool,
 ) -> Result<SubmitPreview> {
@@ -1056,15 +1058,16 @@ async fn replay_submit(
         .await
         .with_context(|| format!("load form for {}", submit.date.format("%Y-%m-%d")))?;
 
+    // `hCurrentItemId` on the form is the long UserId (e.g., 460627).
+    // The DirtyFields JSON needs the short EmployeeId (e.g., 27) from the bootstrap API.
+    let bootstrap = crate::api::bootstrap(client)
+        .await
+        .context("bootstrap employee info for form replay")?;
     let employee_id = match base_fields.get("ctl00$mp$Strip$hCurrentItemId") {
         Some(id) if !id.is_empty() => id.clone(),
-        _ => {
-            crate::api::bootstrap(client)
-                .await
-                .context("bootstrap employee info for form replay")?
-                .user_id
-        }
+        _ => bootstrap.user_id.clone(),
     };
+    let short_employee_id = bootstrap.employee_id;
 
     let prefix = day_field_prefix(&employee_id, submit.date);
     let entry_key = format!(
@@ -1086,20 +1089,32 @@ async fn replay_submit(
     let mut replay_fields = base_fields;
     replay_fields.remove(&completion_key);
 
-    let mut overrides: Vec<(String, String)> = vec![
-        (
-            "__calendarSelectedDays".to_string(),
-            calendar_selected_day_value(submit.date),
-        ),
-        (
-            "ctl00$mp$currentMonth".to_string(),
-            month_field_value(submit.date),
-        ),
-        (
-            "ctl00$mp$Strip$hCurrentItemId".to_string(),
-            employee_id.clone(),
-        ),
-    ];
+    // When no hours provided, check the "completion to standard" checkbox —
+    // this tells Hilan to fill the day with the standard work hours.
+    let needs_completion = submit.entry_time.is_none() && submit.exit_time.is_none();
+
+    // The browser only posts ~25 specific fields on async save. Our scraper finds
+    // additional hidden fields (employee strip, calendar state) that aren't submitted
+    // by the browser. Drop those to match browser fidelity.
+    let browser_fields: std::collections::HashSet<&str> = [
+        "DisableTimeout",
+        "H-XSRF-Token",
+        "Time",
+        "__EVENTARGUMENT",
+        "__EVENTTARGET",
+        "__VIEWSTATE",
+        "__VIEWSTATEGENERATOR",
+        "ctl00$DummyAutoCompleteText",
+        "ctl00$DummyAutoComplete_Value",
+        "ctl00$mp$ScriptBox",
+        "ctl00$datePickerTmp$jdatePicker",
+        "ctl00_datePickerTmp_State",
+    ]
+    .into_iter()
+    .collect();
+    replay_fields.retain(|k, _| browser_fields.contains(k.as_str()) || k.starts_with(&prefix));
+
+    let mut overrides: Vec<(String, String)> = Vec::new();
 
     if let Some(entry_time) = &submit.entry_time {
         overrides.push((entry_key.clone(), entry_time.clone()));
@@ -1125,6 +1140,44 @@ async fn replay_submit(
         overrides.push((comment_key.clone(), String::new()));
     }
 
+    if needs_completion {
+        overrides.push((completion_key.clone(), "on".to_string()));
+    }
+
+    overrides.push((
+        "ctl00$mp$ScriptBox".to_string(),
+        replay_fields
+            .get("ctl00$mp$ScriptBox")
+            .cloned()
+            .unwrap_or_default(),
+    ));
+    overrides.push((
+        "H-XSRF-Token".to_string(),
+        replay_fields
+            .get("H-XSRF-Token")
+            .cloned()
+            .unwrap_or_default(),
+    ));
+
+    // Build the DirtyFields JSON that Hilan requires to confirm which fields changed.
+    // Without this, the server silently ignores all form field updates.
+    let dirty_fields_json =
+        build_dirty_fields_json(submit, short_employee_id, object_id, needs_completion);
+    let reports_grid_key = format!(
+        "ctl00_mp_RG_Days_{}_{:04}_{:02}_reportsGrid_data",
+        employee_id,
+        submit.date.year(),
+        submit.date.month()
+    );
+    overrides.push((reports_grid_key.clone(), dirty_fields_json));
+    overrides.push(("ReportPageMode".to_string(), "Days".to_string()));
+    overrides.push((
+        "hiddenInputToUpdateATBuffer_CommonToolkitScripts".to_string(),
+        "1".to_string(),
+    ));
+    // The button name/value pair (browser sends this even on async postback)
+    overrides.push((button_name.clone(), button_value.to_string()));
+
     let override_refs: Vec<(&str, &str)> = overrides
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
@@ -1133,17 +1186,21 @@ async fn replay_submit(
     let payload_display = format_form_fields_for_display(&replay_fields, &override_refs);
 
     if execute {
-        client
-            .post_aspx_form(
+        let response = client
+            .post_aspx_async_write(
                 url,
                 &replay_fields,
                 &override_refs,
+                "ctl00$ms",
                 &button_name,
-                button_value,
                 false, // state-changing write — must NOT be retried
             )
             .await
             .with_context(|| format!("submit attendance form for {}", submit.date))?;
+        dump_debug_html(
+            &format!("submit-response-{}", submit.date.format("%Y-%m-%d")),
+            &response,
+        );
     }
 
     Ok(SubmitPreview {
@@ -1154,6 +1211,35 @@ async fn replay_submit(
         payload_display,
         executed: execute,
     })
+}
+
+/// Build the `DirtyFields` JSON that Hilan requires to confirm field changes.
+/// Without this, the server silently discards the POST.
+fn build_dirty_fields_json(
+    submit: &AttendanceSubmit,
+    short_employee_id: u32,
+    object_id: &str,
+    completion_to_standard: bool,
+) -> String {
+    // The browser marks the full editable row dirty even when the values are blank.
+    let mut dirty = vec![
+        "\"ManualEntry\":true",
+        "\"ManualExit\":true",
+        "\"Comment\":true",
+        "\"Symbol.SymbolId\":true",
+    ];
+    if completion_to_standard {
+        dirty.push("\"CompletionToStandard\":true");
+    }
+    format!(
+        "[{{\"DirtyFields\":{{{}}},\"EmployeeId\":{},\"IsRangeObject\":false,\"ReportDate\":\"{}-{}-{}\",\"RequestRowName\":\"row_0_0\",\"ReportTypeName\":\"RG\",\"ObjectId\":\"{}\"}}]",
+        dirty.join(","),
+        short_employee_id,
+        submit.date.year(),
+        submit.date.month(),
+        submit.date.day(),
+        object_id,
+    )
 }
 
 fn day_field_prefix(employee_id: &str, date: NaiveDate) -> String {
@@ -1489,5 +1575,51 @@ mod tests {
             days_in_month(NaiveDate::from_ymd_opt(2025, 2, 1).unwrap()),
             28
         );
+    }
+
+    #[test]
+    fn dirty_fields_json_matches_browser_shape_for_completion_submit() {
+        let submit = AttendanceSubmit {
+            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            attendance_type_code: Some("120".to_string()),
+            entry_time: None,
+            exit_time: None,
+            comment: None,
+            clear_entry: false,
+            clear_exit: false,
+            clear_comment: false,
+            default_work_day: false,
+        };
+
+        let json = build_dirty_fields_json(&submit, 27, EMPTY_OBJECT_ID, true);
+
+        assert!(json.contains("\"ManualEntry\":true"));
+        assert!(json.contains("\"ManualExit\":true"));
+        assert!(json.contains("\"Comment\":true"));
+        assert!(json.contains("\"Symbol.SymbolId\":true"));
+        assert!(json.contains("\"CompletionToStandard\":true"));
+        assert!(json.contains("\"EmployeeId\":27"));
+        assert!(json.contains("\"ReportDate\":\"2026-4-9\""));
+        assert!(json.contains(&format!("\"ObjectId\":\"{}\"", EMPTY_OBJECT_ID)));
+    }
+
+    #[test]
+    fn dirty_fields_json_uses_passed_object_id() {
+        let submit = AttendanceSubmit {
+            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            attendance_type_code: Some("120".to_string()),
+            entry_time: Some("09:00".to_string()),
+            exit_time: Some("18:00".to_string()),
+            comment: Some("office".to_string()),
+            clear_entry: false,
+            clear_exit: false,
+            clear_comment: false,
+            default_work_day: false,
+        };
+
+        let json = build_dirty_fields_json(&submit, 27, "report-1", false);
+
+        assert!(json.contains("\"ObjectId\":\"report-1\""));
+        assert!(!json.contains("\"CompletionToStandard\":true"));
     }
 }
