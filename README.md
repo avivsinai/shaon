@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 
-`shaon` is a Rust CLI, MCP server, and Claude Code plugin for Hilan / Hilanet. It covers attendance status, missing or broken days, reporting and correction flows, payslips, salary summaries, and related HR tasks.
+`shaon` is a Rust CLI, MCP server, and Claude Code plugin for personal attendance, payslip, salary, and related self-service tasks on the user's own Hilan account.
 
 ## Responsibility and Scope
 
@@ -102,10 +102,11 @@ shaon attendance auto-fill --month 2026-04 --type "work from home" --hours 09:00
 ```bash
 shaon payroll payslip download --month 2026-03
 shaon payroll payslip view --month 2026-03
-shaon payroll payslip password
 ```
 
-`payroll payslip password` prints the current Hilan password. Older downloaded PDFs may require the password that was current when they were downloaded.
+### Sensitive recovery command
+
+`shaon payroll payslip password` reveals the current Hilan login password in plaintext. Use it only if you explicitly need to open an older password-protected PDF. Avoid shared terminals, screenshots, and agent transcripts.
 
 ## Safety
 

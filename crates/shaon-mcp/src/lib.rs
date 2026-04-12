@@ -63,7 +63,9 @@ pub struct MonthParam {
 pub struct ClockParam {
     #[schemars(description = "Time in HH:MM format")]
     pub time: String,
-    #[schemars(description = "Set to true to actually submit (default: false/preview)")]
+    #[schemars(
+        description = "Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
+    )]
     pub execute: Option<bool>,
 }
 
@@ -79,7 +81,9 @@ pub struct FillParam {
     pub exit: String,
     #[schemars(description = "Attendance type (e.g. 'regular', 'work from home')")]
     pub r#type: Option<String>,
-    #[schemars(description = "Set to true to actually submit (default: false/preview)")]
+    #[schemars(
+        description = "Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
+    )]
     pub execute: Option<bool>,
 }
 
@@ -95,7 +99,9 @@ pub struct AutoFillParam {
     pub include_weekends: Option<bool>,
     #[schemars(description = "Safety cap: max days to fill (default: 10)")]
     pub max_days: Option<u32>,
-    #[schemars(description = "Set to true to actually submit (default: false/preview)")]
+    #[schemars(
+        description = "Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
+    )]
     pub execute: Option<bool>,
 }
 
@@ -113,7 +119,9 @@ pub struct ResolveParam {
     pub r#type: Option<String>,
     #[schemars(description = "Hours range in HH:MM-HH:MM format (e.g. '09:00-18:00')")]
     pub hours: Option<String>,
-    #[schemars(description = "Set to true to actually submit (default: false/preview)")]
+    #[schemars(
+        description = "Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
+    )]
     pub execute: Option<bool>,
 }
 
@@ -130,7 +138,7 @@ pub struct PayslipDownloadParam {
     #[schemars(description = "Optional output path for saving the PDF locally")]
     pub output_path: Option<String>,
     #[schemars(
-        description = "Include base64-encoded PDF bytes in the response. Defaults to true when output_path is omitted."
+        description = "Sensitive payroll document. Prefer output_path for local storage; include_bytes is explicit opt-in because MCP responses may be logged."
     )]
     pub include_bytes: Option<bool>,
 }
@@ -489,7 +497,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Clock in for today. Defaults to dry-run preview unless execute is true. CAUTION: write operation."
+        description = "Clock in for today. Defaults to dry-run preview unless execute is true. Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
     )]
     async fn shaon_clock_in(&self, Parameters(req): Parameters<ClockParam>) -> String {
         json_or_error(|| async {
@@ -517,7 +525,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Clock out for today. Defaults to dry-run preview unless execute is true. CAUTION: write operation."
+        description = "Clock out for today. Defaults to dry-run preview unless execute is true. Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
     )]
     async fn shaon_clock_out(&self, Parameters(req): Parameters<ClockParam>) -> String {
         json_or_error(|| async {
@@ -545,7 +553,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Fill attendance for a date range. Defaults to dry-run preview. Skips weekends (Fri/Sat). CAUTION: write operation."
+        description = "Fill attendance for a date range. Defaults to dry-run preview. Skips weekends (Fri/Sat). Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
     )]
     async fn shaon_fill(&self, Parameters(req): Parameters<FillParam>) -> String {
         json_or_error(|| async {
@@ -609,7 +617,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Automatically fill all missing days in a month. Defaults to dry-run preview. Skips weekends. CAUTION: write operation."
+        description = "Automatically fill all missing days in a month. Defaults to dry-run preview. Skips weekends. Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
     )]
     async fn shaon_auto_fill(&self, Parameters(req): Parameters<AutoFillParam>) -> String {
         json_or_error(|| async {
@@ -664,7 +672,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Resolve a single attendance error day. Auto-detects the provider fix target for the day. Defaults to dry-run preview. CAUTION: write operation."
+        description = "Resolve a single attendance error day. Auto-detects the provider fix target for the day. Defaults to dry-run preview. Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
     )]
     async fn shaon_resolve(&self, Parameters(req): Parameters<ResolveParam>) -> String {
         json_or_error(|| async {
@@ -728,7 +736,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Download a password-protected payslip PDF. Returns a saved path, base64 bytes, or both."
+        description = "Download a password-protected payslip PDF. Sensitive payroll document. Prefer output_path for local storage; include_bytes is explicit opt-in because MCP responses may be logged."
     )]
     async fn shaon_payslip_download(
         &self,
@@ -737,7 +745,7 @@ impl ShaonMcpServer {
         json_or_error(|| async {
             let month = parse_month_or_previous(req.month.as_deref())?;
             let output_path = req.output_path.as_ref().map(PathBuf::from);
-            let include_bytes = req.include_bytes.unwrap_or(output_path.is_none());
+            let include_bytes = req.include_bytes.unwrap_or(false);
 
             if !include_bytes && output_path.is_none() {
                 return Err(ToolError::new(

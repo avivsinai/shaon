@@ -230,7 +230,9 @@ May require `__VIEWSTATE` from initial GET. Response: HTML table with `tr.RSGrid
 
 ---
 
-## Other Pages (in scope)
+## Other Observed Pages
+
+Observed protocol notes only. Manager, approver, roster, and other multi-user/admin flows are not exposed by shaon today and remain out of scope for OSS contributions unless the project scope changes explicitly.
 
 ### Analyzed Sheet (גיליון מנותח)
 ```
@@ -293,7 +295,7 @@ The backing UI is Microsoft SSRS / ReportViewer.
 
 Current shaon behavior:
 
-- `report <name>` does a direct GET and parses the first meaningful HTML table from the response
+- `reports show <name>` does a direct GET and parses the first meaningful HTML table from the response
 - it does **not** yet drive the full ReportViewer export flow (`OpType=Export&Format=CSV` / `EXCELOPENXML`)
 - bulk date-range export over the ReportViewer session/control ID path is researched but not implemented yet
 

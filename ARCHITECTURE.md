@@ -78,7 +78,7 @@ State-changing requests are intentionally not retried automatically.
 
 ## Safety Model
 
-The project has one hard rule: no write happens by accident.
+shaon is designed to make accidental writes hard, not impossible.
 
 - CLI writes require `--execute`
 - MCP writes require `execute: true`
