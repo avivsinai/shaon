@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-12
+### Added
+- **Self-signed codesign identity** (`scripts/setup-codesign.sh`): creates a local codesigning identity so macOS Keychain "Always Allow" persists across rebuilds. Previously ad-hoc `codesign -s -` produced a new cdhash-based designated requirement per build, re-prompting every time. `scripts/run.sh` now prefers the identity; ad-hoc fallback only when it's missing.
+- **`ARCHITECTURE.md`**: high-level map of workspace crates, trait boundaries, and the two-layer Hilan protocol.
+- **End-to-end orchestration tests**: `spawn_test_server` coverage of `ErrorWizardThenCalendar` (no-conflict + delete-then-resubmit paths).
+
+### Fixed
+- **Unified submit/fix flow**: auto-deletes conflicting absence rows before applying a work-type. Vacation → WFH no longer silently rejected with `קיים דיווח בזמן המדווח`; one `shaon fix` or `shaon fill --execute` call handles the two-step orchestration transparently.
+- **Payslip download**: `OrgId` now sourced from `api::bootstrap()` instead of a fragile homepage HTML regex. Resolves `payslip_download_failed: Could not find OrgId`.
+- **Parser: `selected_row_date`**: raw string terminator bug (`"#` ended the `r#"…"#` literal) caused the fail-closed guard to trip on every valid response.
+- **Parser: `parse_aspx_delta`**: UTF-8 safe slicing; previously panicked on Hebrew alert payloads (`קיים דיווח…`).
+- **Parser: RowData binding**: returns the block matching the requested `ReportDate` instead of the first one on the page.
+- **Multi-row conflict deletion**: deletes all blocking absence rows for the target day, not just the first.
+- **Session expiry detection**: narrowed to path-based match so `/HilanCenter/Public/api/LoginApi/…` (the login endpoint itself) isn't flagged as an auth redirect.
+- **Hilan async writes**: explicit `alert()` / `HWarning()` / `HError()` detection in delta responses. No more silent `executed: true` when the server actually rejected.
+
+### Changed
+- **Bootstrap cached per client/session**: invalidated on reauth. Removes 3× redundant `GetData` calls per write.
+- **DRY**: calendar / error-wizard `browser_fields` allowlists hoisted to module-level constants.
+- **DRY**: step-preview rendering consolidated into a shared `render_step_list` helper used by both `attendance::compose_submit_preview_steps` and `provider::preview_with_steps`.
+- **LazyLock**: 16 × `Selector::parse(...).unwrap()` migrated to module-scope `LazyLock` statics.
+- **Release workflow + Homebrew formula**: `caveats` block explains the ad-hoc install path and points users at `setup-codesign.sh` for a stable local signing identity. `scripts/install.sh` prints the same guidance on macOS.
+- **Logo**: tightened to industry-standard ~10% safe-zone (character fills ~80% of canvas).
+
+### Security
+- **`scripts/setup-codesign.sh`**: does NOT pass `-A` to `security import`. Explicit `-T /usr/bin/codesign` allowlist only; other local processes can't use the signing key without user approval.
+
 ## [0.6.0] - 2026-04-11
 ### Added
 - **`AttendanceSource` enum**: distinguishes user-reported, system-auto-filled, holiday, and unreported days
