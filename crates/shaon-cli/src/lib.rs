@@ -465,12 +465,8 @@ enum CacheCommand {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
-    /// Authenticate with Hilan (test credentials or manage keychain)
-    Auth {
-        /// Migrate plaintext password from config file into bundled keychain credentials
-        #[arg(long)]
-        migrate: bool,
-    },
+    /// Authenticate with Hilan and store verified credentials
+    Auth,
 
     /// Attendance reads and writes
     Attendance {
@@ -549,7 +545,7 @@ pub async fn run() -> Result<()> {
     let json = cli.json;
 
     match cli.command {
-        Commands::Auth { migrate } => run_auth(config, migrate, json).await?,
+        Commands::Auth => run_auth(config, json).await?,
         Commands::Attendance { command } => {
             let client = provider_hilan::build_provider(config)?.into_inner();
             run_attendance_command(command, client, &subdomain, json).await?;
@@ -573,31 +569,22 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn run_auth(mut config: Config, migrate: bool, json: bool) -> Result<()> {
+async fn run_auth(mut config: Config, json: bool) -> Result<()> {
     let mut verified_during_setup = false;
 
-    if migrate {
-        let pending = config.prepare_migration()?;
-        let mut client = provider_hilan::build_provider(pending.login_config())?.into_inner();
-        client.login().await?;
-        config = pending.commit()?;
-        verified_during_setup = true;
-    } else {
-        match config.get_password() {
-            Ok(_) => {
-                eprintln!("Password already available. Testing login...");
-            }
-            Err(_) => {
-                let password =
-                    rpassword::prompt_password("Enter your Hilan password (input is hidden): ")
-                        .context("read password from terminal")?;
-                let pending = config.prepare_stored_credentials(password);
-                let mut client =
-                    provider_hilan::build_provider(pending.login_config())?.into_inner();
-                client.login().await?;
-                config = pending.commit()?;
-                verified_during_setup = true;
-            }
+    match config.get_password() {
+        Ok(_) => {
+            eprintln!("Password already available. Testing login...");
+        }
+        Err(_) => {
+            let password =
+                rpassword::prompt_password("Enter your Hilan password (input is hidden): ")
+                    .context("read password from terminal")?;
+            let pending = config.prepare_stored_credentials(password);
+            let mut client = provider_hilan::build_provider(config.clone())?.into_inner();
+            client.login_with_password(pending.password()).await?;
+            config = pending.commit()?;
+            verified_during_setup = true;
         }
     }
 
@@ -1620,6 +1607,14 @@ mod tests {
         let err = Cli::try_parse_from(["shaon", "overview"]).expect_err("old alias should fail");
         let rendered = err.to_string();
         assert!(rendered.contains("unrecognized subcommand"));
+    }
+
+    #[test]
+    fn auth_migrate_flag_is_rejected() {
+        let err =
+            Cli::try_parse_from(["shaon", "auth", "--migrate"]).expect_err("flag should fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("unexpected argument '--migrate'"));
     }
 
     #[test]
