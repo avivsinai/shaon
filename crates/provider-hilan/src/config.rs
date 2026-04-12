@@ -53,6 +53,46 @@ pub struct Config {
     pub payslip_format: Option<String>,
 }
 
+pub struct PendingStoredCredentials {
+    config: Config,
+    password: String,
+    local_master_key: [u8; LOCAL_MASTER_KEY_LEN],
+    clear_plaintext_password: bool,
+}
+
+impl PendingStoredCredentials {
+    pub fn login_config(&self) -> Config {
+        let mut config = self.config.clone();
+        config.password = Some(self.password.clone());
+        config
+    }
+
+    pub fn commit(mut self) -> Result<Config> {
+        self.config
+            .store_credentials(&self.password, &self.local_master_key)?;
+
+        if self.clear_plaintext_password {
+            self.config.password = None;
+            self.config
+                .save()
+                .context("rewrite config without password")?;
+            set_file_permissions_600(&config_path());
+            eprintln!("Password migrated to OS keychain and removed from config file.");
+        } else {
+            eprintln!("Credentials stored in OS keychain.");
+        }
+
+        Ok(self.config.clone())
+    }
+}
+
+impl Drop for PendingStoredCredentials {
+    fn drop(&mut self) {
+        self.password.zeroize();
+        self.local_master_key.zeroize();
+    }
+}
+
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
@@ -132,25 +172,26 @@ impl Config {
             && env_var_nonempty("SHAON_MASTER_KEY").is_none()
     }
 
-    pub fn migrate_to_keychain(&mut self) -> Result<()> {
+    pub fn prepare_stored_credentials(&self, password: String) -> PendingStoredCredentials {
+        let mut local_master_key = [0_u8; LOCAL_MASTER_KEY_LEN];
+        rand::rngs::OsRng.fill_bytes(&mut local_master_key);
+        PendingStoredCredentials {
+            config: self.clone(),
+            password,
+            local_master_key,
+            clear_plaintext_password: false,
+        }
+    }
+
+    pub fn prepare_migration(&self) -> Result<PendingStoredCredentials> {
         let pw = match &self.password {
             Some(pw) => pw.clone(),
             None => bail!("No plaintext password in config to migrate"),
         };
 
-        let mut local_master_key = [0_u8; LOCAL_MASTER_KEY_LEN];
-        rand::rngs::OsRng.fill_bytes(&mut local_master_key);
-        let result = self.store_credentials(&pw, &local_master_key);
-        local_master_key.zeroize();
-        result?;
-
-        self.password = None;
-        self.save().context("rewrite config without password")?;
-
-        set_file_permissions_600(&config_path());
-
-        eprintln!("Password migrated to OS keychain and removed from config file.");
-        Ok(())
+        let mut pending = self.prepare_stored_credentials(pw);
+        pending.clear_plaintext_password = true;
+        Ok(pending)
     }
 
     pub fn store_credentials(
@@ -367,6 +408,7 @@ mod tests {
     use super::*;
     use secrecy::ExposeSecret;
     use std::ffi::OsString;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
         home: Option<OsString>,
@@ -411,6 +453,21 @@ mod tests {
             payslip_folder: None,
             payslip_format: None,
         }
+    }
+
+    fn clear_test_keyring_store() {
+        test_keyring_store().lock().unwrap().clear();
+    }
+
+    fn temp_home_dir(tag: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "shaon-config-test-{tag}-{}-{unique}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -480,6 +537,7 @@ mod tests {
     fn get_password_ignores_empty_shaon_password() {
         let _env_guard = test_env_lock().lock().unwrap();
         let _saved_env = preserve_env();
+        clear_test_keyring_store();
 
         std::env::set_var("SHAON_PASSWORD", "");
 
@@ -499,6 +557,7 @@ mod tests {
     fn store_credentials_write_then_read_roundtrip() {
         let _env_guard = test_env_lock().lock().unwrap();
         let _saved_env = preserve_env();
+        clear_test_keyring_store();
         let config = unique_config("roundtrip");
         let local_master_key = [0x5a; LOCAL_MASTER_KEY_LEN];
 
@@ -528,6 +587,7 @@ mod tests {
     fn env_var_master_key_overrides_keychain() {
         let _env_guard = test_env_lock().lock().unwrap();
         let _saved_env = preserve_env();
+        clear_test_keyring_store();
         let config = unique_config("env-master-key");
 
         config
@@ -538,5 +598,116 @@ mod tests {
         std::env::set_var("SHAON_MASTER_KEY", encode_local_master_key(&override_key));
 
         assert_eq!(config.get_local_master_key().unwrap(), override_key);
+    }
+
+    #[test]
+    fn fresh_auth_wrong_password_does_not_persist_before_commit() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+        clear_test_keyring_store();
+
+        let config = unique_config("fresh-auth");
+        let pending = config.prepare_stored_credentials("wrong-password".to_string());
+
+        assert_eq!(
+            pending
+                .login_config()
+                .get_password()
+                .unwrap()
+                .expose_secret(),
+            "wrong-password"
+        );
+
+        drop(pending);
+
+        assert!(config.load_stored_credentials().unwrap().is_none());
+        assert!(config.get_password().is_err());
+    }
+
+    #[test]
+    fn migrate_wrong_password_keeps_plaintext_fallback_until_commit() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+        clear_test_keyring_store();
+
+        let config = Config {
+            subdomain: format!("acme-{}", std::process::id()),
+            username: "12345".to_string(),
+            password: Some("wrong-password".to_string()),
+            payslip_folder: None,
+            payslip_format: None,
+        };
+        let pending = config.prepare_migration().expect("prepare migration");
+
+        assert_eq!(
+            pending
+                .login_config()
+                .get_password()
+                .unwrap()
+                .expose_secret(),
+            "wrong-password"
+        );
+
+        drop(pending);
+
+        assert_eq!(config.password.as_deref(), Some("wrong-password"));
+        assert!(config.load_stored_credentials().unwrap().is_none());
+    }
+
+    #[test]
+    fn migration_commit_rewrites_config_without_password() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+        clear_test_keyring_store();
+
+        let home = temp_home_dir("migration-commit");
+        let shaon_dir = home.join(".shaon");
+        fs::create_dir_all(&shaon_dir).expect("create config dir");
+        std::env::set_var("HOME", &home);
+
+        let config = Config {
+            subdomain: "acme".to_string(),
+            username: "12345".to_string(),
+            password: Some("plaintext-password".to_string()),
+            payslip_folder: None,
+            payslip_format: None,
+        };
+
+        let persisted = config
+            .prepare_migration()
+            .expect("prepare migration")
+            .commit()
+            .expect("commit migration");
+
+        assert!(persisted.password.is_none());
+        assert_eq!(
+            persisted.get_password().unwrap().expose_secret(),
+            "plaintext-password"
+        );
+
+        let saved = fs::read_to_string(config_path()).expect("read saved config");
+        assert!(!saved.contains("password"));
+        assert!(!saved.contains("plaintext-password"));
+    }
+
+    #[test]
+    fn malformed_bundled_record_missing_local_master_key_fails_cleanly() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+        clear_test_keyring_store();
+
+        let config = unique_config("malformed-bundle");
+        write_keychain_secret(
+            KEYRING_SERVICE,
+            &keyring_account(&config.subdomain, &config.username),
+            r#"{"v":1,"password":"x"}"#,
+        )
+        .expect("write malformed keychain record");
+
+        let err = config
+            .get_local_master_key()
+            .expect_err("missing local_master_key should fail");
+
+        assert!(err.to_string().contains("parse shaon-cli keychain record"));
     }
 }
