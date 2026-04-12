@@ -19,7 +19,7 @@ pub struct OverviewSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverviewErrorDay {
     pub day: CalendarDay,
-    pub fix_target: Option<FixTarget>,
+    pub fix_targets: Vec<FixTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,11 +115,7 @@ pub async fn build_overview<P: AttendanceProvider>(
     let calendar = provider.month_calendar(month).await?;
     let attendance_types = load_attendance_types(provider).await;
     let fix_targets = load_fix_targets(provider, month).await;
-    let fix_targets_by_date: BTreeMap<NaiveDate, FixTarget> = fix_targets
-        .iter()
-        .cloned()
-        .map(|target| (target.date, target))
-        .collect();
+    let fix_targets_by_date = group_fix_targets_by_date(fix_targets);
 
     let is_current_month = month.year() == today.year() && month.month() == today.month();
     let is_past = |day: &CalendarDay| !(is_current_month && day.date > today);
@@ -130,7 +126,10 @@ pub async fn build_overview<P: AttendanceProvider>(
         .filter(|day| day.has_error)
         .cloned()
         .map(|day| OverviewErrorDay {
-            fix_target: fix_targets_by_date.get(&day.date).cloned(),
+            fix_targets: fix_targets_by_date
+                .get(&day.date)
+                .cloned()
+                .unwrap_or_default(),
             day,
         })
         .collect();
@@ -163,7 +162,7 @@ pub async fn build_overview<P: AttendanceProvider>(
     if !error_days.is_empty() {
         let fixable_targets = error_days
             .iter()
-            .filter_map(|day| day.fix_target.clone())
+            .flat_map(|day| day.fix_targets.iter().cloned())
             .collect();
         suggested_actions.push(SuggestedActionPlan::FixErrors {
             month,
@@ -778,6 +777,17 @@ async fn load_fix_targets<P: AttendanceProvider>(
     }
 }
 
+fn group_fix_targets_by_date(fix_targets: Vec<FixTarget>) -> BTreeMap<NaiveDate, Vec<FixTarget>> {
+    let mut by_date = BTreeMap::new();
+    for target in fix_targets {
+        by_date
+            .entry(target.date)
+            .or_insert_with(Vec::new)
+            .push(target);
+    }
+    by_date
+}
+
 fn fill_change(
     date: NaiveDate,
     attendance_type_code: Option<String>,
@@ -833,4 +843,78 @@ fn is_day_partial(day: &CalendarDay) -> bool {
         return false;
     }
     day.entry_time.is_some() != day.exit_time.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AttendanceSource;
+    use std::collections::BTreeMap;
+
+    fn sample_target(date: NaiveDate, report_id: &str, error_type: &str) -> FixTarget {
+        FixTarget {
+            date,
+            issue_kind: None,
+            provider_ref: format!("{report_id}:{error_type}"),
+            metadata: BTreeMap::from([
+                ("report_id".to_string(), report_id.to_string()),
+                ("error_type".to_string(), error_type.to_string()),
+            ]),
+        }
+    }
+
+    #[test]
+    fn group_fix_targets_by_date_preserves_multiple_targets_for_same_day() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let grouped = group_fix_targets_by_date(vec![
+            sample_target(date, "report-1", "63"),
+            sample_target(date, "report-2", "18"),
+        ]);
+
+        let targets = grouped.get(&date).expect("targets for date");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].provider_ref, "report-1:63");
+        assert_eq!(targets[1].provider_ref, "report-2:18");
+    }
+
+    #[test]
+    fn build_overview_preserves_all_fix_targets_on_error_day() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let calendar = MonthCalendar {
+            month: date.with_day(1).unwrap(),
+            employee_id: "123".to_string(),
+            days: vec![CalendarDay {
+                date,
+                day_name: "Sun".to_string(),
+                has_error: true,
+                error_message: Some("missing report".to_string()),
+                entry_time: None,
+                exit_time: None,
+                attendance_type: None,
+                total_hours: None,
+                source: AttendanceSource::Unreported,
+            }],
+        };
+        let fix_targets_by_date = group_fix_targets_by_date(vec![
+            sample_target(date, "report-1", "63"),
+            sample_target(date, "report-2", "18"),
+        ]);
+
+        let error_days: Vec<OverviewErrorDay> = calendar
+            .days
+            .iter()
+            .filter(|day| day.has_error)
+            .cloned()
+            .map(|day| OverviewErrorDay {
+                fix_targets: fix_targets_by_date
+                    .get(&day.date)
+                    .cloned()
+                    .unwrap_or_default(),
+                day,
+            })
+            .collect();
+
+        assert_eq!(error_days.len(), 1);
+        assert_eq!(error_days[0].fix_targets.len(), 2);
+    }
 }

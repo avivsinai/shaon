@@ -6,7 +6,7 @@ body:
     id: version
     attributes:
       label: shaon version
-      placeholder: "shaon 1.0.0"
+      placeholder: "shaon 0.8.0"
     validations:
       required: true
   - type: dropdown
