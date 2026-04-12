@@ -281,14 +281,13 @@ fn write_preview_json(action: &str, preview: &WritePreview) -> serde_json::Value
 }
 
 fn find_fix_target_for_date(
-    overview: &use_cases::OverviewData,
+    fix_targets: &[FixTarget],
     date: NaiveDate,
 ) -> Result<FixTarget, ToolError> {
-    let mut matches = overview
-        .error_days
+    let mut matches = fix_targets
         .iter()
-        .filter(|entry| entry.day.date == date)
-        .filter_map(|entry| entry.fix_target.clone());
+        .filter(|target| target.date == date)
+        .cloned();
 
     match (matches.next(), matches.next()) {
         (Some(target), None) => Ok(target),
@@ -330,6 +329,26 @@ fn fix_params_json(target: &FixTarget) -> Option<serde_json::Value> {
         })),
         _ => None,
     }
+}
+
+fn fix_params_candidates_json(targets: &[FixTarget]) -> Vec<serde_json::Value> {
+    targets.iter().filter_map(fix_params_json).collect()
+}
+
+fn error_day_json(entry: &use_cases::OverviewErrorDay) -> serde_json::Value {
+    let fix_params_candidates = fix_params_candidates_json(&entry.fix_targets);
+    let fix_params = match fix_params_candidates.as_slice() {
+        [candidate] => Some(candidate.clone()),
+        _ => None,
+    };
+
+    serde_json::json!({
+        "date": entry.day.date.format("%Y-%m-%d").to_string(),
+        "day": &entry.day.day_name,
+        "error_message": entry.day.error_message,
+        "fix_params": fix_params,
+        "fix_params_candidates": fix_params_candidates,
+    })
 }
 
 fn report_response_json(
@@ -432,18 +451,8 @@ impl ShaonMcpServer {
                     .await
                     .map_err(ToolError::from)?;
 
-            let errors: Vec<serde_json::Value> = overview
-                .error_days
-                .iter()
-                .map(|entry| {
-                    serde_json::json!({
-                        "date": entry.day.date.format("%Y-%m-%d").to_string(),
-                        "day": &entry.day.day_name,
-                        "error_message": entry.day.error_message,
-                        "fix_params": entry.fix_target.as_ref().and_then(fix_params_json),
-                    })
-                })
-                .collect();
+            let errors: Vec<serde_json::Value> =
+                overview.error_days.iter().map(error_day_json).collect();
 
             Ok(serde_json::json!({
                 "month": overview.month.format("%Y-%m").to_string(),
@@ -655,7 +664,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Resolve a single attendance error day. Auto-detects the provider fix target from overview data. Defaults to dry-run preview. CAUTION: write operation."
+        description = "Resolve a single attendance error day. Auto-detects the provider fix target for the day. Defaults to dry-run preview. CAUTION: write operation."
     )]
     async fn shaon_resolve(&self, Parameters(req): Parameters<ResolveParam>) -> String {
         json_or_error(|| async {
@@ -673,11 +682,8 @@ impl ShaonMcpServer {
                     .await
                     .map_err(ToolError::from)?
                     .map(|resolved| resolved.code);
-            let overview =
-                use_cases::build_overview(&mut provider, month, Local::now().date_naive())
-                    .await
-                    .map_err(ToolError::from)?;
-            let target = find_fix_target_for_date(&overview, date)?;
+            let fix_targets = provider.fix_targets(month).await.map_err(ToolError::from)?;
+            let target = find_fix_target_for_date(&fix_targets, date)?;
             let preview = use_cases::fix_day(
                 &mut provider,
                 &target,
@@ -843,18 +849,8 @@ impl ShaonMcpServer {
                     .await
                     .map_err(ToolError::from)?;
 
-            let error_days: Vec<serde_json::Value> = overview
-                .error_days
-                .iter()
-                .map(|entry| {
-                    serde_json::json!({
-                        "date": entry.day.date.format("%Y-%m-%d").to_string(),
-                        "day": &entry.day.day_name,
-                        "error_message": entry.day.error_message,
-                        "fix_params": entry.fix_target.as_ref().and_then(fix_params_json),
-                    })
-                })
-                .collect();
+            let error_days: Vec<serde_json::Value> =
+                overview.error_days.iter().map(error_day_json).collect();
 
             let missing_days: Vec<String> = overview
                 .missing_days
