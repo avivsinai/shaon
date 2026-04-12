@@ -1881,6 +1881,38 @@ mod tests {
         assert_eq!(decrypted, plaintext);
     }
 
+    #[test]
+    fn cookie_decryption_fails_with_wrong_hkdf_info() {
+        let local_master_key = [0x5a; LOCAL_MASTER_KEY_LEN];
+        let correct_key =
+            derive_local_dek(&local_master_key, COOKIE_CACHE_KEY_INFO).expect("derive cookie key");
+        let wrong_key = derive_local_dek(&local_master_key, b"shaon-payslip-store-v1")
+            .expect("derive wrong-purpose key");
+        let plaintext = br#"{"cookies":[{"name":"HBrowserId","value":"abc123"}]}"#;
+
+        let encrypted = encrypt_cookie_blob(&correct_key, plaintext).expect("encrypt cookies");
+        let err = decrypt_cookie_blob(&wrong_key, &encrypted).expect_err("wrong info should fail");
+
+        assert!(err.to_string().contains("decrypt cookie blob"));
+    }
+
+    #[test]
+    fn cookie_decryption_fails_with_wrong_master_key() {
+        let correct_master_key = [0x5a; LOCAL_MASTER_KEY_LEN];
+        let wrong_master_key = [0x6b; LOCAL_MASTER_KEY_LEN];
+        let correct_key = derive_local_dek(&correct_master_key, COOKIE_CACHE_KEY_INFO)
+            .expect("derive cookie key");
+        let wrong_key =
+            derive_local_dek(&wrong_master_key, COOKIE_CACHE_KEY_INFO).expect("derive cookie key");
+        let plaintext = br#"{"cookies":[{"name":"HBrowserId","value":"abc123"}]}"#;
+
+        let encrypted = encrypt_cookie_blob(&correct_key, plaintext).expect("encrypt cookies");
+        let err =
+            decrypt_cookie_blob(&wrong_key, &encrypted).expect_err("wrong master key should fail");
+
+        assert!(err.to_string().contains("decrypt cookie blob"));
+    }
+
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn ensure_authenticated_reuses_candidate_session_without_network() {

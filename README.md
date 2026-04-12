@@ -79,6 +79,9 @@ cargo build -p shaon --release
 
 The binary will be at `target/release/shaon`.
 
+> **Upgrade Note**
+> If you are upgrading from `<= v0.7.0`, run `shaon auth` once after install. The keychain schema changed and legacy entries are not read automatically.
+
 ### Development Wrapper
 
 For repo checkouts, especially on macOS, prefer the wrapper:
@@ -149,10 +152,11 @@ shaon payroll payslip download
 # Download a specific payslip to a chosen path
 shaon payroll payslip download --month 2026-03 --output ~/Downloads/2026-03.pdf
 
-# Open a payslip without leaving decrypted bytes on disk
+# Open a payslip through Preview without storing a file in shaon's cache
 shaon payroll payslip view --month 2026-03
 
-# Print the payslip PDF password (same as your Hilan login)
+# Print the current payslip PDF password
+# Older downloads may require the password that was current when they were downloaded.
 shaon payroll payslip password
 
 # Show the last 2 salary months (CLI default)
@@ -233,8 +237,8 @@ All write commands are preview-only by default.
 | Command | Purpose |
 |---------|---------|
 | `payroll payslip download [--month YYYY-MM] [--output PATH]` | download a password-protected payslip PDF; defaults to the previous month |
-| `payroll payslip view [--month YYYY-MM]` | open a payslip in Preview without writing decrypted bytes to disk (macOS) |
-| `payroll payslip password` | print the password used for password-protected payslips |
+| `payroll payslip view [--month YYYY-MM]` | open a payslip in Preview via `open -fa Preview`; no file is stored in shaon's cache (macOS) |
+| `payroll payslip password` | print the current password for password-protected payslips; older downloads may require the password active at download time |
 | `payroll salary [--months N]` | salary summary; defaults to `2` months |
 
 ### JSON Output

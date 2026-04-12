@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 - `attendance report day` makes single-day reporting first-class instead of routing through a one-day range fill.
 - MCP now exposes `shaon_resolve` for error-day fixes and `shaon_payslip_download` for password-protected payslip retrieval.
-- `payslip view` opens a payslip in Preview on macOS without writing decrypted bytes to disk.
-- `payslip password` prints the password used for password-protected payslip PDFs.
+- `payslip view` opens a payslip in Preview on macOS via `open -fa Preview`; no file is stored in shaon's cache.
+- `payslip password` prints the current Hilan password used for new password-protected payslip PDFs.
 
 ### Changed
 - The CLI is now a pristine hierarchical tree: `attendance`, `payroll`, `reports`, plus top-level `auth`, `serve`, and `completions`.

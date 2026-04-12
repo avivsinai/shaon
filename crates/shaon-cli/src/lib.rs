@@ -6,7 +6,6 @@ use hr_core::{
     FixTarget as CoreFixTarget, PayslipProvider, ProviderError, ReportProvider, ReportSpec,
     ReportTable, SalaryProvider, WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
 };
-use rand::RngCore;
 use secrecy::ExposeSecret;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -15,7 +14,6 @@ use std::{
     io::Write,
     process::{Command, Stdio},
 };
-use zeroize::Zeroize;
 
 use hr_core::use_cases;
 use provider_hilan::{attendance, client, ontology, Config, HilanProvider};
@@ -412,14 +410,14 @@ enum PayslipCommand {
         output: Option<PathBuf>,
     },
 
-    /// Open a payslip in the system PDF viewer without writing decrypted bytes to disk
+    /// Open a payslip in the system PDF viewer; no file is stored in shaon's cache
     View {
         /// Month in YYYY-MM format (defaults to previous month)
         #[arg(long)]
         month: Option<String>,
     },
 
-    /// Print the password for password-protected payslip PDFs
+    /// Print the current Hilan password; older downloads may require the password active at download time
     Password,
 }
 
@@ -576,29 +574,37 @@ pub async fn run() -> Result<()> {
 }
 
 async fn run_auth(mut config: Config, migrate: bool, json: bool) -> Result<()> {
+    let mut verified_during_setup = false;
+
     if migrate {
-        config.migrate_to_keychain()?;
+        let pending = config.prepare_migration()?;
+        let mut client = provider_hilan::build_provider(pending.login_config())?.into_inner();
+        client.login().await?;
+        config = pending.commit()?;
+        verified_during_setup = true;
     } else {
         match config.get_password() {
             Ok(_) => {
                 eprintln!("Password already available. Testing login...");
             }
             Err(_) => {
-                let mut password =
+                let password =
                     rpassword::prompt_password("Enter your Hilan password (input is hidden): ")
                         .context("read password from terminal")?;
-                let mut local_master_key = [0_u8; provider_hilan::config::LOCAL_MASTER_KEY_LEN];
-                rand::rngs::OsRng.fill_bytes(&mut local_master_key);
-                config.store_credentials(&password, &local_master_key)?;
-                local_master_key.zeroize();
-                password.zeroize();
-                eprintln!("Credentials stored in OS keychain.");
+                let pending = config.prepare_stored_credentials(password);
+                let mut client =
+                    provider_hilan::build_provider(pending.login_config())?.into_inner();
+                client.login().await?;
+                config = pending.commit()?;
+                verified_during_setup = true;
             }
         }
     }
 
-    let mut client = provider_hilan::build_provider(config)?.into_inner();
-    client.login().await?;
+    if !verified_during_setup {
+        let mut client = provider_hilan::build_provider(config)?.into_inner();
+        client.login().await?;
+    }
     if json {
         print_json(&serde_json::json!({"status": "ok"}))?;
     }
