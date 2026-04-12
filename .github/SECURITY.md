@@ -1,20 +1,12 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Reporting Security Issues
 
 If you discover a security vulnerability in shaon, please report it responsibly.
 
-**Do NOT open a public GitHub issue for security vulnerabilities.**
+Please use [GitHub Security Advisories](https://github.com/avivsinai/shaon/security/advisories) to report vulnerabilities privately.
 
-Instead, please email: **avivsinai@users.noreply.github.com**
-
-Include:
-- Description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Suggested fix (if any)
-
-You should receive a response within 48 hours. We will work with you to understand and address the issue before any public disclosure.
+**Do not open public issues for security reports.**
 
 ## Scope
 
@@ -28,13 +20,13 @@ This policy applies to:
 
 | Version | Supported |
 |---------|-----------|
-| 1.x     | Yes       |
-| < 1.0   | No        |
+| 0.8.x   | Yes       |
+| < 0.8   | No        |
 
 ## Security Measures
 
 - Credentials stored in OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager)
-- No plaintext passwords in config files (migration path available)
+- No plaintext passwords in config files
 - All HTTP traffic over TLS (rustls, no cert bypass)
 - Binary ad-hoc codesigned on macOS for keychain access
 - Gitleaks secret scanning in CI
