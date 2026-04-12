@@ -10,6 +10,7 @@ pub mod attendance;
 pub mod client;
 pub mod config;
 pub mod ontology;
+pub mod payslip;
 pub mod provider;
 pub mod reports;
 

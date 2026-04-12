@@ -1,4 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use rand::RngCore;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -6,25 +8,37 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
+use zeroize::Zeroize;
 
 const KEYRING_SERVICE: &str = "shaon-cli";
-const SESSION_KEYRING_SERVICE: &str = "shaon-session-key";
-const SESSION_KEY_LEN: usize = 32;
+const KEYRING_SCHEMA_VERSION: u32 = 1;
+pub const LOCAL_MASTER_KEY_LEN: usize = 32;
 
-/// Build a keyring entry with a stable target so macOS Keychain associates the
-/// item with the binary identity rather than a generic account.  The binary
-/// must be codesigned on macOS for silent keychain access. Ad-hoc signing works
-/// for a single build; a stable signing identity avoids repeated prompts across
-/// local rebuilds.
-fn keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
-    let account = format!("{}/{}", subdomain, username);
-    keyring::Entry::new(KEYRING_SERVICE, &account).context("create keyring entry")
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct StoredCredentials {
+    v: u32,
+    password: String,
+    local_master_key: String,
 }
 
-fn session_keyring_entry(subdomain: &str, username: &str) -> Result<keyring::Entry> {
-    let account = format!("{}/{}", subdomain, username);
-    keyring::Entry::new(SESSION_KEYRING_SERVICE, &account).context("create session keyring entry")
+impl StoredCredentials {
+    fn new(password: &str, local_master_key: &[u8; LOCAL_MASTER_KEY_LEN]) -> Self {
+        Self {
+            v: KEYRING_SCHEMA_VERSION,
+            password: password.to_string(),
+            local_master_key: encode_local_master_key(local_master_key),
+        }
+    }
+
+    fn decode_local_master_key(&self) -> Result<[u8; LOCAL_MASTER_KEY_LEN]> {
+        if self.v != KEYRING_SCHEMA_VERSION {
+            bail!("unsupported shaon-cli keychain schema version {}", self.v);
+        }
+        decode_local_master_key(&self.local_master_key)
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -32,13 +46,10 @@ pub struct Config {
     pub subdomain: String,
     pub username: String,
 
-    /// Deprecated: only kept for migration from plaintext config files.
-    /// New installs store the password exclusively in the OS keychain.
     #[serde(skip_serializing, default)]
     pub password: Option<String>,
 
     pub payslip_folder: Option<String>,
-    /// strftime format for payslip filenames; defaults to "%Y-%m.pdf"
     pub payslip_format: Option<String>,
 }
 
@@ -55,12 +66,11 @@ impl fmt::Debug for Config {
 }
 
 impl Config {
-    /// Load config from `~/.shaon/config.toml`.
     pub fn load() -> Result<Self> {
         let path = config_path();
         if !path.exists() {
             print_setup_instructions(&path);
-            anyhow::bail!("Config file not found at {}", path.display());
+            bail!("Config file not found at {}", path.display());
         }
 
         check_file_permissions(&path);
@@ -80,31 +90,15 @@ impl Config {
         Ok(config)
     }
 
-    /// Retrieve the password: keychain first, then legacy config file fallback.
     pub fn get_password(&self) -> Result<SecretString> {
-        // 1. Try environment variable first (CI, scripts, testing)
-        if let Ok(pw) = std::env::var("SHAON_PASSWORD") {
-            if !pw.is_empty() {
-                return Ok(SecretString::from(pw));
-            }
-            tracing::debug!("ignoring empty SHAON_PASSWORD");
+        if let Some(pw) = env_var_nonempty("SHAON_PASSWORD") {
+            return Ok(SecretString::from(pw));
         }
 
-        // 2. Try OS keychain
-        match keyring_entry(&self.subdomain, &self.username) {
-            Ok(entry) => match entry.get_password() {
-                Ok(pw) => return Ok(SecretString::from(pw)),
-                Err(keyring::Error::NoEntry) => {}
-                Err(e) => {
-                    tracing::debug!("keychain lookup failed: {e}");
-                }
-            },
-            Err(e) => {
-                tracing::debug!("keychain entry creation failed: {e}");
-            }
+        if let Some(credentials) = self.load_stored_credentials()? {
+            return Ok(SecretString::from(credentials.password));
         }
 
-        // 3. Fall back to config file password (legacy)
         match &self.password {
             Some(pw) => {
                 eprintln!(
@@ -113,23 +107,43 @@ impl Config {
                 );
                 Ok(SecretString::from(pw.clone()))
             }
-            None => anyhow::bail!(
+            None => bail!(
                 "No password found. Set SHAON_PASSWORD env var, run `shaon auth`, \
                  or add password to ~/.shaon/config.toml"
             ),
         }
     }
 
-    /// Migrate plaintext password to OS keychain, then rewrite config.toml without it.
+    pub fn get_local_master_key(&self) -> Result<[u8; LOCAL_MASTER_KEY_LEN]> {
+        if let Some(encoded) = env_var_nonempty("SHAON_MASTER_KEY") {
+            return decode_local_master_key(&encoded);
+        }
+
+        match self.load_stored_credentials()? {
+            Some(credentials) => credentials.decode_local_master_key(),
+            None => {
+                bail!("No local master key found. Set SHAON_MASTER_KEY env var or run `shaon auth`")
+            }
+        }
+    }
+
+    pub fn should_skip_local_cache(&self) -> bool {
+        env_var_nonempty("SHAON_PASSWORD").is_some()
+            && env_var_nonempty("SHAON_MASTER_KEY").is_none()
+    }
+
     pub fn migrate_to_keychain(&mut self) -> Result<()> {
         let pw = match &self.password {
             Some(pw) => pw.clone(),
-            None => anyhow::bail!("No plaintext password in config to migrate"),
+            None => bail!("No plaintext password in config to migrate"),
         };
 
-        self.store_password_in_keychain(&pw)?;
+        let mut local_master_key = [0_u8; LOCAL_MASTER_KEY_LEN];
+        rand::rngs::OsRng.fill_bytes(&mut local_master_key);
+        let result = self.store_credentials(&pw, &local_master_key);
+        local_master_key.zeroize();
+        result?;
 
-        // Clear the in-memory password and rewrite config without it
         self.password = None;
         self.save().context("rewrite config without password")?;
 
@@ -139,71 +153,34 @@ impl Config {
         Ok(())
     }
 
-    /// Store a new password in the OS keychain. Verifies the write succeeded.
-    pub fn store_password_in_keychain(&self, password: &str) -> Result<()> {
-        let entry = keyring_entry(&self.subdomain, &self.username)?;
-        entry
-            .set_password(password)
-            .context("store password in OS keychain")?;
+    pub fn store_credentials(
+        &self,
+        password: &str,
+        local_master_key: &[u8; LOCAL_MASTER_KEY_LEN],
+    ) -> Result<()> {
+        let account = keyring_account(&self.subdomain, &self.username);
+        let credentials = StoredCredentials::new(password, local_master_key);
+        let encoded =
+            serde_json::to_string(&credentials).context("serialize bundled credentials")?;
 
-        // Verify the password was actually persisted
-        match entry.get_password() {
-            Ok(stored) if stored == password => Ok(()),
-            Ok(_) => anyhow::bail!("keychain stored a different value than expected"),
-            Err(e) => anyhow::bail!(
-                "keychain write appeared to succeed but read-back failed: {e}. \
-                 Try setting SHAON_PASSWORD env var or adding password to ~/.shaon/config.toml"
-            ),
+        write_keychain_secret(KEYRING_SERVICE, &account, &encoded)?;
+
+        match self.load_stored_credentials() {
+            Ok(Some(stored)) if stored == credentials => Ok(()),
+            Ok(Some(_)) => bail!("keychain stored different credentials than expected"),
+            Ok(None) => bail!("keychain write appeared to succeed but credentials were missing"),
+            Err(e) => bail!("keychain write appeared to succeed but read-back failed: {e}"),
         }
     }
 
-    /// Load the persisted cookie-encryption key from the OS keychain, if present.
-    ///
-    /// If `SHAON_SESSION_KEY` is set (64 hex chars), it is used instead of the keychain.
-    pub fn get_session_key(&self) -> Result<Option<[u8; SESSION_KEY_LEN]>> {
-        // Allow env-var override to avoid keychain prompts in headless/CI environments
-        if let Ok(hex) = std::env::var("SHAON_SESSION_KEY") {
-            if !hex.is_empty() {
-                return decode_session_key(&hex).map(Some);
-            }
-        }
-
-        let entry = session_keyring_entry(&self.subdomain, &self.username)?;
-        match entry.get_password() {
-            Ok(encoded) => decode_session_key(&encoded).map(Some),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(anyhow::anyhow!("read session key from OS keychain: {e}")),
-        }
+    fn load_stored_credentials(&self) -> Result<Option<StoredCredentials>> {
+        let account = keyring_account(&self.subdomain, &self.username);
+        let Some(raw) = read_keychain_secret(KEYRING_SERVICE, &account)? else {
+            return Ok(None);
+        };
+        parse_stored_credentials(&raw).map(Some)
     }
 
-    /// Load or create the persisted cookie-encryption key in the OS keychain.
-    ///
-    /// If `SHAON_SESSION_KEY` is set, uses that instead of the keychain.
-    pub fn get_or_create_session_key(&self) -> Result<[u8; SESSION_KEY_LEN]> {
-        if let Some(existing) = self.get_session_key()? {
-            return Ok(existing);
-        }
-
-        let entry = session_keyring_entry(&self.subdomain, &self.username)?;
-        let mut key = [0_u8; SESSION_KEY_LEN];
-        let mut rng = rand::rngs::OsRng;
-        rng.fill_bytes(&mut key);
-        let encoded = encode_session_key(&key);
-
-        entry
-            .set_password(&encoded)
-            .context("store session key in OS keychain")?;
-
-        match entry.get_password() {
-            Ok(stored) if stored == encoded => Ok(key),
-            Ok(_) => anyhow::bail!("keychain stored a different session key than expected"),
-            Err(e) => {
-                anyhow::bail!("session key write appeared to succeed but read-back failed: {e}")
-            }
-        }
-    }
-
-    /// Write the current config back to disk (without the password field).
     fn save(&self) -> Result<()> {
         let path = config_path();
         let content = toml::to_string_pretty(self).context("serialize config")?;
@@ -211,20 +188,17 @@ impl Config {
         Ok(())
     }
 
-    /// Returns the default payslip filename format.
-    #[allow(dead_code)] // used in later phases
+    #[allow(dead_code)]
     pub fn payslip_fmt(&self) -> &str {
         self.payslip_format.as_deref().unwrap_or("%Y-%m.pdf")
     }
 }
 
-/// Returns the config directory: `~/.shaon/`
 pub fn config_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".shaon")
 }
 
-/// Returns `~/.shaon/{subdomain}/` for per-org state (cookies, ontology cache).
 pub fn subdomain_dir(subdomain: &str) -> PathBuf {
     config_dir().join(subdomain)
 }
@@ -233,13 +207,107 @@ fn config_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+fn keyring_account(subdomain: &str, username: &str) -> String {
+    format!("{subdomain}/{username}")
+}
+
+fn env_var_nonempty(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(value) if !value.is_empty() => Some(value),
+        Ok(_) => {
+            tracing::debug!("ignoring empty {key}");
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+fn parse_stored_credentials(raw: &str) -> Result<StoredCredentials> {
+    let credentials: StoredCredentials =
+        serde_json::from_str(raw).context("parse shaon-cli keychain record")?;
+    if credentials.v != KEYRING_SCHEMA_VERSION {
+        bail!(
+            "unsupported shaon-cli keychain schema version {}",
+            credentials.v
+        );
+    }
+    Ok(credentials)
+}
+
+fn encode_local_master_key(key: &[u8; LOCAL_MASTER_KEY_LEN]) -> String {
+    BASE64_STANDARD.encode(key)
+}
+
+fn decode_local_master_key(encoded: &str) -> Result<[u8; LOCAL_MASTER_KEY_LEN]> {
+    let decoded = BASE64_STANDARD
+        .decode(encoded)
+        .context("decode SHAON_MASTER_KEY as base64")?;
+    if decoded.len() != LOCAL_MASTER_KEY_LEN {
+        bail!(
+            "local master key has {} bytes, expected {}",
+            decoded.len(),
+            LOCAL_MASTER_KEY_LEN
+        );
+    }
+
+    let mut key = [0_u8; LOCAL_MASTER_KEY_LEN];
+    key.copy_from_slice(&decoded);
+    Ok(key)
+}
+
+#[cfg(not(test))]
+fn read_keychain_secret(service: &str, account: &str) -> Result<Option<String>> {
+    let entry = keyring::Entry::new(service, account)
+        .with_context(|| format!("create keyring entry for service {service}"))?;
+    match entry.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("read {service} from OS keychain: {e}")),
+    }
+}
+
+#[cfg(not(test))]
+fn write_keychain_secret(service: &str, account: &str, secret: &str) -> Result<()> {
+    let entry = keyring::Entry::new(service, account)
+        .with_context(|| format!("create keyring entry for service {service}"))?;
+    entry
+        .set_password(secret)
+        .with_context(|| format!("store {service} in OS keychain"))
+}
+
+#[cfg(test)]
+type TestKey = (String, String);
+
+#[cfg(test)]
+fn test_keyring_store() -> &'static Mutex<std::collections::HashMap<TestKey, String>> {
+    static STORE: OnceLock<Mutex<std::collections::HashMap<TestKey, String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+fn read_keychain_secret(service: &str, account: &str) -> Result<Option<String>> {
+    let store = test_keyring_store().lock().unwrap();
+    Ok(store
+        .get(&(service.to_string(), account.to_string()))
+        .cloned())
+}
+
+#[cfg(test)]
+fn write_keychain_secret(service: &str, account: &str, secret: &str) -> Result<()> {
+    let mut store = test_keyring_store().lock().unwrap();
+    store.insert(
+        (service.to_string(), account.to_string()),
+        secret.to_string(),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn test_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Warn if config file is group/world readable (Unix only).
 #[cfg(unix)]
 fn check_file_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -258,11 +326,8 @@ fn check_file_permissions(path: &Path) {
 }
 
 #[cfg(not(unix))]
-fn check_file_permissions(_path: &Path) {
-    // No-op on non-Unix platforms
-}
+fn check_file_permissions(_path: &Path) {}
 
-/// Set config file to 0600 (Unix only).
 #[cfg(unix)]
 fn set_file_permissions_600(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -276,9 +341,7 @@ fn set_file_permissions_600(path: &Path) {
 }
 
 #[cfg(not(unix))]
-fn set_file_permissions_600(_path: &Path) {
-    // No-op on non-Unix platforms
-}
+fn set_file_permissions_600(_path: &Path) {}
 
 fn print_setup_instructions(path: &Path) {
     eprintln!("shaon: config file not found.");
@@ -290,35 +353,13 @@ fn print_setup_instructions(path: &Path) {
         "  username  = \"YOUR_EMPLOYEE_ID\"   # e.g. \"27\" — the ID you use to log in to Hilan"
     );
     eprintln!();
-    eprintln!("Then run `shaon auth` to store your password in the OS keychain.");
+    eprintln!("Then run `shaon auth` to store your credentials in the OS keychain.");
     eprintln!();
     eprintln!("Optional fields:");
     eprintln!("  payslip_folder = \"/path/to/payslips\"");
     eprintln!("  payslip_format = \"%Y-%m.pdf\"");
     eprintln!();
     eprintln!("The subdomain is the part before .hilan.co.il in your company's Hilan URL.");
-}
-
-fn encode_session_key(key: &[u8; SESSION_KEY_LEN]) -> String {
-    key.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn decode_session_key(encoded: &str) -> Result<[u8; SESSION_KEY_LEN]> {
-    if encoded.len() != SESSION_KEY_LEN * 2 {
-        anyhow::bail!(
-            "session key has {} hex chars, expected {}",
-            encoded.len(),
-            SESSION_KEY_LEN * 2
-        );
-    }
-
-    let mut key = [0_u8; SESSION_KEY_LEN];
-    for (idx, chunk) in encoded.as_bytes().chunks_exact(2).enumerate() {
-        let text = std::str::from_utf8(chunk).context("session key was not valid UTF-8")?;
-        key[idx] = u8::from_str_radix(text, 16)
-            .with_context(|| format!("invalid hex in session key at byte {idx}"))?;
-    }
-    Ok(key)
 }
 
 #[cfg(test)]
@@ -331,6 +372,7 @@ mod tests {
         home: Option<OsString>,
         xdg_config_home: Option<OsString>,
         shaon_password: Option<OsString>,
+        shaon_master_key: Option<OsString>,
     }
 
     impl Drop for EnvGuard {
@@ -338,6 +380,7 @@ mod tests {
             restore_env("HOME", self.home.as_deref());
             restore_env("XDG_CONFIG_HOME", self.xdg_config_home.as_deref());
             restore_env("SHAON_PASSWORD", self.shaon_password.as_deref());
+            restore_env("SHAON_MASTER_KEY", self.shaon_master_key.as_deref());
         }
     }
 
@@ -353,6 +396,20 @@ mod tests {
             home: std::env::var_os("HOME"),
             xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
             shaon_password: std::env::var_os("SHAON_PASSWORD"),
+            shaon_master_key: std::env::var_os("SHAON_MASTER_KEY"),
+        }
+    }
+
+    fn unique_config(tag: &str) -> Config {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+
+        Config {
+            subdomain: format!("{tag}-{}-{id}", std::process::id()),
+            username: format!("user-{id}"),
+            password: None,
+            payslip_folder: None,
+            payslip_format: None,
         }
     }
 
@@ -409,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn config_deserializes_with_legacy_password() {
+    fn config_deserializes_with_plaintext_password() {
         let toml_str = r#"
             subdomain = "acme"
             username = "12345"
@@ -439,16 +496,47 @@ mod tests {
     }
 
     #[test]
-    fn session_key_hex_round_trip() {
-        let original = [
-            0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x23, 0x30, 0x31,
-            0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x50, 0x51, 0x52, 0x53, 0x60, 0x61, 0x62, 0x63,
-            0x70, 0x71, 0x72, 0x73,
-        ];
+    fn store_credentials_write_then_read_roundtrip() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+        let config = unique_config("roundtrip");
+        let local_master_key = [0x5a; LOCAL_MASTER_KEY_LEN];
 
-        let encoded = encode_session_key(&original);
-        let decoded = decode_session_key(&encoded).unwrap();
+        config
+            .store_credentials("correct horse battery staple", &local_master_key)
+            .unwrap();
 
-        assert_eq!(decoded, original);
+        let password = config.get_password().unwrap();
+        assert_eq!(password.expose_secret(), "correct horse battery staple");
+        assert_eq!(config.get_local_master_key().unwrap(), local_master_key);
+
+        let stored = read_keychain_secret(
+            KEYRING_SERVICE,
+            &keyring_account(&config.subdomain, &config.username),
+        )
+        .unwrap()
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(parsed["v"], KEYRING_SCHEMA_VERSION);
+        assert_eq!(
+            parsed["local_master_key"],
+            encode_local_master_key(&local_master_key)
+        );
+    }
+
+    #[test]
+    fn env_var_master_key_overrides_keychain() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+        let config = unique_config("env-master-key");
+
+        config
+            .store_credentials("stored-password", &[0x11; LOCAL_MASTER_KEY_LEN])
+            .unwrap();
+
+        let override_key = [0x22; LOCAL_MASTER_KEY_LEN];
+        std::env::set_var("SHAON_MASTER_KEY", encode_local_master_key(&override_key));
+
+        assert_eq!(config.get_local_master_key().unwrap(), override_key);
     }
 }

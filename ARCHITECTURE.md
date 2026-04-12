@@ -43,8 +43,8 @@ All three surfaces eventually go through `provider-hilan`, which implements the 
 ### 1. Config and Secrets
 
 - Non-secret config lives in `~/.shaon/config.toml`
-- Password and session-key secrets live in the OS keychain by default
-- `SHAON_PASSWORD` and `SHAON_SESSION_KEY` bypass keychain access for CI and headless automation
+- Bundled credentials live in the OS keychain by default
+- `SHAON_PASSWORD` and `SHAON_MASTER_KEY` bypass keychain access for CI and headless automation
 
 ### 2. Transport and Session
 
@@ -72,8 +72,8 @@ State-changing requests are intentionally not retried automatically.
 
 ### 4. Frontends
 
-- `shaon-cli` turns the provider into explicit shell commands and optional JSON output
-- `shaon-mcp` exposes a curated stdio tool surface for agents
+- `shaon-cli` turns the provider into the explicit `attendance` / `payroll` / `reports` command tree plus a small set of top-level mode commands (`auth`, `serve`, `completions`)
+- `shaon-mcp` exposes a curated flat stdio tool surface for agents; tool names stay flat even though the CLI is hierarchical
 - the Claude Code skill gives natural-language entry points and can delegate to the CLI or MCP
 
 ## Safety Model
@@ -83,8 +83,8 @@ The project has one hard rule: no write happens by accident.
 - CLI writes require `--execute`
 - MCP writes require `execute: true`
 - previews are the default everywhere
-- `fill` and `auto-fill` skip Israeli weekends (Fri/Sat) unless explicitly overridden
-- `auto-fill` has a `--max-days` / `max_days` safety cap
+- `attendance report range` and `attendance auto-fill` skip Israeli weekends (Fri/Sat) unless explicitly overridden
+- `attendance auto-fill` has a `--max-days` / `max_days` safety cap
 
 ## Protocol Strategy
 
@@ -109,6 +109,13 @@ Most attendance writes follow this pattern:
 5. submit only when explicitly executing
 
 Some error-fix flows require multiple steps, for example clearing a Hilan error and then applying the desired calendar state. Those are implemented as explicit, ordered steps rather than implicit retries.
+
+## Stable JSON Contracts
+
+- `reports sheet`, `reports corrections`, and `reports show <name>` do not expose raw `{name, headers, rows}` directly from the provider layer.
+- Both CLI JSON mode and MCP return a stable report envelope:
+  `report { kind, requested, provider_name }`, `column_count`, `row_count`, `columns[]`, and `rows[]`.
+- CLI-only local UX operations such as `payroll payslip view`, `payroll payslip password`, `auth`, and `cache refresh attendance-types` are intentionally excluded from MCP.
 
 ## What To Update When Behavior Changes
 

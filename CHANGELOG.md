@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-12
+### Added
+- `attendance report day` makes single-day reporting first-class instead of routing through a one-day range fill.
+- MCP now exposes `shaon_resolve` for error-day fixes and `shaon_payslip_download` for password-protected payslip retrieval.
+- `payslip view` opens a payslip in Preview on macOS without writing decrypted bytes to disk.
+- `payslip password` prints the password used for password-protected payslip PDFs.
+
+### Changed
+- The CLI is now a pristine hierarchical tree: `attendance`, `payroll`, `reports`, plus top-level `auth`, `serve`, and `completions`.
+- Old flat command names were removed without aliases or migration shims.
+- `attendance resolve` now auto-detects the provider fix target from overview/error data instead of exposing `report_id` / `error_type`.
+- `sheet`, `corrections`, and `reports show` now use a stable JSON report schema instead of raw provider table payloads.
+- `sync-types` was replaced by the hidden admin command `cache refresh attendance-types`.
+- Bundled keychain credentials now store the Hilan password and a local master key together in the `shaon-cli` entry.
+- `SHAON_MASTER_KEY` now controls headless local cache encryption alongside `SHAON_PASSWORD`.
+- Downloaded payslip PDFs are now password-protected with the Hilan password before being written to disk.
+
+### Security
+- Session-cookie encryption keys are now derived from the local master key with HKDF-SHA256 before AES-256-GCM encryption at rest.
+
 ## [0.7.0] - 2026-04-12
 ### Added
 - **Self-signed codesign identity** (`scripts/setup-codesign.sh`): creates a local codesigning identity so macOS Keychain "Always Allow" persists across rebuilds. Previously ad-hoc `codesign -s -` produced a new cdhash-based designated requirement per build, re-prompting every time. `scripts/run.sh` now prefers the identity; ad-hoc fallback only when it's missing.
@@ -129,4 +149,5 @@ Initial public release.
 
 [0.3.0]: https://github.com/avivsinai/shaon/releases/tag/v0.3.0
 [0.4.0]: https://github.com/avivsinai/shaon/releases/tag/v0.4.0
-[Unreleased]: https://github.com/avivsinai/shaon/compare/v0.4.0...HEAD
+[1.0.0]: https://github.com/avivsinai/shaon/releases/tag/v1.0.0
+[Unreleased]: https://github.com/avivsinai/shaon/compare/v1.0.0...HEAD

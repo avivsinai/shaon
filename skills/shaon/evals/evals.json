@@ -4,17 +4,17 @@
     {
       "id": 1,
       "prompt": "I forgot to report my attendance for the past week at work. Can you check what days are missing and fill them in as regular work days, 9 to 6?",
-      "expected_output": "Agent should use shaon status --json to check the month, identify missing days, then use shaon fill with --type and --hours to fill them. Should show dry-run first, then ask user to confirm before --execute."
+      "expected_output": "Agent should use shaon attendance overview --json or shaon attendance status --json to check the month, identify missing days, then use shaon attendance report range with --type and --hours to fill them. Should show dry-run first, then ask user to confirm before --execute."
     },
     {
       "id": 2,
       "prompt": "אני צריך להוריד את תלוש המשכורת של חודש שעבר",
-      "expected_output": "Agent should recognize Hebrew request for last month's payslip and run shaon payslip --month YYYY-MM with the previous month. Should save to a reasonable path."
+      "expected_output": "Agent should recognize the Hebrew request for last month's payslip and run shaon payroll payslip download --month YYYY-MM with the previous month. Should save to a reasonable path."
     },
     {
       "id": 3,
       "prompt": "my manager is asking about the attendance errors I have this month. can you show me what's wrong and fix the issues?",
-      "expected_output": "Agent should run shaon errors --month YYYY-MM --json to get error details, present them clearly, then for each error day suggest a fix command. Should use dry-run first."
+      "expected_output": "Agent should run shaon attendance errors --month YYYY-MM --json to get error details, present them clearly, then use shaon attendance resolve DATE in dry-run mode for each fixable error day before asking to execute."
     }
   ]
 }

@@ -2,11 +2,13 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Datelike, Local, NaiveDate};
+use hkdf::Hkdf;
 use regex::Regex;
 use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
@@ -37,7 +39,8 @@ static FORM_SELECTED_OPTION_SEL: LazyLock<Selector> =
 static FORM_TEXTAREA_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("textarea").expect("valid selector"));
 
-use crate::config::Config;
+use crate::config::{Config, LOCAL_MASTER_KEY_LEN};
+use crate::payslip::seal_pdf;
 
 pub struct HilanClient {
     pub(crate) client: reqwest::Client,
@@ -53,6 +56,8 @@ pub struct HilanClient {
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const COOKIE_KEY_LEN: usize = 32;
 const COOKIE_NONCE_LEN: usize = 12;
+const LOCAL_KEY_DERIVATION_SALT: &[u8] = b"shaon-v1";
+const COOKIE_CACHE_KEY_INFO: &[u8] = b"shaon-cookie-cache-v1";
 
 #[derive(Debug, Serialize)]
 pub struct PayslipDownload {
@@ -89,11 +94,9 @@ struct LoginResponse {
 impl HilanClient {
     pub fn new(config: Config) -> Result<Self> {
         // Load persisted cookies if available.
-        // When SHAON_PASSWORD is set and no SHAON_SESSION_KEY is available,
-        // skip cookie loading to avoid keychain prompts in headless/CI environments.
-        let has_env_session_key = std::env::var("SHAON_SESSION_KEY").is_ok_and(|v| !v.is_empty());
-        let has_env_password = std::env::var("SHAON_PASSWORD").is_ok_and(|v| !v.is_empty());
-        let skip_cookie_cache = has_env_password && !has_env_session_key;
+        // When SHAON_PASSWORD is set without SHAON_MASTER_KEY, skip cookie
+        // loading to avoid keychain prompts in headless/CI environments.
+        let skip_cookie_cache = config.should_skip_local_cache();
         let cookie_path = crate::config::subdomain_dir(&config.subdomain).join("cookies.json");
         let cookie_store = if cookie_path.exists() && !skip_cookie_cache {
             match load_cookie_store(&config, &cookie_path) {
@@ -292,8 +295,12 @@ impl HilanClient {
     }
 
     /// Persist session cookies to disk for reuse across CLI invocations.
-    /// Skips persistence when the session key isn't available to avoid keychain prompts.
+    /// Skips persistence when SHAON_PASSWORD is set without SHAON_MASTER_KEY.
     fn save_cookies(&self) {
+        if self.config.should_skip_local_cache() {
+            return;
+        }
+
         let cookie_dir = crate::config::subdomain_dir(&self.config.subdomain);
         if fs::create_dir_all(&cookie_dir).is_err() {
             return;
@@ -318,10 +325,22 @@ impl HilanClient {
             plaintext
         };
 
-        let key = match self.config.get_or_create_session_key() {
+        let local_master_key = match self.config.get_local_master_key() {
             Ok(key) => key,
             Err(e) => {
-                tracing::debug!("could not load session key, skipping cookie persistence: {e}");
+                tracing::debug!(
+                    "could not load local master key, skipping cookie persistence: {e}"
+                );
+                return;
+            }
+        };
+
+        let key = match derive_local_dek(&local_master_key, COOKIE_CACHE_KEY_INFO) {
+            Ok(key) => key,
+            Err(e) => {
+                tracing::debug!(
+                    "could not derive cookie encryption key, skipping persistence: {e}"
+                );
                 return;
             }
         };
@@ -352,6 +371,23 @@ impl HilanClient {
         month: NaiveDate,
         output: Option<&Path>,
     ) -> Result<PayslipDownload> {
+        let bytes = self.password_protected_payslip_bytes(month).await?;
+        let path = self.resolve_payslip_path(month, output);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create output directory {}", parent.display()))?;
+        }
+
+        fs::write(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
+
+        Ok(PayslipDownload {
+            month,
+            path,
+            size_bytes: bytes.len(),
+        })
+    }
+
+    pub async fn payslip_pdf_bytes(&mut self, month: NaiveDate) -> Result<Vec<u8>> {
         self.ensure_authenticated().await?;
         if self.org_id.is_none() {
             self.org_id = Some(crate::api::bootstrap(self).await?.org_id);
@@ -382,19 +418,17 @@ impl HilanClient {
             );
         }
 
-        let path = self.resolve_payslip_path(month, output);
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create output directory {}", parent.display()))?;
-        }
+        Ok(bytes)
+    }
 
-        fs::write(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
+    pub async fn password_protected_payslip_bytes(&mut self, month: NaiveDate) -> Result<Vec<u8>> {
+        let bytes = self.payslip_pdf_bytes(month).await?;
+        let secret = self.config.get_password()?;
+        seal_pdf(&bytes, secret.expose_secret()).context("password-protect payslip PDF")
+    }
 
-        Ok(PayslipDownload {
-            month,
-            path,
-            size_bytes: bytes.len(),
-        })
+    pub async fn viewable_payslip_pdf_bytes(&mut self, month: NaiveDate) -> Result<Vec<u8>> {
+        self.payslip_pdf_bytes(month).await
     }
 
     pub async fn salary(&mut self, months: u32) -> Result<SalarySummary> {
@@ -1256,13 +1290,23 @@ fn salary_amount(row: &BTreeMap<String, serde_json::Value>, key: &str) -> Result
 fn load_cookie_store(config: &Config, cookie_path: &Path) -> Result<cookie_store::CookieStore> {
     let encrypted =
         fs::read(cookie_path).with_context(|| format!("read {}", cookie_path.display()))?;
-    let key = config
-        .get_session_key()?
-        .context("missing session key for persisted cookies")?;
+    let local_master_key = config.get_local_master_key()?;
+    let key = derive_local_dek(&local_master_key, COOKIE_CACHE_KEY_INFO)?;
     let decrypted = decrypt_cookie_blob(&key, &encrypted)?;
 
     cookie_store::serde::json::load(Cursor::new(decrypted))
         .map_err(|e| anyhow!("deserialize decrypted cookie store JSON: {e}"))
+}
+
+fn derive_local_dek(
+    local_master_key: &[u8; LOCAL_MASTER_KEY_LEN],
+    info: &[u8],
+) -> Result<[u8; COOKIE_KEY_LEN]> {
+    let hkdf = Hkdf::<Sha256>::new(Some(LOCAL_KEY_DERIVATION_SALT), local_master_key);
+    let mut key = [0_u8; COOKIE_KEY_LEN];
+    hkdf.expand(info, &mut key)
+        .map_err(|e| anyhow!("derive local DEK: {e}"))?;
+    Ok(key)
 }
 
 fn encrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
@@ -1430,16 +1474,22 @@ mod tests {
         body: String,
     }
 
-    fn http_response(body: &str, content_type: &str) -> String {
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        )
+    fn http_response(body: &str, content_type: &str) -> Vec<u8> {
+        http_response_bytes(body.as_bytes(), content_type)
+    }
+
+    fn http_response_bytes(body: &[u8], content_type: &str) -> Vec<u8> {
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let mut response = headers.into_bytes();
+        response.extend_from_slice(body);
+        response
     }
 
     fn spawn_test_server(
-        responses: Vec<String>,
+        responses: Vec<Vec<u8>>,
     ) -> (
         String,
         std::thread::JoinHandle<()>,
@@ -1498,7 +1548,7 @@ mod tests {
                     .unwrap()
                     .push(RecordedRequest { method, path, body });
 
-                stream.write_all(response.as_bytes()).unwrap();
+                stream.write_all(&response).unwrap();
                 stream.flush().unwrap();
             }
         });
@@ -1801,8 +1851,25 @@ mod tests {
     }
 
     #[test]
-    fn cookie_encryption_round_trip() {
-        let key = [0x5a; COOKIE_KEY_LEN];
+    fn hkdf_derivation_is_deterministic_and_purpose_separated() {
+        let local_master_key = [0x5a; LOCAL_MASTER_KEY_LEN];
+
+        let cookie_key_a =
+            derive_local_dek(&local_master_key, COOKIE_CACHE_KEY_INFO).expect("derive cookie key");
+        let cookie_key_b =
+            derive_local_dek(&local_master_key, COOKIE_CACHE_KEY_INFO).expect("derive cookie key");
+        let payslip_key = derive_local_dek(&local_master_key, b"shaon-payslip-store-v1")
+            .expect("derive payslip key");
+
+        assert_eq!(cookie_key_a, cookie_key_b);
+        assert_ne!(cookie_key_a, payslip_key);
+    }
+
+    #[test]
+    fn cookie_encryption_roundtrip_under_hkdf_derived_dek() {
+        let local_master_key = [0x5a; LOCAL_MASTER_KEY_LEN];
+        let key =
+            derive_local_dek(&local_master_key, COOKIE_CACHE_KEY_INFO).expect("derive cookie key");
         let plaintext = br#"{"cookies":[{"name":"HBrowserId","value":"abc123"}]}"#;
 
         let encrypted = encrypt_cookie_blob(&key, plaintext).expect("encrypt cookies");
@@ -1915,7 +1982,7 @@ mod tests {
                 r#"{"PrincipalUser":{"UserId":"12345","EmployeeId":99,"Name":"Test User","IsManager":false},"OrganizationId":"4321"}"#,
                 "application/json",
             ),
-            http_response("%PDF-1.7\nmock pdf", "application/pdf"),
+            http_response_bytes(&crate::payslip::sample_pdf_bytes(), "application/pdf"),
         ]);
 
         let mut client = build_test_client(base_url, true);
@@ -1926,10 +1993,11 @@ mod tests {
 
         assert_eq!(download.path, output);
         assert_eq!(download.month, month);
-        assert_eq!(
-            std::fs::read(&download.path).unwrap(),
-            b"%PDF-1.7\nmock pdf"
-        );
+        let written = std::fs::read(&download.path).unwrap();
+        assert_ne!(written, crate::payslip::sample_pdf_bytes());
+        let unsealed = crate::payslip::unseal_pdf(&written, "s3cret").unwrap();
+        let doc = lopdf::Document::load_mem(&unsealed).unwrap();
+        assert_eq!(doc.get_pages().len(), 1);
 
         let requests = recorded.lock().unwrap();
         assert_eq!(requests.len(), 2);
