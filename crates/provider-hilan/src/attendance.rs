@@ -1,16 +1,146 @@
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
-use anyhow::{anyhow, Context, Result};
-use chrono::{Datelike, NaiveDate};
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use scraper::{ElementRef, Html, Selector};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::client::{format_form_fields_for_display, HilanClient};
+
+// Pre-compiled scraper selectors. Building a Selector allocates, so cache the
+// constant-string ones at module scope to keep hot parsing paths allocation-free.
+static DAY_CELL_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("td[Days]").expect("valid selector"));
+static DAY_NUM_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("tr.dayImageNumberContainer td.dTS").expect("valid selector"));
+static CAL_MESSAGE_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("td.calendarMessageCell .cDM").expect("valid selector"));
+static CAL_ICON_SEL: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse("td.imageContainerStyle span.calendarIcon").expect("valid selector")
+});
+static SELECT_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("select").expect("valid selector"));
+static OPTION_SELECTED_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("option[selected]").expect("valid selector"));
+static OPTION_ANY_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("option").expect("valid selector"));
+#[cfg(test)]
+static ROW_0_TOP_CELL_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(r#"tr[id$="_row_0"] > td"#).expect("valid selector"));
 
 /// Default attendance type labels synthesized by the parser.
 const LABEL_WORK_DAY: &str = "work day";
 const LABEL_VACATION: &str = "vacation";
 const EMPTY_OBJECT_ID: &str = "00000000-0000-0000-0000-000000000000";
+const CONFLICTING_REPORT_MESSAGE_FRAGMENT: &str = "קיים דיווח";
+const CALENDAR_BROWSER_FIELDS: &[&str] = &[
+    "DisableTimeout",
+    "H-XSRF-Token",
+    "Time",
+    "__EVENTARGUMENT",
+    "__EVENTTARGET",
+    "__LASTFOCUS",
+    "__VIEWSTATE",
+    "__VIEWSTATEGENERATOR",
+    "__calendarSelectedDays",
+    "ctl00$DummyAutoCompleteText",
+    "ctl00$DummyAutoComplete_Value",
+    "ctl00$mp$Strip$ACESearch_Value",
+    "ctl00$mp$Strip$blSaveList",
+    "ctl00$mp$Strip$hCurrentItemId",
+    "ctl00$mp$Strip$hSelectedIds",
+    "ctl00$mp$Strip$txtSearch",
+    "ctl00$mp$currentMonth",
+    "ctl00$mp$scriptBox",
+    "ctl00$datePickerTmp$jdatePicker",
+    "ctl00_datePickerTmp_State",
+];
+const ERROR_WIZARD_BROWSER_FIELDS: &[&str] = &[
+    "DisableTimeout",
+    "H-XSRF-Token",
+    "Time",
+    "__EVENTARGUMENT",
+    "__EVENTTARGET",
+    "__VIEWSTATE",
+    "__VIEWSTATEGENERATOR",
+    "ctl00$DummyAutoCompleteText",
+    "ctl00$DummyAutoComplete_Value",
+    "ctl00$mp$ScriptBox",
+    "ctl00$datePickerTmp$jdatePicker",
+    "ctl00_datePickerTmp_State",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitPage {
+    Calendar,
+    ErrorWizard,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CalendarSubmitContext {
+    pub url: String,
+    pub date: NaiveDate,
+    pub employee_id: String,
+    pub fields: BTreeMap<String, String>,
+    pub reports: Vec<CalendarExistingReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CalendarExistingReport {
+    pub object_id: String,
+    pub employee_id: u32,
+    pub row_name: String,
+    pub symbol_code: Option<String>,
+    pub symbol_name: Option<String>,
+    pub is_absence: bool,
+    pub report_date_iso_utc: String,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedCalendarReportRow {
+    row_name: String,
+    symbol_code: Option<String>,
+    symbol_name: Option<String>,
+    is_absence: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RowDataSymbol {
+    #[serde(rename = "First")]
+    first: Option<String>,
+    #[serde(rename = "Second")]
+    second: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RowDataEntry {
+    #[serde(rename = "ID")]
+    id: String,
+    #[serde(rename = "EmployeeId")]
+    employee_id: u32,
+    #[serde(rename = "ReportDate")]
+    report_date: String,
+    #[serde(rename = "FromDate")]
+    from_date: Option<String>,
+    #[serde(rename = "IsRange")]
+    is_range: bool,
+    #[serde(rename = "IsReportDeleted")]
+    is_report_deleted: bool,
+    #[serde(rename = "Symbol")]
+    symbol: Option<RowDataSymbol>,
+}
+
+fn browser_field_allowlist(page: SubmitPage) -> &'static [&'static str] {
+    match page {
+        SubmitPage::Calendar => CALENDAR_BROWSER_FIELDS,
+        SubmitPage::ErrorWizard => ERROR_WIZARD_BROWSER_FIELDS,
+    }
+}
+
+fn retain_browser_fields(replay_fields: &mut BTreeMap<String, String>, allowlist: &[&str]) {
+    replay_fields.retain(|key, _| allowlist.contains(&key.as_str()));
+}
 
 /// Keywords that indicate an attendance type in calendar cells.
 ///
@@ -641,15 +771,10 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
 
     // Target calendar day cells: both regular (cDIES) and absence (calendarAbcenseDay).
     // Both have the `Days` attribute.
-    let day_cell_sel = Selector::parse("td[Days]").unwrap();
-    let day_num_sel = Selector::parse("tr.dayImageNumberContainer td.dTS").unwrap();
-    let message_sel = Selector::parse("td.calendarMessageCell .cDM").unwrap();
-    let icon_sel = Selector::parse("td.imageContainerStyle span.calendarIcon").unwrap();
-
-    for td in document.select(&day_cell_sel) {
+    for td in document.select(&DAY_CELL_SEL) {
         // Prefer the visible day-number cell over outer attributes.
         let day_num = td
-            .select(&day_num_sel)
+            .select(&DAY_NUM_SEL)
             .next()
             .map(|cell| cell_visible_text(&cell))
             .as_deref()
@@ -684,7 +809,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
         let mut attendance_type = None;
 
         let message_text = td
-            .select(&message_sel)
+            .select(&CAL_MESSAGE_SEL)
             .map(|cell| cell_visible_text(&cell))
             .map(|text| text.trim().to_string())
             .find(|text| !text.is_empty());
@@ -718,7 +843,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
                 .map(ToOwned::to_owned);
         }
 
-        for icon in td.select(&icon_sel) {
+        for icon in td.select(&CAL_ICON_SEL) {
             let icon_class = icon.value().attr("class").unwrap_or("");
             if icon_class.contains("fh-x") {
                 // "x" icon = system auto-filled as vacation
@@ -782,13 +907,8 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
 /// (or the first `<option>` if none is marked selected) is included —
 /// not the text of every option in the dropdown.
 fn cell_visible_text(cell: &ElementRef<'_>) -> String {
-    let select_sel = Selector::parse("select").unwrap();
-    let option_sel = Selector::parse("option[selected]").unwrap();
-    let option_any_sel = Selector::parse("option").unwrap();
-    let option_value_sel = Selector::parse("option").unwrap();
-
     // If the cell contains no <select>, use the normal text extraction.
-    let has_select = cell.select(&select_sel).next().is_some();
+    let has_select = cell.select(&SELECT_SEL).next().is_some();
     if !has_select {
         return cell
             .text()
@@ -805,25 +925,22 @@ fn cell_visible_text(cell: &ElementRef<'_>) -> String {
     fn collect_visible_parts(
         element: &ElementRef<'_>,
         inherited_ov: Option<&str>,
-        option_sel: &Selector,
-        option_any_sel: &Selector,
-        option_value_sel: &Selector,
         parts: &mut Vec<String>,
     ) {
         let current_ov = normalized_ov(element.value().attr("ov")).or(inherited_ov);
 
         if element.value().name() == "select" {
             let selected_text = element
-                .select(option_sel)
+                .select(&OPTION_SELECTED_SEL)
                 .next()
                 .or_else(|| {
                     current_ov.and_then(|ov| {
                         element
-                            .select(option_value_sel)
+                            .select(&OPTION_ANY_SEL)
                             .find(|opt| opt.value().attr("value") == Some(ov))
                     })
                 })
-                .or_else(|| element.select(option_any_sel).next())
+                .or_else(|| element.select(&OPTION_ANY_SEL).next())
                 .map(|opt| opt.text().collect::<String>());
 
             if let Some(text) = selected_text {
@@ -837,14 +954,7 @@ fn cell_visible_text(cell: &ElementRef<'_>) -> String {
 
         for child in element.children() {
             if let Some(child_el) = ElementRef::wrap(child) {
-                collect_visible_parts(
-                    &child_el,
-                    current_ov,
-                    option_sel,
-                    option_any_sel,
-                    option_value_sel,
-                    parts,
-                );
+                collect_visible_parts(&child_el, current_ov, parts);
             } else if let Some(text_node) = child.value().as_text() {
                 let text = text_node.trim();
                 if !text.is_empty() {
@@ -855,14 +965,7 @@ fn cell_visible_text(cell: &ElementRef<'_>) -> String {
     }
 
     let mut parts = Vec::new();
-    collect_visible_parts(
-        cell,
-        None,
-        &option_sel,
-        &option_any_sel,
-        &option_value_sel,
-        &mut parts,
-    );
+    collect_visible_parts(cell, None, &mut parts);
     parts.join(" ")
 }
 
@@ -1017,12 +1120,278 @@ pub async fn submit_day(
     submit: &AttendanceSubmit,
     execute: bool,
 ) -> Result<SubmitPreview> {
-    let url = format!(
-        "{}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true",
-        client.base_url
-    );
+    let context = load_calendar_submit_context(client, submit.date).await?;
+    submit_day_with_context(client, submit, execute, context).await
+}
 
-    replay_submit(client, &url, submit, EMPTY_OBJECT_ID, "שמירה", execute).await
+pub(crate) async fn submit_day_with_context(
+    client: &mut HilanClient,
+    submit: &AttendanceSubmit,
+    execute: bool,
+    mut context: CalendarSubmitContext,
+) -> Result<SubmitPreview> {
+    let mut steps = Vec::new();
+    let mut deleted_conflict = false;
+
+    if let Some(desired_type_code) = submit.attendance_type_code.as_deref() {
+        let (delete_previews, refreshed_context) =
+            delete_conflicting_absence_reports(client, context, desired_type_code, execute).await?;
+        deleted_conflict = !delete_previews.is_empty();
+        steps.extend(delete_previews.into_iter().map(|preview| {
+            (
+                "delete the conflicting calendar row before applying the requested attendance",
+                preview,
+            )
+        }));
+        context = refreshed_context;
+    }
+
+    let submit_result = replay_submit_with_fields(
+        client,
+        &context.url,
+        submit,
+        EMPTY_OBJECT_ID,
+        "שמירה",
+        execute,
+        context.fields.clone(),
+        SubmitPage::Calendar,
+    )
+    .await;
+
+    match submit_result {
+        Ok(preview) => Ok(compose_submit_preview_steps(
+            preview,
+            &steps,
+            "apply the requested attendance via the calendar page",
+        )),
+        Err(err)
+            if execute
+                && !deleted_conflict
+                && is_conflicting_report_error(&err)
+                && submit.attendance_type_code.is_some() =>
+        {
+            let desired_type_code = submit
+                .attendance_type_code
+                .as_deref()
+                .expect("guard ensures desired attendance type exists");
+            let refreshed_context = load_calendar_submit_context(client, submit.date)
+                .await
+                .with_context(|| {
+                    format!(
+                        "reload calendar submit context after conflict for {}",
+                        submit.date.format("%Y-%m-%d")
+                    )
+                })?;
+            let (delete_previews, refreshed_context) = delete_conflicting_absence_reports(
+                client,
+                refreshed_context,
+                desired_type_code,
+                execute,
+            )
+            .await?;
+            if !delete_previews.is_empty() {
+                steps.extend(delete_previews.into_iter().map(|preview| {
+                    (
+                        "delete the conflicting calendar row after Hilan rejected the first submit",
+                        preview,
+                    )
+                }));
+                let preview = replay_submit_with_fields(
+                    client,
+                    &refreshed_context.url,
+                    submit,
+                    EMPTY_OBJECT_ID,
+                    "שמירה",
+                    execute,
+                    refreshed_context.fields,
+                    SubmitPage::Calendar,
+                )
+                .await?;
+                Ok(compose_submit_preview_steps(
+                    preview,
+                    &steps,
+                    "apply the requested attendance via the calendar page",
+                ))
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+pub(crate) async fn load_calendar_submit_context(
+    client: &mut HilanClient,
+    date: NaiveDate,
+) -> Result<CalendarSubmitContext> {
+    let url = calendar_page_url(client);
+    let (html, fields) = load_calendar_submit_form(client, &url, date).await?;
+    let employee_id = match fields.get("ctl00$mp$Strip$hCurrentItemId") {
+        Some(id) if !id.is_empty() => id.clone(),
+        _ => {
+            crate::api::bootstrap(client)
+                .await
+                .context("bootstrap employee info for calendar submit context")?
+                .user_id
+        }
+    };
+    let reports = parse_calendar_existing_reports(&html, &employee_id, date)?;
+
+    Ok(CalendarSubmitContext {
+        url,
+        date,
+        employee_id,
+        fields,
+        reports,
+    })
+}
+
+fn conflicting_absence_reports(
+    context: &CalendarSubmitContext,
+    desired_type_code: &str,
+) -> Vec<CalendarExistingReport> {
+    context
+        .reports
+        .iter()
+        .filter(|report| {
+            report.is_absence && report.symbol_code.as_deref() != Some(desired_type_code)
+        })
+        .cloned()
+        .collect()
+}
+
+pub(crate) fn has_matching_report(
+    context: &CalendarSubmitContext,
+    desired_type_code: &str,
+) -> bool {
+    context
+        .reports
+        .iter()
+        .any(|report| report.symbol_code.as_deref() == Some(desired_type_code))
+}
+
+pub(crate) async fn delete_calendar_report(
+    client: &mut HilanClient,
+    context: &CalendarSubmitContext,
+    report: &CalendarExistingReport,
+    execute: bool,
+) -> Result<(SubmitPreview, CalendarSubmitContext)> {
+    let grid_event_target = format!(
+        "{}$reportsGrid",
+        day_field_prefix(&context.employee_id, context.date)
+    );
+    let grid_dom_id = calendar_grid_dom_id(&context.employee_id, context.date);
+    let action_key = format!("{}_action", grid_dom_id.replace('_', "$"));
+    let mut replay_fields = context.fields.clone();
+    retain_browser_fields(&mut replay_fields, CALENDAR_BROWSER_FIELDS);
+
+    let sm_value = format!("{grid_event_target}_updatePanel|{grid_event_target}");
+    let event_argument = serde_json::json!({
+        "ObjectId": report.object_id,
+        "RowName": report.row_name,
+        "EmployeeId": report.employee_id,
+        "ReportDate": report.report_date_iso_utc,
+    })
+    .to_string();
+
+    let overrides = [
+        (action_key.clone(), "DELETE_ROW".to_string()),
+        ("ctl00$ms".to_string(), sm_value.clone()),
+        ("__EVENTTARGET".to_string(), grid_event_target.clone()),
+        ("__EVENTARGUMENT".to_string(), event_argument.clone()),
+        ("__ASYNCPOST".to_string(), "true".to_string()),
+        (
+            "H-XSRF-Token".to_string(),
+            replay_fields
+                .get("H-XSRF-Token")
+                .cloned()
+                .unwrap_or_default(),
+        ),
+    ];
+    let override_refs: Vec<(&str, &str)> = overrides
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let payload_display = format_form_fields_for_display(&replay_fields, &override_refs);
+
+    let preview = SubmitPreview {
+        url: context.url.clone(),
+        button_name: "__EVENTTARGET".to_string(),
+        button_value: grid_event_target.clone(),
+        employee_id: context.employee_id.clone(),
+        payload_display,
+        executed: execute,
+    };
+
+    if !execute {
+        return Ok((preview, context.clone()));
+    }
+
+    let response = client
+        .post_aspx_async_event_write(
+            &context.url,
+            &replay_fields,
+            &override_refs,
+            "ctl00$ms",
+            &sm_value,
+            &grid_event_target,
+            &event_argument,
+            false,
+        )
+        .await
+        .with_context(|| format!("delete calendar attendance row for {}", context.date))?;
+    dump_debug_html(
+        &format!("delete-response-{}", context.date.format("%Y-%m-%d")),
+        &response,
+    );
+    if let Some(message) = extract_submit_error_message(&response) {
+        bail!("Hilan rejected attendance delete: {message}");
+    }
+
+    let fields = if response.contains("<html") || response.contains("<!DOCTYPE") {
+        crate::client::parse_aspx_form_fields(&response)
+    } else {
+        let entries = crate::client::parse_aspx_delta(&response);
+        merge_delta_fields(&replay_fields, &entries)
+    };
+    let reports = parse_calendar_existing_reports(&response, &context.employee_id, context.date)
+        .unwrap_or_default();
+    Ok((
+        preview,
+        CalendarSubmitContext {
+            url: context.url.clone(),
+            date: context.date,
+            employee_id: context.employee_id.clone(),
+            fields,
+            reports,
+        },
+    ))
+}
+
+pub(crate) async fn delete_conflicting_absence_reports(
+    client: &mut HilanClient,
+    mut context: CalendarSubmitContext,
+    desired_type_code: &str,
+    execute: bool,
+) -> Result<(Vec<SubmitPreview>, CalendarSubmitContext)> {
+    let mut previews = Vec::new();
+
+    loop {
+        let Some(report) = conflicting_absence_reports(&context, desired_type_code)
+            .into_iter()
+            .next()
+        else {
+            return Ok((previews, context));
+        };
+
+        let deleted_object_id = report.object_id.clone();
+        let previous_context = context.clone();
+        let (preview, refreshed_context) =
+            delete_calendar_report(client, &context, &report, execute).await?;
+        previews.push(preview);
+        context =
+            merge_deleted_report_context(previous_context, refreshed_context, &deleted_object_id);
+    }
 }
 
 pub async fn fix_error_day(
@@ -1040,24 +1409,90 @@ pub async fn fix_error_day(
         error_type
     );
 
-    replay_submit(client, &url, submit, report_id, "שמור וסגור", execute).await
+    client.ensure_authenticated().await?;
+    let (_html, fields) = client
+        .get_aspx_form(&url)
+        .await
+        .with_context(|| format!("load form for {}", submit.date.format("%Y-%m-%d")))?;
+
+    replay_submit_with_fields(
+        client,
+        &url,
+        submit,
+        report_id,
+        "שמור וסגור",
+        execute,
+        fields,
+        SubmitPage::ErrorWizard,
+    )
+    .await
 }
 
-async fn replay_submit(
+async fn load_calendar_submit_form(
+    client: &mut HilanClient,
+    url: &str,
+    date: NaiveDate,
+) -> Result<(String, BTreeMap<String, String>)> {
+    client.ensure_authenticated().await?;
+    let (html, fields) = client
+        .get_aspx_form(url)
+        .await
+        .with_context(|| format!("load calendar form for {}", date.format("%Y-%m-%d")))?;
+    let (_html, fields) = load_month_page(client, url, html, fields, date).await?;
+    let selected_day = calendar_selected_day_value(date);
+    let month_value = month_field_value(date);
+    let response = client
+        .post_aspx_async(
+            url,
+            &fields,
+            &[
+                ("__calendarSelectedDays", selected_day.as_str()),
+                ("ctl00$mp$currentMonth", month_value.as_str()),
+            ],
+            "ctl00$ms",
+            "ctl00$mp$RefreshSelectedDays",
+        )
+        .await
+        .with_context(|| format!("select calendar day {}", date.format("%Y-%m-%d")))?;
+    dump_debug_html(
+        &format!("select-day-{}", date.format("%Y-%m-%d")),
+        &response,
+    );
+
+    let fields = if response.contains("<html") || response.contains("<!DOCTYPE") {
+        crate::client::parse_aspx_form_fields(&response)
+    } else {
+        let entries = crate::client::parse_aspx_delta(&response);
+        merge_delta_fields(&fields, &entries)
+    };
+
+    let selected_row_date = selected_row_date(&response).ok_or_else(|| {
+        anyhow!(
+            "calendar selection response for {} did not expose a selected row date",
+            date.format("%Y-%m-%d")
+        )
+    })?;
+    if selected_row_date != date {
+        bail!(
+            "calendar selection stayed on {} instead of {}",
+            selected_row_date.format("%Y-%m-%d"),
+            date.format("%Y-%m-%d")
+        );
+    }
+
+    Ok((response, fields))
+}
+
+async fn replay_submit_with_fields(
     client: &mut HilanClient,
     url: &str,
     submit: &AttendanceSubmit,
     object_id: &str,
     button_value: &str,
     execute: bool,
+    base_fields: BTreeMap<String, String>,
+    page: SubmitPage,
 ) -> Result<SubmitPreview> {
-    client.ensure_authenticated().await?;
-
-    let (_html, base_fields) = client
-        .get_aspx_form(url)
-        .await
-        .with_context(|| format!("load form for {}", submit.date.format("%Y-%m-%d")))?;
-
     // `hCurrentItemId` on the form is the long UserId (e.g., 460627).
     // The DirtyFields JSON needs the short EmployeeId (e.g., 27) from the bootstrap API.
     let bootstrap = crate::api::bootstrap(client)
@@ -1089,30 +1524,16 @@ async fn replay_submit(
     let mut replay_fields = base_fields;
     replay_fields.remove(&completion_key);
 
-    // When no hours provided, check the "completion to standard" checkbox —
-    // this tells Hilan to fill the day with the standard work hours.
-    let needs_completion = submit.entry_time.is_none() && submit.exit_time.is_none();
+    let needs_completion_dirty = submit.entry_time.is_none() && submit.exit_time.is_none();
+    // Calendar writes still need CompletionToStandard in DirtyFields for browser fidelity,
+    // but the checkbox form field itself must stay off there or Hilan narrows the type list.
+    let needs_completion_checkbox = page == SubmitPage::ErrorWizard && needs_completion_dirty;
 
     // The browser only posts ~25 specific fields on async save. Our scraper finds
     // additional hidden fields (employee strip, calendar state) that aren't submitted
     // by the browser. Drop those to match browser fidelity.
-    let browser_fields: std::collections::HashSet<&str> = [
-        "DisableTimeout",
-        "H-XSRF-Token",
-        "Time",
-        "__EVENTARGUMENT",
-        "__EVENTTARGET",
-        "__VIEWSTATE",
-        "__VIEWSTATEGENERATOR",
-        "ctl00$DummyAutoCompleteText",
-        "ctl00$DummyAutoComplete_Value",
-        "ctl00$mp$ScriptBox",
-        "ctl00$datePickerTmp$jdatePicker",
-        "ctl00_datePickerTmp_State",
-    ]
-    .into_iter()
-    .collect();
-    replay_fields.retain(|k, _| browser_fields.contains(k.as_str()) || k.starts_with(&prefix));
+    let allowlist = browser_field_allowlist(page);
+    replay_fields.retain(|key, _| allowlist.contains(&key.as_str()) || key.starts_with(&prefix));
 
     let mut overrides: Vec<(String, String)> = Vec::new();
 
@@ -1140,14 +1561,18 @@ async fn replay_submit(
         overrides.push((comment_key.clone(), String::new()));
     }
 
-    if needs_completion {
+    if needs_completion_checkbox {
         overrides.push((completion_key.clone(), "on".to_string()));
     }
 
+    let script_box_key = match page {
+        SubmitPage::Calendar => "ctl00$mp$scriptBox",
+        SubmitPage::ErrorWizard => "ctl00$mp$ScriptBox",
+    };
     overrides.push((
-        "ctl00$mp$ScriptBox".to_string(),
+        script_box_key.to_string(),
         replay_fields
-            .get("ctl00$mp$ScriptBox")
+            .get(script_box_key)
             .cloned()
             .unwrap_or_default(),
     ));
@@ -1162,7 +1587,7 @@ async fn replay_submit(
     // Build the DirtyFields JSON that Hilan requires to confirm which fields changed.
     // Without this, the server silently ignores all form field updates.
     let dirty_fields_json =
-        build_dirty_fields_json(submit, short_employee_id, object_id, needs_completion);
+        build_dirty_fields_json(submit, short_employee_id, object_id, needs_completion_dirty);
     let reports_grid_key = format!(
         "ctl00_mp_RG_Days_{}_{:04}_{:02}_reportsGrid_data",
         employee_id,
@@ -1170,11 +1595,22 @@ async fn replay_submit(
         submit.date.month()
     );
     overrides.push((reports_grid_key.clone(), dirty_fields_json));
-    overrides.push(("ReportPageMode".to_string(), "Days".to_string()));
+    overrides.push((
+        "ReportPageMode".to_string(),
+        match page {
+            SubmitPage::Calendar => "7",
+            SubmitPage::ErrorWizard => "Days",
+        }
+        .to_string(),
+    ));
     overrides.push((
         "hiddenInputToUpdateATBuffer_CommonToolkitScripts".to_string(),
         "1".to_string(),
     ));
+    if page == SubmitPage::Calendar {
+        overrides.push(("__NextBtnState".to_string(), "false".to_string()));
+        overrides.push(("__PrevBtnState".to_string(), "false".to_string()));
+    }
     // The button name/value pair (browser sends this even on async postback)
     overrides.push((button_name.clone(), button_value.to_string()));
 
@@ -1201,6 +1637,9 @@ async fn replay_submit(
             &format!("submit-response-{}", submit.date.format("%Y-%m-%d")),
             &response,
         );
+        if let Some(message) = extract_submit_error_message(&response) {
+            bail!("Hilan rejected attendance submit: {message}");
+        }
     }
 
     Ok(SubmitPreview {
@@ -1240,6 +1679,327 @@ fn build_dirty_fields_json(
         submit.date.day(),
         object_id,
     )
+}
+
+fn compose_submit_preview_steps(
+    mut final_preview: SubmitPreview,
+    earlier_steps: &[(&'static str, SubmitPreview)],
+    final_label: &'static str,
+) -> SubmitPreview {
+    if earlier_steps.is_empty() {
+        return final_preview;
+    }
+
+    let mut steps: Vec<(&str, &SubmitPreview)> = earlier_steps
+        .iter()
+        .map(|(label, preview)| (*label, preview))
+        .collect();
+    steps.push((final_label, &final_preview));
+    let rendered = render_step_list(&steps);
+    final_preview.payload_display = rendered;
+    final_preview
+}
+
+pub(crate) fn render_submit_preview_step(
+    step_number: usize,
+    label: &str,
+    preview: &SubmitPreview,
+) -> String {
+    format!(
+        "Step {step_number}: {label}\nTarget URL: {}\nButton: {} = {}\n{}",
+        preview.url, preview.button_name, preview.button_value, preview.payload_display
+    )
+}
+
+/// Render a list of labeled submit steps as a single display string joined by
+/// blank lines. Returned verbatim by both the attendance composer and the
+/// provider preview helper so the two render identical output.
+pub(crate) fn render_step_list(steps: &[(&str, &SubmitPreview)]) -> String {
+    steps
+        .iter()
+        .enumerate()
+        .map(|(index, (label, preview))| render_submit_preview_step(index + 1, label, preview))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn is_conflicting_report_error(err: &anyhow::Error) -> bool {
+    err.to_string()
+        .contains(CONFLICTING_REPORT_MESSAGE_FRAGMENT)
+}
+
+fn calendar_page_url(client: &HilanClient) -> String {
+    format!(
+        "{}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true",
+        client.base_url
+    )
+}
+
+fn calendar_grid_dom_id(employee_id: &str, date: NaiveDate) -> String {
+    format!(
+        "ctl00_mp_RG_Days_{}_{:04}_{:02}_reportsGrid",
+        employee_id,
+        date.year(),
+        date.month()
+    )
+}
+
+fn parse_calendar_existing_reports(
+    html: &str,
+    employee_id: &str,
+    date: NaiveDate,
+) -> Result<Vec<CalendarExistingReport>> {
+    let dom_rows = parse_calendar_report_rows_from_dom(html, employee_id, date)?;
+    if dom_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let data_rows = parse_row_data_entries(html, date)?;
+    let mut used = vec![false; data_rows.len()];
+    let mut reports = Vec::with_capacity(dom_rows.len());
+
+    for dom_row in dom_rows {
+        let match_idx = data_rows
+            .iter()
+            .enumerate()
+            .find(|(idx, row)| {
+                !used[*idx]
+                    && dom_row.symbol_code.as_deref()
+                        == row.symbol.as_ref().and_then(|s| s.first.as_deref())
+            })
+            .map(|(idx, _)| idx)
+            .or_else(|| used.iter().position(|is_used| !is_used));
+
+        let Some(idx) = match_idx else {
+            continue;
+        };
+        used[idx] = true;
+        let row = &data_rows[idx];
+        let report_date_iso_utc = row_data_report_date_to_iso_utc(row)
+            .ok_or_else(|| anyhow!("parse row-data report date for {}", date.format("%Y-%m-%d")))?;
+        reports.push(CalendarExistingReport {
+            object_id: row.id.clone(),
+            employee_id: row.employee_id,
+            row_name: dom_row.row_name,
+            symbol_code: dom_row
+                .symbol_code
+                .or_else(|| row.symbol.as_ref().and_then(|symbol| symbol.first.clone())),
+            symbol_name: dom_row
+                .symbol_name
+                .or_else(|| row.symbol.as_ref().and_then(|symbol| symbol.second.clone())),
+            is_absence: dom_row.is_absence,
+            report_date_iso_utc,
+        });
+    }
+
+    Ok(reports)
+}
+
+fn parse_calendar_report_rows_from_dom(
+    html: &str,
+    employee_id: &str,
+    date: NaiveDate,
+) -> Result<Vec<ParsedCalendarReportRow>> {
+    let document = Html::parse_document(html);
+    let row_selector = Selector::parse(r#"tr[id*="_EmployeeReports_row_"]"#)
+        .map_err(|e| anyhow!("selector parse error: {e}"))?;
+    let select_selector =
+        Selector::parse("select").map_err(|e| anyhow!("selector parse error: {e}"))?;
+    let option_selector =
+        Selector::parse("option").map_err(|e| anyhow!("selector parse error: {e}"))?;
+
+    let mut rows = Vec::new();
+    for row in document.select(&row_selector) {
+        let Some(row_id) = row.value().attr("id") else {
+            continue;
+        };
+        let Some(suffix) = row_id.split("_EmployeeReports_row_").nth(1) else {
+            continue;
+        };
+        let Some(select) = row.select(&select_selector).next() else {
+            continue;
+        };
+        let selected = select
+            .select(&option_selector)
+            .find(|option| option.value().attr("selected").is_some())
+            .or_else(|| {
+                select
+                    .select(&option_selector)
+                    .find(|option| option.value().attr("value").is_some_and(|v| !v.is_empty()))
+            });
+        let symbol_code = selected
+            .as_ref()
+            .and_then(|option| option.value().attr("value"))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let symbol_name = selected
+            .as_ref()
+            .map(|option| option.text().collect::<String>().trim().to_string());
+        let is_absence = selected.as_ref().and_then(|option| {
+            option
+                .value()
+                .attr("isAbsenceSymbol")
+                .or_else(|| option.value().attr("isabsencesymbol"))
+        }) == Some("true");
+
+        rows.push(ParsedCalendarReportRow {
+            row_name: delete_row_name(employee_id, date, suffix),
+            symbol_code,
+            symbol_name,
+            is_absence,
+        });
+    }
+
+    Ok(rows)
+}
+
+fn parse_row_data_entries(html: &str, date: NaiveDate) -> Result<Vec<RowDataEntry>> {
+    let row_date = format!("{}-{}-{}", date.year(), date.month(), date.day());
+    let raw = extract_row_data_json_for_date(html, &row_date)
+        .ok_or_else(|| anyhow!("missing RowData JSON for {}", date.format("%Y-%m-%d")))?;
+    let decoded: String = serde_json::from_str(&format!("\"{raw}\""))
+        .with_context(|| format!("decode RowData JSON string for {}", date.format("%Y-%m-%d")))?;
+    let rows: Vec<RowDataEntry> = serde_json::from_str(&decoded)
+        .with_context(|| format!("parse RowData array for {}", date.format("%Y-%m-%d")))?;
+    let mut unique = Vec::new();
+    for row in rows {
+        if row.is_report_deleted {
+            continue;
+        }
+        if unique
+            .iter()
+            .any(|existing: &RowDataEntry| existing.id == row.id)
+        {
+            continue;
+        }
+        unique.push(row);
+    }
+    Ok(unique)
+}
+
+fn extract_row_data_json_for_date<'a>(html: &'a str, row_date: &str) -> Option<&'a str> {
+    let needle = "RowData\":\"";
+    let row_date_needle = format!("\",\"RowDate\":\"{row_date}\"");
+    let row_date_start = html.find(&row_date_needle)?;
+    let start = html[..row_date_start].rfind(needle)?;
+    let content_start = start + needle.len();
+    Some(&html[content_start..row_date_start])
+}
+
+fn row_data_report_date_to_iso_utc(row: &RowDataEntry) -> Option<String> {
+    let raw = if row.is_range {
+        row.from_date.as_deref().unwrap_or(&row.report_date)
+    } else {
+        &row.report_date
+    };
+    aspx_json_date_to_iso_utc(raw)
+}
+
+fn aspx_json_date_to_iso_utc(raw: &str) -> Option<String> {
+    let millis = raw
+        .strip_prefix("/Date(")?
+        .strip_suffix(")/")?
+        .parse::<i64>()
+        .ok()?;
+    let dt: DateTime<Utc> = DateTime::from_timestamp_millis(millis)?;
+    Some(dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+}
+
+fn delete_row_name(employee_id: &str, date: NaiveDate, suffix: &str) -> String {
+    format!(
+        "{}$cellOf_SysColumn_Delete_EmployeeReports_row_{}$sysCol_EmployeeReports_row_{}",
+        day_field_prefix(employee_id, date),
+        suffix,
+        suffix
+    )
+}
+
+fn merge_deleted_report_context(
+    previous: CalendarSubmitContext,
+    mut refreshed: CalendarSubmitContext,
+    deleted_object_id: &str,
+) -> CalendarSubmitContext {
+    if refreshed.reports.is_empty() {
+        refreshed.reports = previous.reports;
+    }
+    refreshed
+        .reports
+        .retain(|existing| existing.object_id != deleted_object_id);
+    refreshed
+}
+
+fn merge_delta_fields(
+    base_fields: &BTreeMap<String, String>,
+    entries: &BTreeMap<(String, String), String>,
+) -> BTreeMap<String, String> {
+    let mut fields = base_fields.clone();
+
+    for ((entry_type, entry_id), content) in entries {
+        if entry_type == "hiddenField" {
+            fields.insert(entry_id.clone(), content.clone());
+        }
+    }
+
+    for ((entry_type, _), content) in entries {
+        if entry_type != "updatePanel" {
+            continue;
+        }
+        for (name, value) in parse_aspx_fragment_fields(content) {
+            fields.insert(name, value);
+        }
+    }
+
+    fields
+}
+
+fn parse_aspx_fragment_fields(fragment: &str) -> BTreeMap<String, String> {
+    let wrapped = format!(r#"<html><body><form id="aspnetForm">{fragment}</form></body></html>"#);
+    crate::client::parse_aspx_form_fields(&wrapped)
+}
+
+fn extract_submit_error_message(response: &str) -> Option<String> {
+    let entries = crate::client::parse_aspx_delta(response);
+    for ((entry_type, _), content) in &entries {
+        if entry_type == "scriptStartupBlock" || entry_type == "scriptBlock" {
+            if let Some(message) = extract_js_message(content) {
+                return Some(message);
+            }
+        }
+    }
+    extract_js_message(response)
+}
+
+fn extract_js_message(text: &str) -> Option<String> {
+    for prefix in ["alert('", "HWarning('", "HError('"] {
+        if let Some(start) = text.find(prefix) {
+            let rest = &text[start + prefix.len()..];
+            if let Some(end) = rest.find("')") {
+                return Some(rest[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
+fn selected_row_date(html: &str) -> Option<NaiveDate> {
+    // Hilan serializes RowDate without zero-padding on month/day,
+    // e.g. `"RowDate":"2026-4-9"` rather than `"2026-04-09"`. Parse manually.
+    // Use escaped quotes (not raw strings — `"#` would terminate r#"..."# early).
+    let needle = "\"RowDate\":\"";
+    let start = html.find(needle)?;
+    let rest = &html[start + needle.len()..];
+    let end = rest.find('"')?;
+    let raw = &rest[..end];
+    let parts: Vec<&str> = raw.split('-').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let (y, m, d) = (
+        parts[0].parse::<i32>().ok()?,
+        parts[1].parse::<u32>().ok()?,
+        parts[2].parse::<u32>().ok()?,
+    );
+    NaiveDate::from_ymd_opt(y, m, d)
 }
 
 fn day_field_prefix(employee_id: &str, date: NaiveDate) -> String {
@@ -1342,7 +2102,7 @@ pub fn resolve_auto_fill_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scraper::{Html, Selector};
+    use scraper::Html;
 
     #[test]
     fn test_extract_day_number_strict_time_strings() {
@@ -1381,9 +2141,8 @@ mod tests {
         ));
         let html = format!("<table><tbody>{row}</tbody></table>");
         let document = Html::parse_document(&html);
-        let top_level_cell_sel = Selector::parse(r#"tr[id$="_row_0"] > td"#).unwrap();
         let employee_wrapper_cell = document
-            .select(&top_level_cell_sel)
+            .select(&ROW_0_TOP_CELL_SEL)
             .nth(2)
             .expect("employee wrapper cell");
 
@@ -1621,5 +2380,199 @@ mod tests {
 
         assert!(json.contains("\"ObjectId\":\"report-1\""));
         assert!(!json.contains("\"CompletionToStandard\":true"));
+    }
+
+    #[test]
+    fn merge_delta_fields_applies_hidden_and_panel_updates() {
+        let base = BTreeMap::from([
+            ("__VIEWSTATE".to_string(), "old-state".to_string()),
+            ("__calendarSelectedDays".to_string(), "9596".to_string()),
+        ]);
+        let entries = BTreeMap::from([
+            (
+                ("hiddenField".to_string(), "__VIEWSTATE".to_string()),
+                "new-state".to_string(),
+            ),
+            (
+                (
+                    "updatePanel".to_string(),
+                    "ctl00_mp_calendarUpdator".to_string(),
+                ),
+                r#"<input type="hidden" name="__calendarSelectedDays" value="9598,9595" />
+                   <input type="text" name="ctl00$mp$scriptBox" value="" />"#
+                    .to_string(),
+            ),
+        ]);
+
+        let merged = merge_delta_fields(&base, &entries);
+
+        assert_eq!(
+            merged.get("__VIEWSTATE").map(String::as_str),
+            Some("new-state")
+        );
+        assert_eq!(
+            merged.get("__calendarSelectedDays").map(String::as_str),
+            Some("9598,9595")
+        );
+        assert_eq!(
+            merged.get("ctl00$mp$scriptBox").map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn extract_submit_error_message_reads_alert_from_delta() {
+        let delta =
+            "40|scriptStartupBlock|ScriptContentNoTags|alert('09/04 - קיים דיווח בזמן המדווח');|";
+
+        assert_eq!(
+            extract_submit_error_message(delta).as_deref(),
+            Some("09/04 - קיים דיווח בזמן המדווח")
+        );
+    }
+
+    #[test]
+    fn extract_submit_error_message_reads_hwarning_from_delta() {
+        let delta =
+            "35|scriptStartupBlock|ScriptContentNoTags|HWarning('יש לבחור סוג דיווח אחר');|";
+
+        assert_eq!(
+            extract_submit_error_message(delta).as_deref(),
+            Some("יש לבחור סוג דיווח אחר")
+        );
+    }
+
+    #[test]
+    fn parse_calendar_existing_reports_extracts_delete_target_metadata() {
+        let html = r#"
+            <html><body>
+                <table>
+                    <tr id="ctl00_mp_RG_Days_460627_2026_04_EmployeeReports_row_0_1">
+                        <td>
+                            <select>
+                                <option value="">בחר</option>
+                                <option selected="selected" value="481" isAbsenceSymbol="true">vacation</option>
+                            </select>
+                        </td>
+                    </tr>
+                </table>
+                <script>
+                    $create(Hilan.HilanNet.Web.Controls.HAttendanceGrid.HReportsGridRow.HReportsGridRowBehavior, {"RowData":"[{\"ID\":\"628cce48-84b5-4a3d-b507-c40169cdfefe\",\"IsRange\":false,\"EmployeeId\":27,\"ReportDate\":\"\\/Date(1775682000000)\\/\",\"IsReportDeleted\":false,\"Symbol\":{\"First\":\"481\",\"Second\":\"vacation\"}}]","RowDate":"2026-4-9"});
+                </script>
+            </body></html>
+        "#;
+
+        let reports = parse_calendar_existing_reports(
+            html,
+            "460627",
+            NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].object_id, "628cce48-84b5-4a3d-b507-c40169cdfefe");
+        assert_eq!(reports[0].employee_id, 27);
+        assert_eq!(reports[0].symbol_code.as_deref(), Some("481"));
+        assert_eq!(reports[0].symbol_name.as_deref(), Some("vacation"));
+        assert!(reports[0].is_absence);
+        assert_eq!(
+            reports[0].row_name,
+            "ctl00$mp$RG_Days_460627_2026_04$cellOf_SysColumn_Delete_EmployeeReports_row_0_1$sysCol_EmployeeReports_row_0_1"
+        );
+        assert_eq!(reports[0].report_date_iso_utc, "2026-04-08T21:00:00.000Z");
+    }
+
+    #[test]
+    fn conflicting_absence_reports_collects_all_non_matching_absence_rows() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+        let context = CalendarSubmitContext {
+            url: "https://example.test/calendar".to_string(),
+            date,
+            employee_id: "460627".to_string(),
+            fields: BTreeMap::new(),
+            reports: vec![
+                CalendarExistingReport {
+                    object_id: "keep-match".to_string(),
+                    employee_id: 27,
+                    row_name: "row-0".to_string(),
+                    symbol_code: Some("120".to_string()),
+                    symbol_name: Some("work from home".to_string()),
+                    is_absence: true,
+                    report_date_iso_utc: "2026-04-08T21:00:00.000Z".to_string(),
+                },
+                CalendarExistingReport {
+                    object_id: "delete-vacation".to_string(),
+                    employee_id: 27,
+                    row_name: "row-1".to_string(),
+                    symbol_code: Some("481".to_string()),
+                    symbol_name: Some("vacation".to_string()),
+                    is_absence: true,
+                    report_date_iso_utc: "2026-04-08T21:00:00.000Z".to_string(),
+                },
+                CalendarExistingReport {
+                    object_id: "keep-non-absence".to_string(),
+                    employee_id: 27,
+                    row_name: "row-2".to_string(),
+                    symbol_code: Some("0".to_string()),
+                    symbol_name: Some("work day".to_string()),
+                    is_absence: false,
+                    report_date_iso_utc: "2026-04-08T21:00:00.000Z".to_string(),
+                },
+                CalendarExistingReport {
+                    object_id: "delete-sick".to_string(),
+                    employee_id: 27,
+                    row_name: "row-3".to_string(),
+                    symbol_code: Some("999".to_string()),
+                    symbol_name: Some("sick".to_string()),
+                    is_absence: true,
+                    report_date_iso_utc: "2026-04-08T21:00:00.000Z".to_string(),
+                },
+            ],
+        };
+
+        let reports = conflicting_absence_reports(&context, "120");
+        let object_ids = reports
+            .iter()
+            .map(|report| report.object_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(object_ids, vec!["delete-vacation", "delete-sick"]);
+    }
+
+    #[test]
+    fn parse_row_data_entries_uses_row_data_for_requested_date() {
+        let html = r#"
+            <script>
+                $create(Hilan.HilanNet.Web.Controls.HAttendanceGrid.HReportsGridRow.HReportsGridRowBehavior, {"RowData":"[{\"ID\":\"first-row\",\"IsRange\":false,\"EmployeeId\":27,\"ReportDate\":\"\\/Date(1775595600000)\\/\",\"IsReportDeleted\":false,\"Symbol\":{\"First\":\"481\",\"Second\":\"vacation\"}}]","RowDate":"2026-4-8"});
+                $create(Hilan.HilanNet.Web.Controls.HAttendanceGrid.HReportsGridRow.HReportsGridRowBehavior, {"RowData":"[{\"ID\":\"second-row\",\"IsRange\":false,\"EmployeeId\":27,\"ReportDate\":\"\\/Date(1775682000000)\\/\",\"IsReportDeleted\":false,\"Symbol\":{\"First\":\"120\",\"Second\":\"work from home\"}}]","RowDate":"2026-4-9"});
+            </script>
+        "#;
+
+        let rows = parse_row_data_entries(html, NaiveDate::from_ymd_opt(2026, 4, 9).unwrap())
+            .expect("parse requested row data");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "second-row");
+        assert_eq!(
+            rows[0]
+                .symbol
+                .as_ref()
+                .and_then(|symbol| symbol.first.as_deref()),
+            Some("120")
+        );
+    }
+
+    #[test]
+    fn delete_action_key_matches_browser_shape() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+        let action_key = format!(
+            "{}_action",
+            calendar_grid_dom_id("460627", date).replace('_', "$")
+        );
+
+        assert_eq!(
+            action_key,
+            "ctl00$mp$RG$Days$460627$2026$04$reportsGrid_action"
+        );
     }
 }

@@ -1,75 +1,87 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is for coding agents and maintainers working in this repository.
 
-## What this is
+## Read This First
 
-Rust CLI + Claude Code plugin for automating Hilanet (Israeli HR/attendance system). Reverse-engineered protocol — two layers:
-1. **ASP.NET WebForms** (`.aspx`) — parse hidden fields, replay full form POST
-2. **ASMX JSON API** (`/Services/Public/WS/*.asmx/*`) — direct JSON RPC
+- [README.md](README.md): user-facing install and usage
+- [ARCHITECTURE.md](ARCHITECTURE.md): crate boundaries and maintenance map
+- [PROTOCOL.md](PROTOCOL.md): Hilanet wire behavior and replay details
+- [skills/shaon/SKILL.md](skills/shaon/SKILL.md): Claude Code skill text
 
-See `@PROTOCOL.md` for endpoint details. See `@skills/shaon/SKILL.md` for CLI command reference.
+Do not duplicate hard-coded command or tool counts in docs unless the count itself matters. The authoritative user-facing surfaces are:
 
-## Build & run
+- CLI subcommands: `crates/shaon-cli/src/lib.rs`
+- MCP tools: `crates/shaon-mcp/src/lib.rs`
+- Claude Code plugin metadata: `.claude-plugin/plugin.json`
+- Claude Code skill text: `skills/shaon/SKILL.md`
+
+## What This Repo Is
+
+Rust workspace for automating Hilan / Hilanet through:
+
+1. a human-facing CLI
+2. a stdio MCP server
+3. a Claude Code plugin / skill
+
+The protocol has two layers:
+
+1. ASP.NET WebForms (`.aspx`) for calendar pages, error-fix flows, and classic reports
+2. ASMX JSON endpoints (`/Services/Public/WS/*.asmx/*`) for bootstrap, absences, tasks, and salary data
+
+## Build and Checks
 
 ```bash
-cargo build -p shaon --release       # build the CLI binary
-cargo test --workspace --all-targets  # run all tests across workspace
-cargo clippy --workspace --all-targets -- -D warnings  # lint
-cargo fmt --all -- --check            # format check
-scripts/run.sh <subcommand> [args]    # smart-rebuild wrapper (caches + codesigns on macOS)
+cargo build -p shaon --release
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+scripts/run.sh <subcommand> [args]
 ```
 
-Requires Rust 1.80+ (edition 2021).
+Rust requirement: 1.80+.
 
-## Workspace architecture
+## Workspace Structure
 
-Multi-crate workspace with provider abstraction:
-
-```
+```text
 crates/
-├── hr-core/          — Provider-agnostic traits, DTOs, use-cases (no HTTP/Hilan deps)
-├── provider-hilan/   — Hilan implementation: HTTP client, session, parsing, config
-├── shaon-cli/        — CLI frontend (clap commands, rendering)
-└── shaon-mcp/        — MCP server frontend (rmcp tools)
+├── hr-core/        provider-agnostic traits, DTOs, and use-cases
+├── provider-hilan/ Hilan-specific transport, parsing, config, and session logic
+├── shaon-cli/      clap CLI frontend
+└── shaon-mcp/      rmcp stdio server frontend
 ```
 
-Root `src/` is a thin compatibility facade re-exporting the workspace crates.
+Root `src/` is a compatibility facade re-exporting the workspace crates.
 
-### hr-core (generic layer)
-- `AttendanceProvider` trait — identity, calendar, types, submit, fix
-- `SalaryProvider`, `PayslipProvider`, `ReportProvider`, `AbsenceProvider` — optional capabilities
-- Domain DTOs: `CalendarDay`, `MonthCalendar`, `AttendanceType`, `AttendanceChange`, `WritePreview`, `FixTarget`, `SalarySummary`
-- Use-cases: `build_overview`, `fill_range`, `auto_fill`, `resolve_attendance_type` — provider-agnostic orchestration
+## Safety Model
 
-### provider-hilan (Hilan adapter)
-- `HilanProvider` implements all core traits
-- `HilanClient` — reqwest with cookie jar, session reuse, retry, encrypted cookie persistence
-- ASP.NET form replay + ASMX JSON calls
-- Config at `~/.shaon/config.toml`, keychain via `keyring` crate
+- All writes default to preview
+- CLI requires `--execute` for live submission
+- MCP requires `execute: true` for live submission
+- `fill` / `auto-fill` skip Fri/Sat unless explicitly overridden
+- State-changing requests must not be retried automatically
 
-### shaon-cli + shaon-mcp (frontends)
-- CLI: 19 clap subcommands, `--json` output, `--verbose`/`--quiet`
-- MCP: 12 tools via rmcp 1.3 stdio transport, dry-run default
+## Documentation Maintenance
 
-## Safety model
+If you change user-visible behavior, update the docs in the same patch:
 
-All write commands default to **dry-run**. `--execute` required for live submission. `fill`/`auto-fill` skip weekends (Fri/Sat) unless `--include-weekends`. `auto-fill` has `--max-days` safety cap (default 10).
+- CLI behavior or examples: `README.md`, `skills/shaon/SKILL.md`
+- MCP tools or schemas: `README.md`
+- crate boundaries or ownership: `ARCHITECTURE.md`
+- wire behavior or endpoint assumptions: `PROTOCOL.md`
+- contributor workflow or required checks: `CONTRIBUTING.md`
 
-## Adding a new command
+When possible, document stable concepts instead of fragile counts.
 
-1. Add use-case in `crates/hr-core/src/use_cases.rs` if it's provider-agnostic
-2. Add trait method in hr-core if needed
-3. Implement in `crates/provider-hilan/src/provider.rs`
-4. Add CLI command in `crates/shaon-cli/src/lib.rs`
-5. Add MCP tool in `crates/shaon-mcp/src/lib.rs` if appropriate
-6. Add `--json` support and tests
+## Design Principles
 
-## Design principles
+- No backwards-compatibility shims unless explicitly requested
+- No `#[serde(default)]` to paper over required data migrations
+- Prefer changing the clean API directly over carrying migration layers
 
-- **No backwards compatibility** unless explicitly requested. Prefer pristine implementations over migration shims, deprecation wrappers, or compatibility layers. If a type or API needs to change, change it directly.
-- **No `#[serde(default)]` for migration**. If a field is required, make it required. Don't add defaults just to avoid breaking old serialized data.
+## Credentials and macOS Notes
 
-## Credentials
-
-Stored in OS keychain (`shaon-cli` service). Session cookies encrypted at rest (AES-256-GCM, random DEK in keychain). Binary must be codesigned with stable identifier (`com.avivsinai.shaon`) for silent macOS keychain access. Environment variables `SHAON_PASSWORD` and `SHAON_SESSION_KEY` bypass keychain access for headless/CI environments.
+- Passwords live in the OS keychain by default (`shaon-cli` service)
+- Session cookies are encrypted at rest with AES-256-GCM
+- `SHAON_PASSWORD` and `SHAON_SESSION_KEY` are the headless / CI escape hatches
+- On macOS, `scripts/run.sh` uses the stable local signing identity from `scripts/setup-codesign.sh` when available

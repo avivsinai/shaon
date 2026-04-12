@@ -1,6 +1,14 @@
 # Hilanet Protocol Map
 
-Deep reverse-engineering of Taboola's Hilanet instance at `https://taboola.net.hilan.co.il`.
+Low-level reverse-engineering notes for shaon's Hilanet integration. This is the wire-format document, not the user guide.
+
+Read these first if you want the higher-level view:
+
+- [README.md](README.md) for install and usage
+- [ARCHITECTURE.md](ARCHITECTURE.md) for crate boundaries and runtime flows
+- [CLAUDE.md](CLAUDE.md) for maintainer instructions
+
+Examples below come from Taboola's Hilanet instance at `https://taboola.net.hilan.co.il`, but the same patterns are intended to generalize across subdomains.
 
 ## Auth
 
@@ -8,7 +16,9 @@ Deep reverse-engineering of Taboola's Hilanet instance at `https://taboola.net.h
 ```
 GET https://{subdomain}.hilan.co.il/
 ```
-Parse `"OrgId":"(\d+)"` from HTML/JS. Taboola OrgId embedded in page source.
+Parse `"OrgId":"(\d+)"` from HTML/JS.
+
+This is only needed before authentication, to submit the initial login request. Once authenticated, shaon prefers `HEmployeeStripApiapi.asmx/GetData` as the authoritative source of `OrganizationId`, `UserId`, and `EmployeeId`.
 
 ### Login
 ```
@@ -192,6 +202,8 @@ GET /Hilannetv2/PersonalFile/PdfPaySlip.aspx?Date=01/{MM}/{YYYY}&UserId={orgId}{
 ```
 Returns raw PDF. Validate first 4 bytes = `%PDF`.
 
+In the current implementation, the authenticated payslip path gets `orgId` from bootstrap (`GetData`) rather than scraping it from the homepage again.
+
 ### Payslip Range Print
 ```
 GET /Hilannetv2/PersonalFile/PaySlipRangePrint.aspx
@@ -276,6 +288,14 @@ Angular SPA. Uses ASMX API:
 ## Reports (read-only, via repAttendanceviewerGeneric.aspx)
 
 All at: `/Hilannetv2/Reports/repAttendanceviewerGeneric.aspx?reportName=`
+
+The backing UI is Microsoft SSRS / ReportViewer.
+
+Current shaon behavior:
+
+- `report <name>` does a direct GET and parses the first meaningful HTML table from the response
+- it does **not** yet drive the full ReportViewer export flow (`OpType=Export&Format=CSV` / `EXCELOPENXML`)
+- bulk date-range export over the ReportViewer session/control ID path is researched but not implemented yet
 
 | reportName | Hebrew | Description |
 |------------|--------|-------------|

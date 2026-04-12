@@ -23,6 +23,8 @@ The repo is a Cargo workspace. `crates/hr-core` holds the provider-agnostic
 surface, `crates/provider-hilan` contains the Hilan implementation, and the
 root `shaon` package is the compatibility facade plus binary entrypoint.
 
+For the high-level code map, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Commit Conventions
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/):
@@ -65,6 +67,18 @@ Keep the subject line under 72 characters. Use the body for context on *why*, no
 - Follow `rustfmt` defaults (no custom config).
 - All public items should have doc comments.
 - Avoid `unwrap()` in library code; use `anyhow::Result` and `bail!`/`?`.
+
+## Documentation Checklist
+
+If your change affects user-visible behavior, update the docs in the same PR:
+
+- `README.md` for install, setup, CLI, MCP, and Claude Code usage
+- `ARCHITECTURE.md` for crate boundaries or runtime-surface changes
+- `PROTOCOL.md` for wire-level endpoint or replay behavior
+- `skills/shaon/SKILL.md` for Claude Code skill usage or trigger changes
+- `CLAUDE.md` when maintainer / coding-agent instructions change
+
+Prefer stable descriptions over fragile hard-coded counts.
 
 ## Safety
 
