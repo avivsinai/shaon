@@ -152,11 +152,7 @@ jobs:
 
             def caveats
               <<~EOS
-                macOS note:
-                  shaon release binaries are ad-hoc signed in CI for Keychain access.
-                  macOS may ask you to re-approve Keychain access after upgrades because the code hash changes.
-                  For advanced unattended automation, prefer SHAON_PASSWORD and SHAON_MASTER_KEY.
-                  For a stable local signing identity, build from source and run scripts/setup-codesign.sh once.
+                macOS may ask you to re-approve Keychain access after upgrades.
               EOS
             end
 

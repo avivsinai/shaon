@@ -193,15 +193,7 @@ else
   printf 'Direct path: %s/shaon\n' "$INSTALL_DIR"
 fi
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  printf '\nmacOS note:\n'
-  printf '  Release binaries are ad-hoc signed in CI for Keychain access.\n'
-  printf '  macOS may ask you to re-approve Keychain access after each upgrade.\n'
-  printf '  For advanced unattended automation, prefer SHAON_PASSWORD and SHAON_MASTER_KEY.\n'
-fi
-
 printf '\nNext steps:\n'
-printf '  # If upgrading from <= v0.7.0, run auth once to refresh the keychain entry.\n'
 printf '  shaon auth\n'
 printf '  shaon attendance overview\n'
 printf '  shaon payroll payslip download --month YYYY-MM\n'

@@ -57,30 +57,17 @@ pub struct PendingStoredCredentials {
     config: Config,
     password: String,
     local_master_key: [u8; LOCAL_MASTER_KEY_LEN],
-    clear_plaintext_password: bool,
 }
 
 impl PendingStoredCredentials {
-    pub fn login_config(&self) -> Config {
-        let mut config = self.config.clone();
-        config.password = Some(self.password.clone());
-        config
+    pub fn password(&self) -> &str {
+        &self.password
     }
 
-    pub fn commit(mut self) -> Result<Config> {
+    pub fn commit(self) -> Result<Config> {
         self.config
             .store_credentials(&self.password, &self.local_master_key)?;
-
-        if self.clear_plaintext_password {
-            self.config.password = None;
-            self.config
-                .save()
-                .context("rewrite config without password")?;
-            set_file_permissions_600(&config_path());
-            eprintln!("Password migrated to OS keychain and removed from config file.");
-        } else {
-            eprintln!("Credentials stored in OS keychain.");
-        }
+        eprintln!("Credentials stored in OS keychain.");
 
         Ok(self.config.clone())
     }
@@ -122,8 +109,8 @@ impl Config {
 
         if config.password.is_some() {
             eprintln!(
-                "warning: password found in config file (plaintext). \
-                 Run `shaon auth --migrate` to move it to the OS keychain."
+                "warning: plaintext password found in config file. \
+                 It is ignored; run `shaon auth` to store credentials in the OS keychain."
             );
         }
 
@@ -139,19 +126,13 @@ impl Config {
             return Ok(SecretString::from(credentials.password));
         }
 
-        match &self.password {
-            Some(pw) => {
-                eprintln!(
-                    "warning: using plaintext password from config. \
-                     Run `shaon auth --migrate` to move it to the OS keychain."
-                );
-                Ok(SecretString::from(pw.clone()))
-            }
-            None => bail!(
-                "No password found. Set SHAON_PASSWORD env var, run `shaon auth`, \
-                 or add password to ~/.shaon/config.toml"
-            ),
+        if self.password.is_some() {
+            bail!(
+                "Plaintext password found in config.toml. Re-run `shaon auth` to store verified credentials."
+            );
         }
+
+        bail!("No password found. Run `shaon auth` or set SHAON_PASSWORD for headless use")
     }
 
     pub fn get_local_master_key(&self) -> Result<[u8; LOCAL_MASTER_KEY_LEN]> {
@@ -179,19 +160,7 @@ impl Config {
             config: self.clone(),
             password,
             local_master_key,
-            clear_plaintext_password: false,
         }
-    }
-
-    pub fn prepare_migration(&self) -> Result<PendingStoredCredentials> {
-        let pw = match &self.password {
-            Some(pw) => pw.clone(),
-            None => bail!("No plaintext password in config to migrate"),
-        };
-
-        let mut pending = self.prepare_stored_credentials(pw);
-        pending.clear_plaintext_password = true;
-        Ok(pending)
     }
 
     pub fn store_credentials(
@@ -220,13 +189,6 @@ impl Config {
             return Ok(None);
         };
         parse_stored_credentials(&raw).map(Some)
-    }
-
-    fn save(&self) -> Result<()> {
-        let path = config_path();
-        let content = toml::to_string_pretty(self).context("serialize config")?;
-        fs::write(&path, content).with_context(|| format!("write {}", path.display()))?;
-        Ok(())
     }
 
     #[allow(dead_code)]
@@ -369,21 +331,6 @@ fn check_file_permissions(path: &Path) {
 #[cfg(not(unix))]
 fn check_file_permissions(_path: &Path) {}
 
-#[cfg(unix)]
-fn set_file_permissions_600(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = std::fs::Permissions::from_mode(0o600);
-    if let Err(e) = fs::set_permissions(path, perms) {
-        eprintln!(
-            "warning: could not set permissions on {}: {e}",
-            path.display()
-        );
-    }
-}
-
-#[cfg(not(unix))]
-fn set_file_permissions_600(_path: &Path) {}
-
 fn print_setup_instructions(path: &Path) {
     eprintln!("shaon: config file not found.");
     eprintln!();
@@ -408,7 +355,6 @@ mod tests {
     use super::*;
     use secrecy::ExposeSecret;
     use std::ffi::OsString;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct EnvGuard {
         home: Option<OsString>,
@@ -457,17 +403,6 @@ mod tests {
 
     fn clear_test_keyring_store() {
         test_keyring_store().lock().unwrap().clear();
-    }
-
-    fn temp_home_dir(tag: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "shaon-config-test-{tag}-{}-{unique}",
-            std::process::id()
-        ))
     }
 
     #[test]
@@ -541,16 +476,36 @@ mod tests {
 
         std::env::set_var("SHAON_PASSWORD", "");
 
+        let config = unique_config("empty-env");
+        config
+            .store_credentials("stored-password", &[0x33; LOCAL_MASTER_KEY_LEN])
+            .unwrap();
+
+        let password = config.get_password().unwrap();
+        assert_eq!(password.expose_secret(), "stored-password");
+    }
+
+    #[test]
+    fn get_password_rejects_plaintext_config_password() {
+        let _env_guard = test_env_lock().lock().unwrap();
+        let _saved_env = preserve_env();
+        clear_test_keyring_store();
+
         let config = Config {
-            subdomain: format!("acme-{}", std::process::id()),
-            username: format!("user-{}", std::process::id()),
-            password: Some("fallback-password".to_string()),
+            subdomain: "acme".to_string(),
+            username: "12345".to_string(),
+            password: Some("oldpass".to_string()),
             payslip_folder: None,
             payslip_format: None,
         };
 
-        let password = config.get_password().unwrap();
-        assert_eq!(password.expose_secret(), "fallback-password");
+        let err = config
+            .get_password()
+            .expect_err("plaintext config password should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("Re-run `shaon auth` to store verified credentials"));
     }
 
     #[test]
@@ -609,85 +564,12 @@ mod tests {
         let config = unique_config("fresh-auth");
         let pending = config.prepare_stored_credentials("wrong-password".to_string());
 
-        assert_eq!(
-            pending
-                .login_config()
-                .get_password()
-                .unwrap()
-                .expose_secret(),
-            "wrong-password"
-        );
+        assert_eq!(pending.password(), "wrong-password");
 
         drop(pending);
 
         assert!(config.load_stored_credentials().unwrap().is_none());
         assert!(config.get_password().is_err());
-    }
-
-    #[test]
-    fn migrate_wrong_password_keeps_plaintext_fallback_until_commit() {
-        let _env_guard = test_env_lock().lock().unwrap();
-        let _saved_env = preserve_env();
-        clear_test_keyring_store();
-
-        let config = Config {
-            subdomain: format!("acme-{}", std::process::id()),
-            username: "12345".to_string(),
-            password: Some("wrong-password".to_string()),
-            payslip_folder: None,
-            payslip_format: None,
-        };
-        let pending = config.prepare_migration().expect("prepare migration");
-
-        assert_eq!(
-            pending
-                .login_config()
-                .get_password()
-                .unwrap()
-                .expose_secret(),
-            "wrong-password"
-        );
-
-        drop(pending);
-
-        assert_eq!(config.password.as_deref(), Some("wrong-password"));
-        assert!(config.load_stored_credentials().unwrap().is_none());
-    }
-
-    #[test]
-    fn migration_commit_rewrites_config_without_password() {
-        let _env_guard = test_env_lock().lock().unwrap();
-        let _saved_env = preserve_env();
-        clear_test_keyring_store();
-
-        let home = temp_home_dir("migration-commit");
-        let shaon_dir = home.join(".shaon");
-        fs::create_dir_all(&shaon_dir).expect("create config dir");
-        std::env::set_var("HOME", &home);
-
-        let config = Config {
-            subdomain: "acme".to_string(),
-            username: "12345".to_string(),
-            password: Some("plaintext-password".to_string()),
-            payslip_folder: None,
-            payslip_format: None,
-        };
-
-        let persisted = config
-            .prepare_migration()
-            .expect("prepare migration")
-            .commit()
-            .expect("commit migration");
-
-        assert!(persisted.password.is_none());
-        assert_eq!(
-            persisted.get_password().unwrap().expose_secret(),
-            "plaintext-password"
-        );
-
-        let saved = fs::read_to_string(config_path()).expect("read saved config");
-        assert!(!saved.contains("password"));
-        assert!(!saved.contains("plaintext-password"));
     }
 
     #[test]
