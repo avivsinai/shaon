@@ -222,6 +222,11 @@ impl HilanClient {
 
     /// Log in to Hilan with credentials, even if cached cookies exist.
     pub async fn login(&mut self) -> Result<()> {
+        let secret = self.config.get_password()?;
+        self.login_with_password(secret.expose_secret()).await
+    }
+
+    pub async fn login_with_password(&mut self, password: &str) -> Result<()> {
         if self.org_id.is_none() {
             self.fetch_org_id().await?;
         }
@@ -233,8 +238,7 @@ impl HilanClient {
         );
 
         tracing::debug!("POST {}", url);
-        let secret = self.config.get_password()?;
-        let mut pw = secret.expose_secret().to_string();
+        let mut pw = password.to_string();
 
         let form = [
             ("username", self.config.username.as_str()),
@@ -1444,10 +1448,13 @@ mod tests {
         let config = Config {
             subdomain: "acme".to_string(),
             username: "12345".to_string(),
-            password: Some("s3cret".to_string()),
+            password: None,
             payslip_folder: None,
             payslip_format: None,
         };
+        config
+            .store_credentials("s3cret", &[0x44; LOCAL_MASTER_KEY_LEN])
+            .unwrap();
         let cookie_store = Arc::new(CookieStoreMutex::new(cookie_store::CookieStore::default()));
         let client = reqwest::Client::builder()
             .cookie_provider(cookie_store.clone())

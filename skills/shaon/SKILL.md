@@ -35,8 +35,6 @@ If installed globally:
 shaon <command> [args]
 ```
 
-On macOS, `scripts/run.sh` is the safest local path because it rebuilds and reuses the signed cached binary.
-
 ## First-Time Setup
 
 Create `~/.shaon/config.toml`:
@@ -44,7 +42,6 @@ Create `~/.shaon/config.toml`:
 ```toml
 subdomain = "mycompany"
 username = "123456789"
-# password lives in the keychain, not here
 payslip_folder = "/path/to/payslips"   # optional
 payslip_format = "%Y-%m.pdf"           # optional
 ```
@@ -53,12 +50,6 @@ Then authenticate:
 
 ```bash
 shaon auth
-```
-
-If the config still contains a plaintext password:
-
-```bash
-shaon auth --migrate
 ```
 
 ## Pick The Right Read Command
@@ -164,8 +155,6 @@ shaon payroll payslip password
 
 - **CAPTCHA**: the user must solve it in the browser first.
 - **Type resolution fails**: run `shaon cache refresh attendance-types` or pass the numeric type code directly.
-- **Keychain prompts on macOS**: prefer `scripts/run.sh`; for stable local signing run `scripts/setup-codesign.sh` once.
-- **Advanced headless automation**: use `SHAON_PASSWORD` and `SHAON_MASTER_KEY`.
 - **Session expired**: rerun `shaon auth` if automatic reauthentication is not enough.
 
 ## Further Reading
