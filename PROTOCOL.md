@@ -174,8 +174,7 @@ H-XSRF-Token is present as a hidden field on .aspx pages but currently always em
 | `HGeneralApiapi.asmx/GetAppInitialData` | App bootstrap — menu structure, user info, last login |
 | `HGeneralApiapi.asmx/GetItemState` | Current employee state |
 | `HAbsencesApiapi.asmx/GetInitialData` | Absences page — symbols, table columns, balances |
-| `HEmployeeStripApiapi.asmx/GetData` | Employee strip data |
-| `HEmployeeStripApiapi.asmx/GetStripList` | Employee list for managers |
+| `HEmployeeStripApiapi.asmx/GetData` | Employee strip data for the user's own account |
 | `HHomeTasksApiapi.asmx/GetTasksInitialCount` | Error/task count on home page |
 | `HHomeTasksApiapi.asmx/GetTasksCount` | Detailed task count |
 | `HHomeTasksApiapi.asmx/GetReminderCount` | Reminder count |
@@ -230,64 +229,31 @@ May require `__VIEWSTATE` from initial GET. Response: HTML table with `tr.RSGrid
 
 ---
 
-## Other Observed Pages
+## Other Observed Pages — In Scope
 
-Observed protocol notes only. Manager, approver, roster, and other multi-user/admin flows are not exposed by shaon today and remain out of scope for OSS contributions unless the project scope changes explicitly.
+Pages shaon's shipped commands actually interact with.
 
 ### Analyzed Sheet (גיליון מנותח)
 ```
 /Hilannetv2/Attendance/HoursAnalysis.aspx
 ```
-Read-only view of calculated attendance data.
+Read-only view of calculated own attendance data. Surfaced as `reports sheet`.
 
 ### Correction Log (יומן תיקונים)
 ```
 /Hilannetv2/Attendance/HoursReportLog.aspx
 ```
-Log of all attendance corrections made.
-
-### Attendance Approval (אישור נוכחות)
-```
-/Hilannetv2/Attendance/AttendanceApproval.aspx
-```
-Manager approval of employee attendance.
+Log of attendance corrections the user made on their own account. Surfaced as `reports corrections`.
 
 ### Absences (היעדרויות)
 ```
 /Hilannetv2/ng/attendance/absences
 ```
-Angular SPA. Uses ASMX API:
-- `HAbsencesApiapi.asmx/GetInitialData` — symbols, table config, balances
-- Likely more endpoints for submitting/canceling absence requests
-
-### Payments & Deductions (תשלומים וניכויים)
-```
-/Hilannetv2/ng/personal-file/payments-and-deductions
-```
-
-### Personal Details (פרטים אישיים)
-```
-/Hilannetv2/PersonalFile/PersonalDetails.aspx?moduleId=1
-```
-
-### Tasks (משימות לטיפולי)
-```
-/Hilannetv2/Management/TasksOfEmployee.aspx
-```
-
-### File Management (ניהול קבצים)
-```
-/Hilannetv2/ng/management/files-management/general
-```
-
-### Meals Report (דיווח ארוחות)
-```
-/Hilannetv2/Attendance/HMealsReport.aspx
-```
+Angular SPA. Surfaced as `attendance absences` via `HAbsencesApiapi.asmx/GetInitialData` — symbols and balances for the user's own account.
 
 ---
 
-## Reports (read-only, via repAttendanceviewerGeneric.aspx)
+## Reports (read-only, self-service)
 
 All at: `/Hilannetv2/Reports/repAttendanceviewerGeneric.aspx?reportName=`
 
@@ -296,43 +262,25 @@ The backing UI is Microsoft SSRS / ReportViewer.
 Current shaon behavior:
 
 - `reports show <name>` does a direct GET and parses the first meaningful HTML table from the response
-- it does **not** yet drive the full ReportViewer export flow (`OpType=Export&Format=CSV` / `EXCELOPENXML`)
-- bulk date-range export over the ReportViewer session/control ID path is researched but not implemented yet
+- it does **not** drive the full ReportViewer export flow (`OpType=Export&Format=CSV` / `EXCELOPENXML`)
+- bulk date-range export is out of scope for the current `reports show` implementation
+
+Self-service report names accepted by `reports show`:
 
 | reportName | Hebrew | Description |
 |------------|--------|-------------|
-| `AbsenceReportNEW` | דיווחי נוכחות היעדרות | Absence reports |
-| `AllReportNEW` | נוכחות והיעדרות מרוכז | Combined attendance & absence |
-| `MissingReportNEW` | דיווחי נוכחות חסרים | Missing attendance reports |
-| `ErrorsReportNEW` | דיווחים שגויים | Error reports |
-| `VerifyMissingReportNEW` | דיווחים לא מאושרים | Unapproved reports |
-| `ManualReportingReportNEW` | יומן תיקונים | Correction log |
-| `ManualReportingTotalNEW` | יומן תיקונים מסוכם | Summarized correction log |
-| `AttendanceStatusReportNew2` | סטטוס נוכחות | Attendance status |
-| `CalculateAttendanceData908NEW` | נוכחות מחושבים חודשי | Monthly calculated |
-| `CalculateAttendanceData918NEW` | נוכחות מחושבים יומי | Daily calculated |
-| `Manager215ReportNEW1` | העדרויות | Absences |
-| `ManagerApprovalNEW` | דוח עובדים ומאשרים | Employee & approver report |
-| `MealsReportNEW` | דוח ארוחות ברמת עובד | Employee meals report |
-| `DelegatorReportNEW` | דוח האצלות סמכות | Delegation report |
-| `HREmplAddressNEW` | אלפון עובדים | Employee phonebook |
-| `HREmplBirthDate` | ימי הולדת | Birthdays |
-| `HREmplRank&mode=2` | מצבת עובדים | Employee roster |
-
-### Regulation Reports:
-| reportName | Description |
-|------------|-------------|
-| `RegulationVacationNEW` | Consecutive vacation exceptions |
-| `RegulationExceptionalWeeklyHoursNew` | Weekly hours exceptions |
-| `RegulationExceptionalDailyHoursNEW` | Daily hours exceptions |
-| `RegulationWorkingHoursOfRestNEW` | Working during weekly rest |
-| `RegulationBreakBetweenShiftsNEW` | Break between shifts |
-| `RegulationExceptionalNightHoursNEW` | Night work |
-| `RegulationTrackingWeeklyHoursNEW` | Weekly hours tracking |
+| `AbsenceReportNEW` | דיווחי נוכחות היעדרות | Own absence reports |
+| `AllReportNEW` | נוכחות והיעדרות מרוכז | Combined own attendance & absence |
+| `MissingReportNEW` | דיווחי נוכחות חסרים | Missing own attendance reports |
+| `ErrorsReportNEW` | דיווחים שגויים | Own attendance error reports |
+| `ManualReportingReportNEW` | יומן תיקונים | Own correction log |
+| `ManualReportingTotalNEW` | יומן תיקונים מסוכם | Summarized own correction log |
+| `AttendanceStatusReportNew2` | סטטוס נוכחות | Own attendance status |
+| `CalculateAttendanceData908NEW` | נוכחות מחושבים חודשי | Own monthly calculated |
+| `CalculateAttendanceData918NEW` | נוכחות מחושבים יומי | Own daily calculated |
 
 ---
 
-## Excluded (yearly/one-time forms)
-- Form 101: `/Hilannetv2/ng/form-101/personal-details`
-- Form 106: `/Hilannetv2/ng/personal-file/form-106`
-- Loan report: `/Hilannetv2/Reports/RepCalculated.aspx?reportName=LEV_AlvaaStatus`
+## Out of scope
+
+shaon is a single-user self-service tool. Multi-user, manager, approver, roster, employee-directory, file-management, payment-deduction, regulation-exception, and yearly tax-form surfaces of Hilanet exist but are explicitly out of scope. They are not documented here. Adding them would require a project-scope change first; see [CONTRIBUTING.md](CONTRIBUTING.md).

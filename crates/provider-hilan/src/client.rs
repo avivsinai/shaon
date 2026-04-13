@@ -79,6 +79,12 @@ pub struct SalarySummary {
     pub percent_diff: Option<f64>,
 }
 
+struct TextResponse {
+    status: reqwest::StatusCode,
+    final_url: String,
+    body: String,
+}
+
 #[derive(Deserialize)]
 struct LoginResponse {
     #[serde(rename = "IsFail")]
@@ -383,6 +389,12 @@ impl HilanClient {
         }
 
         fs::write(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 600 {}", path.display()))?;
+        }
 
         Ok(PayslipDownload {
             month,
@@ -590,14 +602,17 @@ impl HilanClient {
         ));
 
         tracing::debug!("POST {} ({} form fields)", url, form.len());
-        let (status, text) = self
+        let response = self
             .send_with_retry("POST salary summary", true, |c| c.post(url).form(&form))
             .await?;
-        if !status.is_success() {
-            bail!("Salary summary request failed with HTTP {}", status);
+        if !response.status.is_success() {
+            bail!(
+                "Salary summary request failed with HTTP {}",
+                response.status
+            );
         }
 
-        Ok(text)
+        Ok(response.body)
     }
 
     fn parse_salary_summary(&self, html: &str, months: Vec<NaiveDate>) -> Result<SalarySummary> {
@@ -642,7 +657,7 @@ impl HilanClient {
     /// automatic re-authentication on session expiry.
     ///
     /// `build_request` is called on each attempt to produce a fresh `RequestBuilder`
-    /// (since `send()` consumes it). Returns `(StatusCode, response_body)`.
+    /// (since `send()` consumes it). Returns the final HTTP status, URL, and body.
     ///
     /// When `retryable` is `false` the request is sent exactly once — no retries
     /// on transient errors and no re-login on session expiry. Use `false` for
@@ -655,7 +670,7 @@ impl HilanClient {
         label: &str,
         retryable: bool,
         build_request: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
-    ) -> Result<(reqwest::StatusCode, String)> {
+    ) -> Result<TextResponse> {
         const MAX_RETRIES: u32 = 3;
 
         let mut attempt = 0u32;
@@ -695,6 +710,7 @@ impl HilanClient {
                         continue;
                     }
                     let status = resp.status();
+                    let final_url = resp.url().to_string();
                     if retryable && is_transient_status(status) && attempt < MAX_RETRIES {
                         attempt += 1;
                         retry_backoff(attempt, MAX_RETRIES).await;
@@ -704,7 +720,11 @@ impl HilanClient {
                         .text()
                         .await
                         .with_context(|| format!("read body from {label}"))?;
-                    return Ok((status, body));
+                    return Ok(TextResponse {
+                        status,
+                        final_url,
+                        body,
+                    });
                 }
             }
         }
@@ -762,13 +782,13 @@ impl HilanClient {
     ///
     /// Retries on transient errors and re-authenticates on session expiry.
     pub async fn get_text(&mut self, url: &str) -> Result<String> {
-        let (status, body) = self
+        let response = self
             .send_with_retry(&format!("GET {url}"), true, |c| c.get(url))
             .await?;
-        if !status.is_success() {
-            bail!("GET {url} returned HTTP {status}");
+        if !response.status.is_success() {
+            bail!("GET {url} returned HTTP {}", response.status);
         }
-        Ok(body)
+        Ok(response.body)
     }
 
     /// GET an .aspx page, parse ALL form fields from `<form id="aspnetForm">`, return (html, fields).
@@ -777,12 +797,13 @@ impl HilanClient {
     #[allow(dead_code)] // shared attendance/WebForms helper
     pub async fn get_aspx_form(&mut self, url: &str) -> Result<(String, BTreeMap<String, String>)> {
         tracing::debug!("GET (aspx form) {}", url);
-        let (status, html) = self
+        let response = self
             .send_with_retry(&format!("GET {url}"), true, |c| c.get(url))
             .await?;
-        if !status.is_success() {
-            bail!("GET {url} returned HTTP {status}");
+        if !response.status.is_success() {
+            bail!("GET {url} returned HTTP {}", response.status);
         }
+        let html = response.body;
         let fields = parse_aspx_form_fields(&html);
         tracing::debug!("Parsed {} form fields from {}", fields.len(), url);
         Ok((html, fields))
@@ -889,7 +910,7 @@ impl HilanClient {
         merged.insert(script_manager.to_string(), sm_value);
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
 
-        let (status, text) = self
+        let response = self
             .send_with_retry(&format!("POST {url} (async write)"), retryable, |c| {
                 c.post(url)
                     .header("X-MicrosoftAjax", "Delta=true")
@@ -898,10 +919,11 @@ impl HilanClient {
                     .form(&form_pairs)
             })
             .await?;
-        if !status.is_success() {
-            bail!("POST {url} (async write) returned HTTP {status}");
+        if !response.status.is_success() {
+            bail!("POST {url} (async write) returned HTTP {}", response.status);
         }
-        Ok(text)
+        validate_async_write_response(&response.final_url, &response.body)?;
+        Ok(response.body)
     }
 
     /// POST an ASP.NET async event write with explicit `__EVENTTARGET` / `__EVENTARGUMENT`
@@ -927,7 +949,7 @@ impl HilanClient {
         merged.insert(script_manager.to_string(), script_manager_value.to_string());
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
 
-        let (status, text) = self
+        let response = self
             .send_with_retry(&format!("POST {url} (async event write)"), retryable, |c| {
                 c.post(url)
                     .header("X-MicrosoftAjax", "Delta=true")
@@ -936,10 +958,14 @@ impl HilanClient {
                     .form(&form_pairs)
             })
             .await?;
-        if !status.is_success() {
-            bail!("POST {url} (async event write) returned HTTP {status}");
+        if !response.status.is_success() {
+            bail!(
+                "POST {url} (async event write) returned HTTP {}",
+                response.status
+            );
         }
-        Ok(text)
+        validate_async_write_response(&response.final_url, &response.body)?;
+        Ok(response.body)
     }
 
     /// Merge base fields + overrides + extras, POST the form, and return the body.
@@ -957,15 +983,15 @@ impl HilanClient {
         }
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
 
-        let (status, text) = self
+        let response = self
             .send_with_retry(&format!("POST {url}"), retryable, |c| {
                 c.post(url).form(&form_pairs)
             })
             .await?;
-        if !status.is_success() {
-            bail!("POST {url} returned HTTP {status}");
+        if !response.status.is_success() {
+            bail!("POST {url} returned HTTP {}", response.status);
         }
-        Ok(text)
+        Ok(response.body)
     }
 
     /// Call an ASMX JSON API endpoint.
@@ -981,17 +1007,21 @@ impl HilanClient {
         );
 
         tracing::debug!("POST (asmx) {}/{}", service, method);
-        let (status, text) = self
+        let response = self
             .send_with_retry(&format!("POST {url}"), true, |c| {
                 c.post(&url)
                     .header("Content-Type", "application/json")
                     .body("{}")
             })
             .await?;
-        if !status.is_success() {
-            bail!("{service}/{method} returned HTTP {status}: {text}");
+        if !response.status.is_success() {
+            bail!(
+                "{service}/{method} returned HTTP {}: {}",
+                response.status,
+                response.body
+            );
         }
-        Ok(text)
+        Ok(response.body)
     }
 }
 
@@ -1005,6 +1035,10 @@ impl HilanClient {
 /// Types: `updatePanel`, `hiddenField`, `scriptBlock`, `pageTitle`, etc.
 /// Returns a map of `(type, id) → content` for all entries.
 pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
+    parse_aspx_delta_checked(delta).unwrap_or_default()
+}
+
+fn parse_aspx_delta_checked(delta: &str) -> Result<BTreeMap<(String, String), String>> {
     let mut result = BTreeMap::new();
     let mut pos = 0;
     let bytes = delta.as_bytes();
@@ -1013,19 +1047,18 @@ pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
         // Read length (digits until '|')
         let len_end = match delta[pos..].find('|') {
             Some(i) => pos + i,
-            None => break,
+            None => bail!("missing length delimiter at byte {pos}"),
         };
         let len_str = &delta[pos..len_end];
-        let content_len: usize = match len_str.parse() {
-            Ok(n) => n,
-            Err(_) => break,
-        };
+        let content_len: usize = len_str
+            .parse()
+            .with_context(|| format!("invalid content length '{len_str}' at byte {pos}"))?;
         pos = len_end + 1;
 
         // Read type (until '|')
         let type_end = match delta[pos..].find('|') {
             Some(i) => pos + i,
-            None => break,
+            None => bail!("missing entry type delimiter at byte {pos}"),
         };
         let entry_type = delta[pos..type_end].to_string();
         pos = type_end + 1;
@@ -1033,14 +1066,14 @@ pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
         // Read id (until '|')
         let id_end = match delta[pos..].find('|') {
             Some(i) => pos + i,
-            None => break,
+            None => bail!("missing entry id delimiter at byte {pos}"),
         };
         let entry_id = delta[pos..id_end].to_string();
         pos = id_end + 1;
 
         // Read content (exactly content_len chars)
         let Some((content, consumed_bytes)) = take_chars(&delta[pos..], content_len) else {
-            break;
+            bail!("delta content shorter than declared length {content_len} at byte {pos}");
         };
         let content = content.to_string();
         pos += consumed_bytes;
@@ -1053,7 +1086,26 @@ pub fn parse_aspx_delta(delta: &str) -> BTreeMap<(String, String), String> {
         result.insert((entry_type, entry_id), content);
     }
 
-    result
+    Ok(result)
+}
+
+fn validate_async_write_response(final_url: &str, body: &str) -> Result<()> {
+    if is_login_path(final_url) {
+        bail!("async write outcome unknown: redirected to login or landing page ({final_url})");
+    }
+
+    let trimmed = body.trim_start();
+    if looks_like_html_document(trimmed) {
+        bail!("async write outcome unknown: received HTML instead of ASP.NET delta");
+    }
+
+    let entries = parse_aspx_delta_checked(trimmed)
+        .context("async write response was not a valid ASP.NET delta")?;
+    if entries.is_empty() {
+        bail!("async write outcome unknown: received an empty ASP.NET delta");
+    }
+
+    Ok(())
 }
 
 fn take_chars(s: &str, char_len: usize) -> Option<(&str, usize)> {
@@ -1410,11 +1462,19 @@ fn needs_reauth(resp: &reqwest::Response) -> bool {
 }
 
 fn is_login_redirect(resp: &reqwest::Response) -> bool {
-    let path = resp.url().path().to_lowercase();
+    is_login_path(resp.url().path())
+}
+
+fn is_login_path(path_or_url: &str) -> bool {
+    let path = path_or_url.to_lowercase();
     path.contains("/login")
         || path.contains("/signin")
         || path.contains("/logon")
-        || matches!(path.as_str(), "/hilancenter" | "/hilancenter/")
+        || path.contains("/hilancenter")
+}
+
+fn looks_like_html_document(body: &str) -> bool {
+    body.trim_start().starts_with('<')
 }
 
 /// Sleep with exponential backoff: 500ms, 1s, 2s, ...
@@ -1493,6 +1553,22 @@ mod tests {
         let mut response = headers.into_bytes();
         response.extend_from_slice(body);
         response
+    }
+
+    fn async_delta_response(entries: &[(&str, &str, &str)]) -> Vec<u8> {
+        let body = entries
+            .iter()
+            .map(|(entry_type, entry_id, content)| {
+                format!(
+                    "{}|{}|{}|{}|",
+                    content.chars().count(),
+                    entry_type,
+                    entry_id,
+                    content
+                )
+            })
+            .collect::<String>();
+        http_response(&body, "text/plain; charset=utf-8")
     }
 
     fn spawn_test_server(
@@ -2130,13 +2206,13 @@ mod tests {
                 &bootstrap_response(employee_id, employee_short_id),
                 "application/json",
             ),
-            http_response("<html>cleared</html>", "text/html; charset=utf-8"),
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
             http_response(&calendar_form_html(employee_id), "text/html; charset=utf-8"),
             http_response(
                 &calendar_selection_html(employee_id, date, false, employee_short_id),
                 "text/html; charset=utf-8",
             ),
-            http_response("<html>saved</html>", "text/html; charset=utf-8"),
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
         ]);
 
         let client = build_test_client(base_url, true);
@@ -2285,17 +2361,18 @@ mod tests {
                 &bootstrap_response(employee_id, employee_short_id),
                 "application/json",
             ),
-            http_response("<html>cleared</html>", "text/html; charset=utf-8"),
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
             http_response(&calendar_form_html(employee_id), "text/html; charset=utf-8"),
             http_response(
                 &calendar_selection_html(employee_id, date, true, employee_short_id),
                 "text/html; charset=utf-8",
             ),
-            http_response(
+            async_delta_response(&[(
+                "updatePanel",
+                "calendarGrid",
                 &calendar_selection_html(employee_id, date, false, employee_short_id),
-                "text/html; charset=utf-8",
-            ),
-            http_response("<html>saved</html>", "text/html; charset=utf-8"),
+            )]),
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
         ]);
 
         let client = build_test_client(base_url, true);
@@ -2430,5 +2507,47 @@ mod tests {
             )),
             Some(&content.to_string())
         );
+    }
+
+    #[test]
+    fn parse_aspx_delta_checked_rejects_malformed_delta() {
+        let err =
+            parse_aspx_delta_checked("10|updatePanel|grid|<tr>|").expect_err("malformed delta");
+
+        assert!(err.to_string().contains("shorter than declared length"));
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn async_write_rejects_html_response_as_outcome_unknown() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("async-write-html");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, _recorded) = spawn_test_server(vec![http_response(
+            "<html><body>login</body></html>",
+            "text/html; charset=utf-8",
+        )]);
+
+        let mut client = build_test_client(base_url.clone(), true);
+        let base_fields = BTreeMap::from([("__VIEWSTATE".to_string(), "abc".to_string())]);
+
+        let err = client
+            .post_aspx_async_write(
+                &format!("{base_url}/calendarpage.aspx"),
+                &base_fields,
+                &[],
+                "ctl00$ms",
+                "ctl00$mp$btnSave",
+                false,
+            )
+            .await
+            .expect_err("html async write should fail closed");
+
+        assert!(err.to_string().contains("outcome unknown"));
+
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

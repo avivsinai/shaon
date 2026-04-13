@@ -16,6 +16,9 @@
 You are responsible for all attendance submissions, payslip downloads, and credential handling performed with this tool. Use is conditional on your compliance with your employer's policies and your Hilanet customer's terms of service. `shaon` is intended for automating your own single-user account; multi-user, aggregation, and third-party-data use are out of scope.
 
 `shaon` is an independent open-source project. It is not endorsed by, affiliated with, or sponsored by Hilan Ltd.
+Hilan and Hilanet are names and marks of their respective owner, used solely to identify compatibility and the target system. No trademark license is granted, and no claim of sponsorship, endorsement, or affiliation is made.
+
+`shaon` is not payroll, tax, HR, legal, or employment-compliance advice, and it is not warranted to produce complete, accurate, employer-accepted, or legally sufficient records.
 
 The software is provided "AS IS" under the MIT License, without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
 
@@ -68,6 +71,12 @@ Then authenticate once:
 shaon auth
 ```
 
+If you need to replace stale stored credentials deterministically, run:
+
+```bash
+shaon auth --force-prompt
+```
+
 If Hilan asks for a CAPTCHA, solve it in the browser and rerun the command.
 
 ## Common Commands
@@ -113,7 +122,7 @@ shaon payroll payslip view --month 2026-03
 
 ### Sensitive recovery command
 
-`shaon payroll payslip password` reveals the current Hilan login password in plaintext. Use it only if you explicitly need to open an older password-protected PDF. Avoid shared terminals, screenshots, and agent transcripts.
+`shaon payroll payslip password --force-sensitive-output` prints the current Hilan account password in plaintext to standard output. It does not recover historical passwords used for PDFs encrypted before a password change. Output may be captured by shells, terminals, logs, remote sessions, screenshots, and agent transcripts. Run it only on a private interactive terminal you control.
 
 ## Safety
 

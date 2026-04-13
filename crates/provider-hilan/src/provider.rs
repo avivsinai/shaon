@@ -108,6 +108,21 @@ impl HilanProvider {
         ProviderError::new(code, err.to_string())
     }
 
+    fn attendance_write_error(default_code: &'static str, err: anyhow::Error) -> ProviderError {
+        let message = err.to_string();
+        let code = if message.contains("outcome unknown") {
+            match default_code {
+                "attendance_submit_failed" => "attendance_submit_outcome_unknown",
+                "attendance_fix_failed" => "attendance_fix_outcome_unknown",
+                _ => default_code,
+            }
+        } else {
+            default_code
+        };
+
+        ProviderError::new(code, message)
+    }
+
     fn fix_strategy(error_type: &str, submit: &AttendanceSubmit) -> FixStrategy {
         if error_type == MISSING_REPORT_ERROR_TYPE
             && submit.attendance_type_code.as_deref() == Some(WORK_FROM_HOME_TYPE_CODE)
@@ -215,7 +230,7 @@ impl AttendanceProvider for HilanProvider {
             .map(|preview| {
                 Self::preview_with_summary(preview, "submitted attendance for", change.date)
             })
-            .map_err(|err| Self::provider_error("attendance_submit_failed", err))
+            .map_err(|err| Self::attendance_write_error("attendance_submit_failed", err))
     }
 
     async fn fix_day(
@@ -238,7 +253,7 @@ impl AttendanceProvider for HilanProvider {
             .map(|preview| {
                 Self::preview_with_summary(preview, "fixed attendance error for", change.date)
             })
-            .map_err(|err| Self::provider_error("attendance_fix_failed", err)),
+            .map_err(|err| Self::attendance_write_error("attendance_fix_failed", err)),
             FixStrategy::ErrorWizardThenCalendar => {
                 let clear_submit = Self::error_clear_submit(&submit);
                 let mut clear_preview = attendance::fix_error_day(
@@ -255,7 +270,7 @@ impl AttendanceProvider for HilanProvider {
                         change.date.format("%Y-%m-%d")
                     )
                 })
-                .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+                .map_err(|err| Self::attendance_write_error("attendance_fix_failed", err))?;
 
                 if !mode.should_execute() {
                     clear_preview.payload_display.push_str(
@@ -279,7 +294,9 @@ impl AttendanceProvider for HilanProvider {
                                 change.date.format("%Y-%m-%d")
                             )
                         })
-                        .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+                        .map_err(|err| {
+                            Self::attendance_write_error("attendance_fix_failed", err)
+                        })?;
 
                 let desired_type_code = submit
                     .attendance_type_code
@@ -299,7 +316,7 @@ impl AttendanceProvider for HilanProvider {
                             change.date.format("%Y-%m-%d")
                         )
                     })
-                    .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+                    .map_err(|err| Self::attendance_write_error("attendance_fix_failed", err))?;
                 steps.extend(delete_previews.into_iter().map(|preview| {
                     (
                         "delete the conflicting calendar row before applying the requested attendance",
@@ -325,7 +342,7 @@ impl AttendanceProvider for HilanProvider {
                             change.date.format("%Y-%m-%d")
                         )
                     })
-                    .map_err(|err| Self::provider_error("attendance_fix_failed", err))?;
+                    .map_err(|err| Self::attendance_write_error("attendance_fix_failed", err))?;
                     steps.push((
                         "apply the requested attendance via the calendar page",
                         submit_preview,

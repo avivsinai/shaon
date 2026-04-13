@@ -29,7 +29,7 @@ All write commands (`attendance report today/day/range`, `attendance auto-fill`,
 2. Show the resulting preview to the user.
 3. Require the user to explicitly confirm in the conversation before rerunning with `--execute`.
 
-Never autonomously rerun a write with `--execute`. The legal actor is the user, not the agent.
+Never autonomously rerun a write with `--execute`. Writes must be treated as user-authorized actions and must not be submitted without explicit user confirmation.
 
 ## CLI Entry Point
 
@@ -60,6 +60,12 @@ Then authenticate:
 
 ```bash
 shaon auth
+```
+
+If stored credentials are stale and you want a deterministic refresh prompt:
+
+```bash
+shaon auth --force-prompt
 ```
 
 ## Pick The Right Read Command
@@ -170,13 +176,13 @@ shaon payroll payslip view --month 2026-03
 
 ### Sensitive recovery command
 
-`shaon payroll payslip password` reveals the current Hilan login password in plaintext. Use it only if you explicitly need to open an older password-protected PDF. Avoid shared terminals, screenshots, and agent transcripts.
+`shaon payroll payslip password --force-sensitive-output` prints the current Hilan account password in plaintext to standard output. It does not recover historical passwords used for PDFs encrypted before a password change. Output may be captured by shells, terminals, logs, remote sessions, screenshots, and agent transcripts. Run it only on a private interactive terminal you control.
 
 ## Troubleshooting
 
 - **CAPTCHA**: the user must solve it in the browser first.
 - **Type resolution fails**: run `shaon cache refresh attendance-types` or pass the numeric type code directly.
-- **Session expired**: rerun `shaon auth` if automatic reauthentication is not enough.
+- **Session expired or stale stored credentials**: rerun `shaon auth --force-prompt` to verify and replace the stored password.
 
 ## Further Reading
 

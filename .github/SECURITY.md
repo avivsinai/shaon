@@ -23,11 +23,14 @@ This policy applies to:
 | 0.8.x   | Yes       |
 | < 0.8   | No        |
 
-## Security Measures
+## Security Posture
 
-- By default, credentials are stored in the OS keychain for local interactive use
-- No plaintext passwords in config files
-- All HTTP traffic over TLS (rustls, no cert bypass)
-- Binary ad-hoc codesigned on macOS for keychain access
-- Gitleaks secret scanning in CI
-- `cargo-deny` dependency auditing
+`shaon` is provided "AS IS" under the MIT License with no warranty of security or fitness for any particular purpose. The notes below describe the current implementation's intent, not guarantees.
+
+- For interactive macOS / Linux use, the default credential path stores the Hilan password and a per-install master key in the OS keychain (`shaon-cli` service); `SHAON_PASSWORD` and `SHAON_MASTER_KEY` are headless escape hatches that bypass the keychain.
+- The shipped configuration parser does not require a plaintext password in `config.toml`. Operators may still place secrets in environment variables, shell history, or other files outside `shaon`'s control.
+- HTTPS requests use `reqwest` with `rustls-tls` and standard certificate validation. Network operators, custom root stores, and MITM tooling on the host are out of scope.
+- On macOS, the helper script `scripts/run.sh` codesigns the binary with a stable local identity when available (and falls back to ad-hoc) to keep keychain ACLs stable across rebuilds; this does not provide tamper resistance.
+- CI runs gitleaks secret scanning and `cargo-deny` dependency auditing on a best-effort basis.
+
+These measures reduce common accidental-exposure risks; they do not make the tool resistant to a determined local attacker, malicious agents, or compromised hosts.
