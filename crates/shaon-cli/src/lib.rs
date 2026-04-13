@@ -8,6 +8,7 @@ use hr_core::{
 };
 use secrecy::ExposeSecret;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::{
@@ -32,8 +33,28 @@ struct OverviewResponse {
     summary: MonthSummary,
     attendance_types: Vec<CoreAttendanceType>,
     error_days: Vec<ErrorDay>,
-    missing_days: Vec<String>,
+    missing_days: Vec<MissingDay>,
     suggested_actions: Vec<SuggestedAction>,
+}
+
+#[derive(Serialize)]
+struct StatusResponse {
+    month: String,
+    employee_id: String,
+    days: Vec<StatusDay>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct StatusDay {
+    date: String,
+    day_name: String,
+    has_error: bool,
+    error_message: Option<String>,
+    entry_time: Option<String>,
+    exit_time: Option<String>,
+    attendance_type: Option<String>,
+    total_hours: Option<String>,
+    source: hr_core::AttendanceSource,
 }
 
 #[derive(Serialize)]
@@ -58,7 +79,6 @@ struct ErrorDay {
     day_name: String,
     error_message: String,
     fix_params: Option<ErrorFixParams>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     fix_params_candidates: Vec<ErrorFixParams>,
 }
 
@@ -76,14 +96,62 @@ struct ErrorsResponse {
     errors: Vec<ErrorDay>,
 }
 
-/// Structured suggested action — NOT a shell string.
-/// Human output can render commands, but the JSON contract is structured.
 #[derive(Serialize)]
-struct SuggestedAction {
-    kind: String,
-    reason: String,
-    params: serde_json::Value,
-    safety: String,
+struct TypesResponse {
+    subdomain: String,
+    types: Vec<CoreAttendanceType>,
+}
+
+#[derive(Serialize)]
+struct AbsencesResponse {
+    symbol_count: usize,
+    symbols: Vec<hr_core::AbsenceSymbol>,
+}
+
+#[derive(Serialize)]
+struct SalaryResponse {
+    label: String,
+    entries: Vec<SalaryEntryResponse>,
+    percent_diff: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct SalaryEntryResponse {
+    month: String,
+    amount: u64,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct MissingDay {
+    date: String,
+    day_name: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct FixableDay {
+    date: String,
+    report_id: String,
+    error_type: String,
+}
+
+/// Structured suggested actions as a tagged union, not an untyped `params` bag.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SuggestedAction {
+    FixErrors {
+        reason: String,
+        safety: String,
+        month: String,
+        count: u32,
+        fixable_days: Vec<FixableDay>,
+    },
+    FillMissing {
+        reason: String,
+        safety: String,
+        from: String,
+        to: String,
+        count: u32,
+    },
 }
 
 const SHEET_REPORT_PATH: &str = "/Hilannetv2/Attendance/HoursAnalysis.aspx";
@@ -232,7 +300,8 @@ struct OverviewArgs {
     #[arg(long)]
     month: Option<String>,
 
-    /// Include full per-day calendar data in output
+    /// Include full per-day calendar data in output. In JSON mode this adds a
+    /// top-level `days` array with the same shape as `attendance status --json`.
     #[arg(long)]
     detailed: bool,
 }
@@ -613,7 +682,7 @@ async fn run_attendance_command(
                 .await
                 .map_err(provider_error)?;
             if json {
-                print_json(&cal)?;
+                print_json(&build_status_response(&cal))?;
             } else {
                 use_cases::print_calendar(&cal);
             }
@@ -719,7 +788,7 @@ async fn run_attendance_command(
             let mut provider = HilanProvider::from_client(client);
             let types = provider.attendance_types().await.map_err(provider_error)?;
             if json {
-                print_json(&types)?;
+                print_json(&build_types_response(subdomain, &types))?;
             } else {
                 use_cases::print_attendance_types(&types);
             }
@@ -730,7 +799,7 @@ async fn run_attendance_command(
                 .await
                 .map_err(provider_error)?;
             if json {
-                print_json(&symbols)?;
+                print_json(&build_absences_response(&symbols))?;
             } else {
                 use_cases::print_absence_symbols(&symbols);
             }
@@ -881,7 +950,7 @@ async fn run_payroll_command(
                 .await
                 .map_err(provider_error)?;
             if json {
-                print_json(&summary)?;
+                print_json(&build_salary_response(&summary))?;
             } else {
                 if !summary.label.is_empty() {
                     println!("Salary row: {}", summary.label);
@@ -1069,6 +1138,110 @@ fn build_errors_response(overview: &use_cases::OverviewData) -> ErrorsResponse {
     }
 }
 
+fn build_status_response(calendar: &hr_core::MonthCalendar) -> StatusResponse {
+    StatusResponse {
+        month: calendar.month.format("%Y-%m").to_string(),
+        employee_id: calendar.employee_id.clone(),
+        days: calendar
+            .days
+            .iter()
+            .map(status_day_from_calendar_day)
+            .collect(),
+    }
+}
+
+fn build_types_response(subdomain: &str, types: &[CoreAttendanceType]) -> TypesResponse {
+    TypesResponse {
+        subdomain: subdomain.to_string(),
+        types: types.to_vec(),
+    }
+}
+
+fn build_absences_response(symbols: &[hr_core::AbsenceSymbol]) -> AbsencesResponse {
+    AbsencesResponse {
+        symbol_count: symbols.len(),
+        symbols: symbols.to_vec(),
+    }
+}
+
+fn build_salary_response(summary: &hr_core::SalarySummary) -> SalaryResponse {
+    SalaryResponse {
+        label: summary.label.clone(),
+        entries: summary
+            .entries
+            .iter()
+            .map(|entry| SalaryEntryResponse {
+                month: entry.month.format("%Y-%m").to_string(),
+                amount: entry.amount,
+            })
+            .collect(),
+        percent_diff: summary.percent_diff,
+    }
+}
+
+fn build_overview_response(overview: &use_cases::OverviewData) -> OverviewResponse {
+    let missing_dates: BTreeSet<NaiveDate> = overview.missing_days.iter().copied().collect();
+
+    let missing_days = overview
+        .calendar
+        .days
+        .iter()
+        .filter(|day| missing_dates.contains(&day.date))
+        .map(missing_day_from_calendar_day)
+        .collect();
+
+    let suggested_actions = overview
+        .suggested_actions
+        .iter()
+        .map(suggested_action_from_plan)
+        .collect();
+
+    OverviewResponse {
+        user: UserInfo {
+            user_id: overview.identity.user_id.clone(),
+            employee_id: overview.identity.employee_id.clone(),
+            name: overview.identity.display_name.clone(),
+            is_manager: overview.identity.is_manager,
+        },
+        month: overview.month.format("%Y-%m").to_string(),
+        summary: MonthSummary {
+            total_work_days: overview.summary.total_work_days,
+            reported: overview.summary.reported,
+            missing: overview.summary.missing,
+            errors: overview.summary.errors,
+        },
+        attendance_types: overview.attendance_types.clone(),
+        error_days: overview
+            .error_days
+            .iter()
+            .map(error_day_from_overview)
+            .collect(),
+        missing_days,
+        suggested_actions,
+    }
+}
+
+fn status_day_from_calendar_day(day: &hr_core::CalendarDay) -> StatusDay {
+    StatusDay {
+        date: day.date.format("%Y-%m-%d").to_string(),
+        day_name: day.day_name.clone(),
+        has_error: day.has_error,
+        error_message: day.error_message.clone(),
+        entry_time: day.entry_time.clone(),
+        exit_time: day.exit_time.clone(),
+        attendance_type: day.attendance_type.clone(),
+        total_hours: day.total_hours.clone(),
+        source: day.source,
+    }
+}
+
+fn missing_day_from_calendar_day(day: &hr_core::CalendarDay) -> MissingDay {
+    MissingDay {
+        date: day.date.format("%Y-%m-%d").to_string(),
+        day_name: day.day_name.clone(),
+    }
+}
+
 fn error_day_from_overview(entry: &use_cases::OverviewErrorDay) -> ErrorDay {
     let fix_params_candidates = error_fix_params_candidates(&entry.fix_targets);
     let fix_params = match fix_params_candidates.as_slice() {
@@ -1086,6 +1259,40 @@ fn error_day_from_overview(entry: &use_cases::OverviewErrorDay) -> ErrorDay {
             .unwrap_or_else(|| "missing report".to_string()),
         fix_params,
         fix_params_candidates,
+    }
+}
+
+fn suggested_action_from_plan(action: &use_cases::SuggestedActionPlan) -> SuggestedAction {
+    match action {
+        use_cases::SuggestedActionPlan::FixErrors {
+            month,
+            count,
+            fixable_targets,
+        } => SuggestedAction::FixErrors {
+            reason: format!("{count} day(s) have attendance errors"),
+            safety: "dry_run_default".to_string(),
+            month: month.format("%Y-%m").to_string(),
+            count: *count,
+            fixable_days: fixable_targets
+                .iter()
+                .filter_map(|target| {
+                    error_fix_params_from_target(target).map(|params| FixableDay {
+                        date: target.date.format("%Y-%m-%d").to_string(),
+                        report_id: params.report_id,
+                        error_type: params.error_type,
+                    })
+                })
+                .collect(),
+        },
+        use_cases::SuggestedActionPlan::FillMissing { from, to, count } => {
+            SuggestedAction::FillMissing {
+                reason: format!("{count} work day(s) have no attendance report"),
+                safety: "dry_run_default".to_string(),
+                from: from.format("%Y-%m-%d").to_string(),
+                to: to.format("%Y-%m-%d").to_string(),
+                count: *count,
+            }
+        }
     }
 }
 
@@ -1298,7 +1505,7 @@ fn format_number(value: u64) -> String {
 async fn run_overview(
     provider: &mut impl AttendanceProvider,
     month_arg: Option<&str>,
-    verbose: bool,
+    detailed: bool,
     json: bool,
 ) -> Result<()> {
     let month = parse_month_or_current(month_arg)?;
@@ -1306,94 +1513,20 @@ async fn run_overview(
     let overview = use_cases::build_overview(provider, month, today)
         .await
         .map_err(provider_error)?;
-    let month_str = overview.month.format("%Y-%m").to_string();
-
-    let error_day_details: Vec<ErrorDay> = overview
-        .error_days
-        .iter()
-        .map(error_day_from_overview)
-        .collect();
-
-    let missing_day_strings: Vec<String> = overview
-        .missing_days
-        .iter()
-        .map(|date| date.format("%Y-%m-%d").to_string())
-        .collect();
-
-    let suggested_actions: Vec<SuggestedAction> = overview
-        .suggested_actions
-        .iter()
-        .map(|action| match action {
-            use_cases::SuggestedActionPlan::FixErrors {
-                month,
-                count,
-                fixable_targets,
-            } => SuggestedAction {
-                kind: "fix_errors".to_string(),
-                reason: format!("{count} day(s) have attendance errors"),
-                params: serde_json::json!({
-                    "month": month.format("%Y-%m").to_string(),
-                    "count": count,
-                    "fixable_days": fixable_targets
-                        .iter()
-                        .filter_map(|target| {
-                            error_fix_params_from_target(target).map(|params| {
-                                serde_json::json!({
-                                    "date": target.date.format("%Y-%m-%d").to_string(),
-                                    "report_id": params.report_id,
-                                    "error_type": params.error_type,
-                                })
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                }),
-                safety: "dry_run_default".to_string(),
-            },
-            use_cases::SuggestedActionPlan::FillMissing { from, to, count } => SuggestedAction {
-                kind: "fill_missing".to_string(),
-                reason: format!("{count} work day(s) have no attendance report"),
-                params: serde_json::json!({
-                    "from": from.format("%Y-%m-%d").to_string(),
-                    "to": to.format("%Y-%m-%d").to_string(),
-                    "count": count,
-                }),
-                safety: "dry_run_default".to_string(),
-            },
-        })
-        .collect();
-
-    let response = OverviewResponse {
-        user: UserInfo {
-            user_id: overview.identity.user_id.clone(),
-            employee_id: overview.identity.employee_id.clone(),
-            name: overview.identity.display_name.clone(),
-            is_manager: overview.identity.is_manager,
-        },
-        month: month_str,
-        summary: MonthSummary {
-            total_work_days: overview.summary.total_work_days,
-            reported: overview.summary.reported,
-            missing: overview.summary.missing,
-            errors: overview.summary.errors,
-        },
-        attendance_types: overview.attendance_types.clone(),
-        error_days: error_day_details,
-        missing_days: missing_day_strings,
-        suggested_actions,
-    };
+    let response = build_overview_response(&overview);
 
     if json {
-        if verbose {
-            // Include per-day data only behind --verbose
+        if detailed {
+            // `--detailed` extends overview with the full status-day schema.
             let mut value = serde_json::to_value(&response)?;
-            value["days"] = serde_json::to_value(&overview.calendar.days)?;
+            value["days"] = serde_json::to_value(build_status_response(&overview.calendar).days)?;
             println!("{}", serde_json::to_string_pretty(&value)?);
         } else {
             print_json(&response)?;
         }
     } else {
         print_overview_human(&response);
-        if verbose {
+        if detailed {
             println!();
             print_calendar_verbose(&overview.calendar);
         }
@@ -1419,12 +1552,8 @@ fn print_overview_human(ctx: &OverviewResponse) {
     if !ctx.missing_days.is_empty() {
         println!();
         println!("Missing days:");
-        for date_str in &ctx.missing_days {
-            if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                println!("  {} ({})", date_str, date.format("%a"));
-            } else {
-                println!("  {}", date_str);
-            }
+        for day in &ctx.missing_days {
+            println!("  {} ({})", day.date, day.day_name);
         }
     }
 
@@ -1440,21 +1569,23 @@ fn print_overview_human(ctx: &OverviewResponse) {
         println!();
         println!("Suggested actions:");
         for action in &ctx.suggested_actions {
-            let cmd_hint = match action.kind.as_str() {
-                "fix_errors" => {
-                    let m = action.params["month"].as_str().unwrap_or("?");
-                    format!("shaon attendance errors --month {m}")
-                }
-                "fill_missing" => {
-                    let from = action.params["from"].as_str().unwrap_or("?");
-                    let to = action.params["to"].as_str().unwrap_or("?");
+            let (kind, reason, cmd_hint) = match action {
+                SuggestedAction::FixErrors { month, reason, .. } => (
+                    "fix_errors",
+                    reason.as_str(),
+                    format!("shaon attendance errors --month {month}"),
+                ),
+                SuggestedAction::FillMissing {
+                    from, to, reason, ..
+                } => (
+                    "fill_missing",
+                    reason.as_str(),
                     format!(
                         "shaon attendance report range --from {from} --to {to} --type <type> --hours <HH:MM-HH:MM>"
-                    )
-                }
-                _ => format!("{}: {}", action.kind, action.reason),
+                    ),
+                ),
             };
-            println!("  [{}] {} -- {}", action.kind, action.reason, cmd_hint);
+            println!("  [{kind}] {reason} -- {cmd_hint}");
         }
     }
 }
@@ -1528,12 +1659,27 @@ fn provider_error(err: ProviderError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hr_core::{AttendanceSource, CalendarDay, MonthCalendar, UserIdentity};
+    use hr_core::{
+        AbsenceSymbol, AttendanceSource, CalendarDay, MonthCalendar, SalaryEntry, SalarySummary,
+        UserIdentity,
+    };
     use std::collections::BTreeMap;
 
     fn sample_overview(targets: Vec<CoreFixTarget>) -> use_cases::OverviewData {
         let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
-        let calendar_day = CalendarDay {
+        let fixable_targets = targets.clone();
+        let missing_day = CalendarDay {
+            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            day_name: "Wed".to_string(),
+            has_error: false,
+            error_message: None,
+            entry_time: None,
+            exit_time: None,
+            attendance_type: None,
+            total_hours: None,
+            source: AttendanceSource::Unreported,
+        };
+        let error_day = CalendarDay {
             date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
             day_name: "Thu".to_string(),
             has_error: true,
@@ -1556,21 +1702,32 @@ mod tests {
             calendar: MonthCalendar {
                 month,
                 employee_id: "123".to_string(),
-                days: vec![calendar_day.clone()],
+                days: vec![missing_day.clone(), error_day.clone()],
             },
             attendance_types: Vec::new(),
             summary: use_cases::OverviewSummary {
-                total_work_days: 1,
+                total_work_days: 2,
                 reported: 0,
                 missing: 1,
                 errors: 1,
             },
             error_days: vec![use_cases::OverviewErrorDay {
-                day: calendar_day,
+                day: error_day,
                 fix_targets: targets,
             }],
-            missing_days: Vec::new(),
-            suggested_actions: Vec::new(),
+            missing_days: vec![missing_day.date],
+            suggested_actions: vec![
+                use_cases::SuggestedActionPlan::FixErrors {
+                    month,
+                    count: 1,
+                    fixable_targets,
+                },
+                use_cases::SuggestedActionPlan::FillMissing {
+                    from: missing_day.date,
+                    to: missing_day.date,
+                    count: 1,
+                },
+            ],
         }
     }
 
@@ -1715,5 +1872,100 @@ mod tests {
         assert_eq!(response.error_count, 1);
         assert_eq!(response.errors[0].fix_params, None);
         assert_eq!(response.errors[0].fix_params_candidates.len(), 2);
+    }
+
+    #[test]
+    fn build_errors_response_keeps_empty_fix_param_candidates_visible() {
+        let overview = sample_overview(Vec::new());
+
+        let value = serde_json::to_value(build_errors_response(&overview)).expect("serialize");
+
+        assert!(value["errors"][0].get("fix_params_candidates").is_some());
+        assert_eq!(
+            value["errors"][0]["fix_params_candidates"]
+                .as_array()
+                .expect("array")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn build_status_response_uses_stable_day_schema() {
+        let overview = sample_overview(Vec::new());
+
+        let value = serde_json::to_value(build_status_response(&overview.calendar))
+            .expect("serialize status response");
+
+        assert_eq!(value["month"], "2026-04");
+        assert!(value["days"][0].get("day_name").is_some());
+        assert!(value["days"][0].get("day").is_none());
+        assert!(value["days"][0].get("source").is_some());
+    }
+
+    #[test]
+    fn build_overview_response_uses_structured_missing_days_and_actions() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let overview = sample_overview(vec![CoreFixTarget {
+            date,
+            issue_kind: Some("missing_report".to_string()),
+            provider_ref: "report:error".to_string(),
+            metadata: BTreeMap::from([
+                ("report_id".to_string(), "report".to_string()),
+                ("error_type".to_string(), "error".to_string()),
+            ]),
+        }]);
+
+        let value =
+            serde_json::to_value(build_overview_response(&overview)).expect("serialize overview");
+
+        assert_eq!(value["missing_days"][0]["date"], "2026-04-09");
+        assert_eq!(value["missing_days"][0]["day_name"], "Wed");
+        assert_eq!(value["suggested_actions"][0]["kind"], "fix_errors");
+        assert_eq!(value["suggested_actions"][0]["month"], "2026-04");
+        assert!(value["suggested_actions"][0].get("params").is_none());
+        assert_eq!(value["suggested_actions"][1]["kind"], "fill_missing");
+        assert_eq!(value["suggested_actions"][1]["from"], "2026-04-09");
+    }
+
+    #[test]
+    fn build_types_and_absences_responses_match_mcp_envelopes() {
+        let types = vec![CoreAttendanceType {
+            code: "120".to_string(),
+            name_he: "רגיל".to_string(),
+            name_en: Some("regular".to_string()),
+        }];
+        let symbols = vec![AbsenceSymbol {
+            id: "1".to_string(),
+            name: "Vacation".to_string(),
+            display_name: Some("Vacation".to_string()),
+        }];
+
+        let types_value =
+            serde_json::to_value(build_types_response("acme", &types)).expect("serialize types");
+        let absences_value =
+            serde_json::to_value(build_absences_response(&symbols)).expect("serialize absences");
+
+        assert_eq!(types_value["subdomain"], "acme");
+        assert_eq!(types_value["types"][0]["code"], "120");
+        assert_eq!(absences_value["symbol_count"], 1);
+        assert_eq!(absences_value["symbols"][0]["id"], "1");
+    }
+
+    #[test]
+    fn build_salary_response_formats_months_as_year_month() {
+        let summary = SalarySummary {
+            label: "Net".to_string(),
+            entries: vec![SalaryEntry {
+                month: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                amount: 123_456,
+            }],
+            percent_diff: Some(1.5),
+        };
+
+        let value = serde_json::to_value(build_salary_response(&summary)).expect("serialize");
+
+        assert_eq!(value["entries"][0]["month"], "2026-03");
+        assert_eq!(value["entries"][0]["amount"], 123456);
     }
 }

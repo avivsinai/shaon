@@ -83,6 +83,13 @@ shaon reports corrections
 shaon payroll salary --months 6
 ```
 
+JSON contract notes for agents:
+
+- `shaon attendance status --json` returns `{ month, employee_id, days[] }` with `day_name`, `entry_time`, `exit_time`, `attendance_type`, `total_hours`, `has_error`, `error_message`, and `source`.
+- `shaon attendance overview --json` returns `missing_days` as objects `{ date, day_name }`, not bare strings.
+- `suggested_actions` is a tagged union keyed by `kind`; action fields live at the top level rather than inside a generic `params` bag.
+- `shaon attendance overview --json --detailed` adds a top-level `days[]` array using the same schema as `attendance status --json`.
+
 ### Report or fix attendance
 
 ```bash
