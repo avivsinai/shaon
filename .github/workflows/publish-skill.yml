@@ -17,7 +17,6 @@ concurrency:
 
 jobs:
   publish:
-    if: secrets.SKILD_AUTH_JSON != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -25,19 +24,36 @@ jobs:
         with:
           ref: refs/tags/${{ inputs.tag }}
 
+      - name: Check skild auth
+        id: skild_auth
+        shell: bash
+        env:
+          SKILD_AUTH_JSON: ${{ secrets.SKILD_AUTH_JSON }}
+        run: |
+          if [[ -z "${SKILD_AUTH_JSON:-}" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "SKILD_AUTH_JSON is not configured; skipping skill publish."
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.0.0
+        if: steps.skild_auth.outputs.available == 'true'
         with:
           node-version: 20
 
       - name: Install skild
+        if: steps.skild_auth.outputs.available == 'true'
         run: npm install -g skild
 
       - name: Configure skild auth
+        if: steps.skild_auth.outputs.available == 'true'
         run: |
           mkdir -p ~/.skild
           echo '${{ secrets.SKILD_AUTH_JSON }}' > ~/.skild/registry-auth.json
 
       - name: Derive version from tag
+        if: steps.skild_auth.outputs.available == 'true'
         id: version
         run: |
           TAG="${{ inputs.tag }}"
@@ -45,9 +61,11 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Verify release metadata
+        if: steps.skild_auth.outputs.available == 'true'
         run: ./scripts/check-release-version.sh "${{ steps.version.outputs.version }}"
 
       - name: Publish skills
+        if: steps.skild_auth.outputs.available == 'true'
         run: |
           TAG_VERSION="${{ steps.version.outputs.version }}"
 
