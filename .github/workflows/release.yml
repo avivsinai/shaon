@@ -347,13 +347,20 @@ jobs:
       - name: Create or update GitHub release
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
           RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           set -euo pipefail
+
+          if [[ -n "${RELEASE_GITHUB_TOKEN:-}" ]]; then
+            export GH_TOKEN="${RELEASE_GITHUB_TOKEN}"
+          else
+            export GH_TOKEN="${DEFAULT_GITHUB_TOKEN}"
+          fi
 
           prerelease_flag=()
           if [[ "$PRERELEASE" == "true" ]]; then
