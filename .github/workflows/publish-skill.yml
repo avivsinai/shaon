@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-skills-${{ github.event.inputs.tag }}
+  group: "publish-skills-${{ github.event.inputs.tag }}"
   cancel-in-progress: false
 
 jobs:
@@ -22,7 +22,28 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Checkout release tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          TAG="${INPUT_TAG#refs/tags/}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+            echo "::error::Release identifiers must use vX.Y.Z style tags."
+            exit 1
+          fi
+
+          git fetch --force --tags origin
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} does not exist."
+            exit 1
+          fi
+
+          git checkout --detach "refs/tags/${TAG}"
 
       - name: Check skild auth
         id: skild_auth
@@ -55,8 +76,9 @@ jobs:
       - name: Derive version from tag
         if: steps.skild_auth.outputs.available == 'true'
         id: version
+        shell: bash
         run: |
-          TAG="${{ inputs.tag }}"
+          TAG="${{ github.event.inputs.tag }}"
           VERSION="${TAG#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
