@@ -1690,7 +1690,65 @@ fn attendance_source_label(source: hr_core::AttendanceSource) -> &'static str {
 }
 
 fn provider_error(err: ProviderError) -> anyhow::Error {
+    if err.code == "attendance_fix_partial_commit" {
+        if let Some(details) = err.details.as_ref() {
+            if let Some(rendered) = render_partial_commit_message(&err.message, details) {
+                return anyhow::anyhow!(rendered);
+            }
+        }
+    }
     anyhow::anyhow!("{err}")
+}
+
+fn render_partial_commit_message(headline: &str, details: &serde_json::Value) -> Option<String> {
+    let pc = details.get("partial_commit")?;
+    let mut out = String::new();
+    out.push_str("attendance_fix_partial_commit: ");
+    out.push_str(headline);
+    out.push_str("\n\nCompleted steps:");
+    let completed = pc.get("completed_steps").and_then(|v| v.as_array());
+    if completed.map(|a| a.is_empty()).unwrap_or(true) {
+        out.push_str("\n  (none)");
+    } else {
+        for step in completed.unwrap() {
+            let outcome = step.get("outcome").and_then(|v| v.as_str()).unwrap_or("?");
+            let key = step.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+            let label = step.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            let marker = if outcome == "skipped" { "-" } else { "✓" };
+            out.push_str(&format!("\n  {marker} {key} ({outcome}): {label}"));
+        }
+    }
+    out.push_str("\n\nFailed step:");
+    if let Some(failed) = pc.get("failed_step") {
+        let outcome = failed
+            .get("outcome")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let key = failed.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+        let label = failed.get("label").and_then(|v| v.as_str()).unwrap_or("");
+        out.push_str(&format!("\n  ✗ {key} ({outcome}): {label}"));
+    } else {
+        out.push_str("\n  (unknown)");
+    }
+    out.push_str("\n\nRemaining steps (not attempted):");
+    let remaining = pc.get("remaining_steps").and_then(|v| v.as_array());
+    if remaining.map(|a| a.is_empty()).unwrap_or(true) {
+        out.push_str("\n  (none)");
+    } else {
+        for step in remaining.unwrap() {
+            let key = step.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+            let label = step.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            let outcome = step
+                .get("outcome")
+                .and_then(|v| v.as_str())
+                .unwrap_or("not_attempted");
+            out.push_str(&format!("\n  - {key} ({outcome}): {label}"));
+        }
+    }
+    out.push_str(
+        "\n\nHilan state may be inconsistent. Open the attendance calendar for this date and verify before retrying.",
+    );
+    Some(out)
 }
 
 #[cfg(test)]
@@ -2025,6 +2083,47 @@ mod tests {
 
         assert_eq!(value["entries"][0]["month"], "2026-03");
         assert_eq!(value["entries"][0]["amount"], 123456);
+    }
+
+    #[test]
+    fn provider_error_renders_partial_commit_human_block() {
+        let err = ProviderError::new(
+            "attendance_fix_partial_commit",
+            "partial commit while fixing 2026-04-09: 2 step(s) committed, then 'apply ...' failed: outcome unknown",
+        )
+        .with_details(serde_json::json!({
+            "partial_commit": {
+                "date": "2026-04-09",
+                "completed_steps": [
+                    {"key": "clear_error", "label": "clear the Hilan error", "committed": true, "outcome": "committed"},
+                    {"key": "delete_conflict", "label": "delete the conflicting calendar row", "committed": true, "outcome": "committed"},
+                ],
+                "failed_step": {"key": "submit_attendance", "label": "apply the requested attendance via the calendar page", "committed": false, "outcome": "failed_outcome_unknown"},
+                "remaining_steps": [],
+                "source": "outcome unknown",
+            }
+        }));
+
+        let rendered = format!("{}", provider_error(err));
+
+        assert!(rendered.contains("attendance_fix_partial_commit"));
+        assert!(rendered.contains("Completed steps"));
+        assert!(rendered.contains("✓ clear_error (committed)"));
+        assert!(rendered.contains("✓ delete_conflict (committed)"));
+        assert!(rendered.contains("Failed step"));
+        assert!(rendered.contains("✗ submit_attendance (failed_outcome_unknown)"));
+        assert!(rendered.contains("(none)")); // remaining
+        assert!(rendered.contains("Hilan state may be inconsistent"));
+    }
+
+    #[test]
+    fn provider_error_falls_back_to_string_when_no_partial_commit_details() {
+        let err = ProviderError::new("attendance_fix_failed", "Hilan rejected submission");
+
+        let rendered = format!("{}", provider_error(err));
+
+        assert!(rendered.contains("attendance_fix_failed"));
+        assert!(rendered.contains("Hilan rejected submission"));
     }
 
     #[test]

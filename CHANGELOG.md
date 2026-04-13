@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- New `attendance_fix_partial_commit` provider error code with structured `details.partial_commit = { date, desired_type_code?, completed_steps[], failed_step, remaining_steps[], source }` for the multi-step `ErrorWizardThenCalendar` fix flow. All step arrays use the same shape `{ key, label, committed, outcome }` where outcome ∈ `committed` / `skipped` / `failed_outcome_unknown` / `failed_rejected` / `not_attempted`. CLI renders a human block listing committed/failed/remaining steps; MCP surfaces the JSON via `ToolError.details`.
+
 ### Changed
 - `shaon auth` now re-prompts and refreshes stored credentials when the existing password fails verification, and `shaon auth --force-prompt` forces a deterministic credential refresh.
 - `shaon payroll payslip password` now requires `--force-sensitive-output` and carries stronger current-password-only warning text in CLI/docs/skill routing.
