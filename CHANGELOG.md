@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.8.2] - 2026-04-13
 ### Added
 - New `attendance_fix_partial_commit` provider error code with structured `details.partial_commit = { date, desired_type_code?, completed_steps[], failed_step, remaining_steps[], source }` for the multi-step `ErrorWizardThenCalendar` fix flow. All step arrays use the same shape `{ key, label, committed, outcome }` where outcome ∈ `committed` / `skipped` / `failed_outcome_unknown` / `failed_rejected` / `not_attempted`. CLI renders a human block listing committed/failed/remaining steps; MCP surfaces the JSON via `ToolError.details`.
 
@@ -184,4 +186,5 @@ Initial public release.
 [0.7.0]: https://github.com/avivsinai/shaon/releases/tag/v0.7.0
 [0.8.0]: https://github.com/avivsinai/shaon/releases/tag/v0.8.0
 [0.8.1]: https://github.com/avivsinai/shaon/releases/tag/v0.8.1
-[Unreleased]: https://github.com/avivsinai/shaon/compare/v0.8.1...HEAD
+[0.8.2]: https://github.com/avivsinai/shaon/releases/tag/v0.8.2
+[Unreleased]: https://github.com/avivsinai/shaon/compare/v0.8.2...HEAD
