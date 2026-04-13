@@ -1738,7 +1738,11 @@ fn render_partial_commit_message(headline: &str, details: &serde_json::Value) ->
         for step in remaining.unwrap() {
             let key = step.get("key").and_then(|v| v.as_str()).unwrap_or("?");
             let label = step.get("label").and_then(|v| v.as_str()).unwrap_or("");
-            out.push_str(&format!("\n  - {key}: {label}"));
+            let outcome = step
+                .get("outcome")
+                .and_then(|v| v.as_str())
+                .unwrap_or("not_attempted");
+            out.push_str(&format!("\n  - {key} ({outcome}): {label}"));
         }
     }
     out.push_str(

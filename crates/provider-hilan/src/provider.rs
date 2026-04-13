@@ -37,6 +37,7 @@ enum PartialCommitOutcome {
     Skipped,
     FailedOutcomeUnknown,
     FailedRejected,
+    NotAttempted,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +81,16 @@ impl PartialCommitStep {
         }
     }
 
+    fn not_attempted(key: &'static str, label: &'static str) -> Self {
+        Self {
+            key,
+            label,
+            committed: false,
+            outcome: PartialCommitOutcome::NotAttempted,
+            provider_debug: None,
+        }
+    }
+
     fn failed(key: &'static str, label: &'static str, outcome: PartialCommitOutcome) -> Self {
         debug_assert!(matches!(
             outcome,
@@ -95,12 +106,6 @@ impl PartialCommitStep {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct RemainingStep {
-    key: &'static str,
-    label: &'static str,
-}
-
 fn outcome_from_anyhow(err: &anyhow::Error) -> PartialCommitOutcome {
     if err.to_string().contains("outcome unknown") {
         PartialCommitOutcome::FailedOutcomeUnknown
@@ -114,7 +119,7 @@ fn partial_commit_error(
     desired_type_code: Option<&str>,
     completed: &[PartialCommitStep],
     failed: PartialCommitStep,
-    remaining: &[RemainingStep],
+    remaining: &[PartialCommitStep],
     source: anyhow::Error,
 ) -> ProviderError {
     let message = format!(
@@ -124,10 +129,6 @@ fn partial_commit_error(
         failed.label,
         source,
     );
-    let remaining_json: Vec<serde_json::Value> = remaining
-        .iter()
-        .map(|step| serde_json::json!({ "key": step.key, "label": step.label }))
-        .collect();
 
     ProviderError::new("attendance_fix_partial_commit", message).with_details(serde_json::json!({
         "partial_commit": {
@@ -135,7 +136,7 @@ fn partial_commit_error(
             "desired_type_code": desired_type_code,
             "completed_steps": completed,
             "failed_step": failed,
-            "remaining_steps": remaining_json,
+            "remaining_steps": remaining,
             "source": source.to_string(),
         }
     }))
@@ -426,14 +427,14 @@ impl AttendanceProvider for HilanProvider {
                                 outcome_from_anyhow(&err),
                             ),
                             &[
-                                RemainingStep {
-                                    key: "delete_conflict",
-                                    label: "delete the conflicting calendar row before applying the requested attendance",
-                                },
-                                RemainingStep {
-                                    key: "submit_attendance",
-                                    label: "apply the requested attendance via the calendar page",
-                                },
+                                PartialCommitStep::not_attempted(
+                                    "delete_conflict",
+                                    "delete the conflicting calendar row before applying the requested attendance",
+                                ),
+                                PartialCommitStep::not_attempted(
+                                    "submit_attendance",
+                                    "apply the requested attendance via the calendar page",
+                                ),
                             ],
                             err.context(format!(
                                 "load calendar submit context after clearing error for {}",
@@ -465,10 +466,10 @@ impl AttendanceProvider for HilanProvider {
                                 "delete the conflicting calendar row before applying the requested attendance",
                                 PartialCommitOutcome::FailedOutcomeUnknown,
                             ),
-                            &[RemainingStep {
-                                key: "submit_attendance",
-                                label: "apply the requested attendance via the calendar page",
-                            }],
+                            &[PartialCommitStep::not_attempted(
+                                "submit_attendance",
+                                "apply the requested attendance via the calendar page",
+                            )],
                             err.context(format!(
                                 "delete conflicting existing attendance before applying requested type for {}",
                                 change.date.format("%Y-%m-%d")
@@ -760,7 +761,7 @@ mod tests {
             "apply the requested attendance via the calendar page",
             PartialCommitOutcome::FailedOutcomeUnknown,
         );
-        let remaining: [RemainingStep; 0] = [];
+        let remaining: [PartialCommitStep; 0] = [];
 
         let err = partial_commit_error(
             date,
@@ -799,6 +800,49 @@ mod tests {
         assert!(!step.committed);
         assert_eq!(step.outcome, PartialCommitOutcome::Skipped);
         assert!(step.provider_debug.is_none());
+    }
+
+    #[test]
+    fn partial_commit_remaining_steps_use_full_step_shape() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+        let completed: [PartialCommitStep; 0] = [];
+        let failed = PartialCommitStep::failed(
+            "load_calendar_context",
+            "reload the calendar submit context after clearing the error",
+            PartialCommitOutcome::FailedOutcomeUnknown,
+        );
+        let remaining = [
+            PartialCommitStep::not_attempted(
+                "delete_conflict",
+                "delete the conflicting calendar row before applying the requested attendance",
+            ),
+            PartialCommitStep::not_attempted(
+                "submit_attendance",
+                "apply the requested attendance via the calendar page",
+            ),
+        ];
+
+        let err = partial_commit_error(
+            date,
+            Some(WORK_FROM_HOME_TYPE_CODE),
+            &completed,
+            failed,
+            &remaining,
+            anyhow::anyhow!("connection reset"),
+        );
+        let details = err.details.expect("details present");
+        let remaining_json = details["partial_commit"]["remaining_steps"]
+            .as_array()
+            .expect("remaining_steps array");
+        assert_eq!(remaining_json.len(), 2);
+        for entry in remaining_json {
+            assert!(entry.get("key").is_some(), "remaining step missing key");
+            assert!(entry.get("label").is_some(), "remaining step missing label");
+            assert_eq!(entry["committed"], false);
+            assert_eq!(entry["outcome"], "not_attempted");
+        }
+        assert_eq!(remaining_json[0]["key"], "delete_conflict");
+        assert_eq!(remaining_json[1]["key"], "submit_attendance");
     }
 
     #[test]
