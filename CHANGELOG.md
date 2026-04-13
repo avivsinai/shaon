@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Windows packaging is now part of the release pipeline, enabling Scoop distribution for future releases.
+- Release metadata validation now checks skill frontmatter versions in addition to plugin manifests and `Cargo.toml`.
+
+### Changed
+- Release automation now follows the same PR-based flow as `yoetz`: merge `chore(release): vX.Y.Z` on `main`, let CI create the tag/release, and then open `gh`-driven PRs to update Homebrew and Scoop.
+- `README.md` now documents the marketplace, `skills.sh`, Homebrew, Scoop, checksum verification, and release/download surfaces in the same style as the other public Aviv Sinai CLI repos.
+- Plugin metadata and the `shaon` skill frontmatter are now kept in-version with the workspace release.
+
 ## [0.8.2] - 2026-04-13
 ### Added
 - New `attendance_fix_partial_commit` provider error code with structured `details.partial_commit = { date, desired_type_code?, completed_steps[], failed_step, remaining_steps[], source }` for the multi-step `ErrorWizardThenCalendar` fix flow. All step arrays use the same shape `{ key, label, committed, outcome }` where outcome ∈ `committed` / `skipped` / `failed_outcome_unknown` / `failed_rejected` / `not_attempted`. CLI renders a human block listing committed/failed/remaining steps; MCP surfaces the JSON via `ToolError.details`.

@@ -41,6 +41,28 @@ scripts/run.sh <subcommand> [args]
 
 Rust requirement: 1.80+.
 
+## Release
+
+### Release Contract
+
+- Release from `main` only through `./scripts/release.sh X.Y.Z` and the resulting release PR; do not create manual tags or GitHub releases.
+- Keep one version across `CHANGELOG.md`, workspace metadata, skill frontmatter, and plugin manifests.
+- The release PR merge is the trigger. CI validates the merged `chore(release): vX.Y.Z` commit, creates the matching tag, publishes the GitHub release from the committed changelog entry, and then opens `gh`-driven PRs to update Homebrew and Scoop.
+- `skills-marketplace` is a registry pointer to this repo's default branch. Once `shaon` is listed there, marketplace installs track `main`; no separate marketplace release job is required for day-to-day skill changes.
+
+Use the fast release path:
+
+```bash
+./scripts/release.sh 0.8.3
+```
+
+After the release PR merges:
+
+- `.github/workflows/release.yml` creates or verifies the tag for the merged release commit
+- the same workflow publishes release artifacts and uses `CHANGELOG.md` as the GitHub release notes source
+- the workflow can publish the skill to `skild` when `SKILD_AUTH_JSON` is configured
+- the workflow can open PRs against `avivsinai/homebrew-tap` and `avivsinai/scoop-bucket` when `PACKAGING_REPO_GITHUB_TOKEN` is configured
+
 ## Workspace Structure
 
 ```text

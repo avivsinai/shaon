@@ -2,127 +2,436 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)release (e.g., v0.8.2)"
+        required: true
+        type: string
+      skip_skill_publish:
+        description: "Skip skill publishing (Homebrew/Scoop still update when release runs)"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: "release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.sha }}"
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    name: Prepare Release
+    if: "${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'chore(release): v') }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      version: ${{ steps.prepare.outputs.version }}
+      release_ref: ${{ steps.prepare.outputs.release_ref }}
+      release_sha: ${{ steps.prepare.outputs.release_sha }}
+      prerelease: ${{ steps.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release metadata
+        id: prepare
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          validate_tag() {
+            local tag="$1"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+              echo "::error::Release identifiers must use vX.Y.Z style tags."
+              exit 1
+            fi
+          }
+
+          tag_commit_sha() {
+            git rev-parse "refs/tags/${1}^{commit}" 2>/dev/null || git rev-parse "refs/tags/${1}"
+          }
+
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              tag="$INPUT_TAG"
+              validate_tag "$tag"
+              git fetch --force --tags origin
+              if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+                echo "::error::Tag ${tag} does not exist. workflow_dispatch is only for rerunning an existing release."
+                exit 1
+              fi
+              git checkout --detach "$tag"
+              version="${tag#v}"
+              ./scripts/check-release-version.sh "$version"
+              release_ref="$tag"
+              release_sha="$(tag_commit_sha "$tag")"
+              ;;
+            push)
+              commit_subject="${COMMIT_MESSAGE%%$'\n'*}"
+              tag="${commit_subject#chore(release): }"
+              tag="${tag%% \(#*}"
+              validate_tag "$tag"
+
+              version="${tag#v}"
+              cargo_version="$(
+                awk '
+                  /^\[workspace\.package\]$/ { in_section = 1; next }
+                  /^\[/ { in_section = 0 }
+                  in_section && $1 == "version" {
+                    gsub(/"/, "", $3)
+                    print $3
+                    exit
+                  }
+                ' Cargo.toml
+              )"
+              if [[ -z "$cargo_version" ]]; then
+                echo "::error::Could not read workspace version from Cargo.toml."
+                exit 1
+              fi
+              if [[ "$cargo_version" != "$version" ]]; then
+                echo "::error::Commit tag ${tag} does not match Cargo.toml version ${cargo_version}."
+                exit 1
+              fi
+
+              ./scripts/check-release-version.sh "$version"
+
+              release_ref="${GITHUB_SHA}"
+              release_sha="${GITHUB_SHA}"
+              if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+                existing_sha="$(tag_commit_sha "$tag")"
+                if [[ "$existing_sha" != "$release_sha" ]]; then
+                  echo "::error::Tag ${tag} already exists but points to ${existing_sha}, not ${release_sha}."
+                  exit 1
+                fi
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported event: ${EVENT_NAME}"
+              exit 1
+              ;;
+          esac
+
+          prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            prerelease=true
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "release_ref=${release_ref}"
+            echo "release_sha=${release_sha}"
+            echo "prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: prepare
+    if: needs.prepare.result == 'success'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            artifact: shaon
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: shaon
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-14
+            artifact: shaon
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact: shaon
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: shaon.exe
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build release binary
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@9c28cc1e9a88ba271487a912a46f2ef66471dbc6 # cross
+
+      - name: Build (native)
+        if: "!matrix.cross"
         run: cargo build -p shaon --release --locked --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build -p shaon --release --locked --target ${{ matrix.target }}
 
       - name: Codesign macOS binary
         if: runner.os == 'macOS'
-        run: codesign --force --sign - --identifier com.avivsinai.shaon target/${{ matrix.target }}/release/shaon
+        run: codesign --force --sign - --identifier io.github.avivsinai.shaon target/${{ matrix.target }}/release/${{ matrix.artifact }}
 
-      - name: Package binary
+      - name: Package (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          BINARY=target/${{ matrix.target }}/release/shaon
-          ARCHIVE=shaon-${{ matrix.target }}.tar.gz
-          tar czf "$ARCHIVE" -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} staging/
+          cd staging
+          tar czf ../shaon-${{ matrix.target }}.tar.gz ${{ matrix.artifact }}
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.artifact }}" "staging/"
+          Compress-Archive -Path "staging/*" -DestinationPath "shaon-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: shaon-${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          path: shaon-${{ matrix.target }}.*
+          retention-days: 1
 
   release:
-    name: Create release
-    needs: build
+    name: Create Release
+    needs: [prepare, build]
+    if: needs.prepare.result == 'success' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+          fetch-depth: 0
+
+      - name: Create release tag after verification
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          tag_commit_sha() {
+            git rev-parse "refs/tags/${1}^{commit}" 2>/dev/null || git rev-parse "refs/tags/${1}"
+          }
+
+          git fetch --force --tags origin
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            existing_sha="$(tag_commit_sha "$TAG")"
+            if [[ "$existing_sha" != "$RELEASE_SHA" ]]; then
+              echo "::error::Tag ${TAG} already exists but points to ${existing_sha}, not ${RELEASE_SHA}."
+              exit 1
+            fi
+          else
+            git tag "$TAG" "$RELEASE_SHA"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Generate checksums
-        working-directory: artifacts
         run: |
-          sha256sum *.tar.gz > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          cd artifacts
+          sha256sum shaon-* > SHA256SUMS.txt
+
+      - name: Extract release notes for this tag
+        shell: bash
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          VERSION="${TAG#v}"
+          python3 - "$VERSION" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          pattern = re.compile(
+              rf"(?ms)^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\n.*?(?=^## \[|\Z)"
+          )
+          match = pattern.search(text)
+          if not match:
+              raise SystemExit(f"missing changelog section for {version}")
+          pathlib.Path("RELEASE_NOTES.md").write_text(match.group(0).strip() + "\n")
+          PY
+          cat RELEASE_NOTES.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.2.2
         with:
-          generate_release_notes: true
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.release_sha }}
+          name: ${{ needs.prepare.outputs.tag }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          overwrite_files: true
+          body_path: RELEASE_NOTES.md
           files: |
-            artifacts/*.tar.gz
+            artifacts/shaon-*
             artifacts/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-skills:
+    name: Publish Skills
+    needs: [prepare, release]
+    if: >-
+      needs.prepare.result == 'success' && needs.release.result == 'success'
+      && secrets.SKILD_AUTH_JSON != ''
+      && (github.event_name == 'push' || inputs.skip_skill_publish != true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.0.0
+        with:
+          node-version: 20
+
+      - name: Install skild
+        run: npm install -g skild
+
+      - name: Configure skild auth
+        run: |
+          mkdir -p ~/.skild
+          echo '${{ secrets.SKILD_AUTH_JSON }}' > ~/.skild/registry-auth.json
+
+      - name: Verify release metadata
+        run: ./scripts/check-release-version.sh "${{ needs.prepare.outputs.version }}"
+
+      - name: Publish skills
+        run: |
+          TAG_VERSION="${{ needs.prepare.outputs.version }}"
+
+          echo "$TAG_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$' || {
+            echo "ERROR: version '$TAG_VERSION' is not semver"
+            exit 1
+          }
+
+          FAILED=0
+
+          for dir in skills/*/; do
+            [ -f "$dir/SKILL.md" ] || continue
+            SKILL=$(basename "$dir")
+            VERSION="${TAG_VERSION}"
+
+            echo "Publishing $SKILL version $VERSION"
+
+            ALIAS_ARGS=()
+            if [ ${#SKILL} -ge 3 ] && [ ${#SKILL} -le 64 ]; then
+              ALIAS_ARGS=(--alias "$SKILL")
+            fi
+
+            if OUTPUT=$(npx skild publish \
+              --dir "$dir" \
+              "${ALIAS_ARGS[@]}" \
+              --skill-version "$VERSION" 2>&1); then
+              echo "$OUTPUT"
+              echo "✓ Published $SKILL version $VERSION"
+            elif echo "$OUTPUT" | grep -q "Version already exists"; then
+              echo "$OUTPUT"
+              echo "⚠ $SKILL version $VERSION already published — skipping"
+            elif echo "$OUTPUT" | grep -q "Alias already in use"; then
+              echo "$OUTPUT"
+              echo "⚠ Alias '$SKILL' taken — retrying without alias..."
+              if OUTPUT2=$(npx skild publish \
+                --dir "$dir" \
+                --skill-version "$VERSION" 2>&1); then
+                echo "$OUTPUT2"
+                echo "✓ Published $SKILL version $VERSION (without alias)"
+              elif echo "$OUTPUT2" | grep -q "Version already exists"; then
+                echo "$OUTPUT2"
+                echo "⚠ $SKILL version $VERSION already published on retry — skipping"
+              else
+                echo "✖ Publish failed for $SKILL (even without alias)"
+                echo "$OUTPUT2"
+                FAILED=1
+              fi
+            else
+              echo "✖ Publish failed for $SKILL"
+              echo "$OUTPUT"
+              FAILED=1
+            fi
+          done
+
+          exit $FAILED
 
   update-homebrew:
     name: Update Homebrew Formula
-    needs: [build, release]
+    needs: [prepare, release]
+    if: >-
+      needs.prepare.result == 'success' && needs.prepare.outputs.prerelease != 'true'
+      && secrets.PACKAGING_REPO_GITHUB_TOKEN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-    if: ${{ !contains(github.ref_name, '-') }}
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Update tap formula
+      - name: Open tap update PR
         env:
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -z "${HOMEBREW_TAP_GITHUB_TOKEN:-}" ]]; then
-            echo "HOMEBREW_TAP_GITHUB_TOKEN is not configured; skipping tap update."
-            exit 0
-          fi
-
-          VERSION="${TAG#v}"
-          SHA_ARM_MAC="$(sha256sum artifacts/shaon-aarch64-apple-darwin.tar.gz | awk '{print $1}')"
           SHA_X86_MAC="$(sha256sum artifacts/shaon-x86_64-apple-darwin.tar.gz | awk '{print $1}')"
+          SHA_ARM_MAC="$(sha256sum artifacts/shaon-aarch64-apple-darwin.tar.gz | awk '{print $1}')"
           SHA_X86_LINUX="$(sha256sum artifacts/shaon-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')"
+          SHA_ARM_LINUX="$(sha256sum artifacts/shaon-aarch64-unknown-linux-gnu.tar.gz | awk '{print $1}')"
+          BRANCH="shaon-${TAG}"
 
-          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/avivsinai/homebrew-tap.git" tap
+          gh auth setup-git
+          gh repo clone avivsinai/homebrew-tap tap -- --depth=1
 
-          cat > tap/Formula/shaon.rb <<RUBY
+          cd tap
+          git switch -c "$BRANCH"
+
+          cat > Formula/shaon.rb <<RUBY
           # typed: false
           # frozen_string_literal: true
 
           class Shaon < Formula
-            desc "Automate Hilanet attendance, payslips, salary, and reports"
+            desc "Automate Hilanet attendance, payslips, salary, and reports for your own account"
             homepage "https://github.com/avivsinai/shaon"
             version "${VERSION}"
             license "MIT"
@@ -143,6 +452,10 @@ jobs:
                 url "https://github.com/avivsinai/shaon/releases/download/${TAG}/shaon-x86_64-unknown-linux-gnu.tar.gz"
                 sha256 "${SHA_X86_LINUX}"
               end
+              if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
+                url "https://github.com/avivsinai/shaon/releases/download/${TAG}/shaon-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_ARM_LINUX}"
+              end
             end
 
             def install
@@ -162,7 +475,6 @@ jobs:
           end
           RUBY
 
-          cd tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/shaon.rb
@@ -170,5 +482,93 @@ jobs:
             echo "Formula already up to date."
             exit 0
           fi
+
           git commit -m "shaon ${TAG}"
-          git push
+          git push --force-with-lease -u origin "$BRANCH"
+
+          pr_url="$(gh pr list --repo avivsinai/homebrew-tap --head "$BRANCH" --json url --jq '.[0].url')"
+          if [[ -z "$pr_url" ]]; then
+            pr_url="$(gh pr create \
+              --repo avivsinai/homebrew-tap \
+              --base main \
+              --head "$BRANCH" \
+              --title "shaon ${TAG}" \
+              --body "Updates the \`shaon\` Homebrew formula to ${TAG}." \
+            )"
+          fi
+          gh pr merge --repo avivsinai/homebrew-tap --auto --squash --delete-branch "$pr_url" || true
+
+  update-scoop:
+    name: Update Scoop Manifest
+    needs: [prepare, release]
+    if: >-
+      needs.prepare.result == 'success' && needs.prepare.outputs.prerelease != 'true'
+      && secrets.PACKAGING_REPO_GITHUB_TOKEN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Open bucket update PR
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHA_WIN="$(sha256sum artifacts/shaon-x86_64-pc-windows-msvc.zip | awk '{print $1}')"
+          BRANCH="shaon-${TAG}"
+
+          gh auth setup-git
+          gh repo clone avivsinai/scoop-bucket bucket -- --depth=1
+
+          cd bucket
+          git switch -c "$BRANCH"
+
+          cat > bucket/shaon.json <<EOF
+          {
+              "version": "${VERSION}",
+              "architecture": {
+                  "64bit": {
+                      "url": "https://github.com/avivsinai/shaon/releases/download/${TAG}/shaon-x86_64-pc-windows-msvc.zip",
+                      "bin": [
+                          "shaon.exe"
+                      ],
+                      "hash": "${SHA_WIN}"
+                  }
+              },
+              "homepage": "https://github.com/avivsinai/shaon",
+              "license": "MIT",
+              "description": "Automate Hilanet attendance, payslips, salary, and reports for your own account"
+          }
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/shaon.json
+          if git diff --cached --quiet; then
+            echo "Manifest already up to date."
+            exit 0
+          fi
+
+          git commit -m "shaon ${TAG}"
+          git push --force-with-lease -u origin "$BRANCH"
+
+          pr_url="$(gh pr list --repo avivsinai/scoop-bucket --head "$BRANCH" --json url --jq '.[0].url')"
+          if [[ -z "$pr_url" ]]; then
+            pr_url="$(gh pr create \
+              --repo avivsinai/scoop-bucket \
+              --base main \
+              --head "$BRANCH" \
+              --title "shaon ${TAG}" \
+              --body "Updates the \`shaon\` Scoop manifest to ${TAG}." \
+            )"
+          fi
+          gh pr merge --repo avivsinai/scoop-bucket --auto --squash --delete-branch "$pr_url" || true

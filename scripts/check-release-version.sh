@@ -1,53 +1,82 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() {
-  cat <<'EOF'
-Usage: ./scripts/check-release-version.sh <version>
-EOF
+raw_version="${1:?usage: ./scripts/check-release-version.sh [v]X.Y.Z}"
+version="${raw_version#v}"
+
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$' || {
+  echo "error: version must be X.Y.Z or X.Y.Z-rc.1, got: $raw_version" >&2
+  exit 1
 }
 
-if [[ $# -ne 1 ]]; then
-  usage >&2
-  exit 1
-fi
-
-version="${1#v}"
-root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$root_dir"
-
-read_package_version() {
+cargo_version="$(
   awk '
-    BEGIN { in_workspace_package = 0; in_package = 0 }
-    /^\[workspace\.package\]/ { in_workspace_package = 1; in_package = 0; next }
-    /^\[package\]/ { in_package = 1; in_workspace_package = 0; next }
-    /^\[/ { in_workspace_package = 0; in_package = 0 }
-    (in_workspace_package || in_package) && $1 == "version" {
+    /^\[workspace\.package\]$/ { in_section = 1; next }
+    /^\[/ { in_section = 0 }
+    in_section && $1 == "version" {
       gsub(/"/, "", $3)
       print $3
       exit
     }
   ' Cargo.toml
-}
+)"
 
-package_version="$(read_package_version)"
-if [[ "$package_version" != "$version" ]]; then
-  echo "error: Cargo.toml version is $package_version, expected $version" >&2
+if [[ -z "$cargo_version" ]]; then
+  echo "error: could not read workspace version from Cargo.toml" >&2
   exit 1
 fi
 
-for plugin_json in .claude-plugin/plugin.json .codex-plugin/plugin.json; do
-  [[ -f "$plugin_json" ]] || continue
-  plugin_version="$(
-    sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$plugin_json" | head -n1
-  )"
-  if [[ "$plugin_version" != "$version" ]]; then
-    echo "error: $plugin_json version is $plugin_version, expected $version" >&2
-    exit 1
-  fi
-done
-
-if ! grep -q "^## \[$version\]" CHANGELOG.md; then
-  echo "error: CHANGELOG.md is missing a release entry for $version" >&2
+if [[ "$cargo_version" != "$version" ]]; then
+  echo "error: Cargo.toml version $cargo_version does not match release $version" >&2
   exit 1
 fi
+
+python3 - "$version" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+version = sys.argv[1]
+mismatches = []
+
+for path in sorted(pathlib.Path("skills").glob("*/SKILL.md")):
+    text = path.read_text()
+    match = re.match(r"(?s)^---\n(.*?)\n---\n", text)
+    if not match:
+        mismatches.append((str(path), "<missing frontmatter>"))
+        continue
+    frontmatter = match.group(1)
+    version_match = re.search(r"(?m)^version:\s*([0-9A-Za-z.+-]+)\s*$", frontmatter)
+    if not version_match:
+        mismatches.append((str(path), "<missing version>"))
+        continue
+    actual = version_match.group(1)
+    if actual != version:
+        mismatches.append((str(path), actual))
+
+for path in [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]:
+    pp = pathlib.Path(path)
+    if not pp.exists():
+        continue
+    actual = json.loads(pp.read_text()).get("version")
+    if actual != version:
+        mismatches.append((path, actual))
+
+changelog = pathlib.Path("CHANGELOG.md")
+if not changelog.exists():
+    mismatches.append(("CHANGELOG.md", "<missing>"))
+else:
+    text = changelog.read_text()
+    pattern = rf"(?m)^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$"
+    if not re.search(pattern, text):
+        mismatches.append(("CHANGELOG.md", "<missing release heading>"))
+
+if mismatches:
+    print(f"release metadata version mismatch for {version}:")
+    for path, actual in mismatches:
+        print(f"  - {path}: {actual!r}")
+    raise SystemExit(1)
+
+print(f"release metadata matches {version}")
+PY
