@@ -48,6 +48,7 @@ Rust requirement: 1.80+.
 - Release from `main` only through `./scripts/release.sh X.Y.Z` and the resulting release PR; do not create manual tags or GitHub releases.
 - Keep one version across `CHANGELOG.md`, workspace metadata, skill frontmatter, and plugin manifests.
 - The release PR merge is the trigger. CI validates the merged `chore(release): vX.Y.Z` commit, creates the matching tag, publishes the GitHub release from the committed changelog entry, and then opens `gh`-driven PRs to update Homebrew and Scoop.
+- GitHub Actions workflow permissions for this repo must stay on `Read and write`; the release workflow publishes the GitHub release with `gh`.
 - `skills-marketplace` is a registry pointer to this repo's default branch. Once `shaon` is listed there, marketplace installs track `main`; no separate marketplace release job is required for day-to-day skill changes.
 
 Use the fast release path:
