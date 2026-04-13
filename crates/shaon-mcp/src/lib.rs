@@ -400,6 +400,17 @@ fn write_preview_json(action: &str, preview: &WritePreview) -> serde_json::Value
     })
 }
 
+fn fill_result_json(date: NaiveDate, preview: &WritePreview) -> serde_json::Value {
+    let mut value = write_preview_json("fill_day", preview);
+    if let serde_json::Value::Object(ref mut object) = value {
+        object.insert(
+            "date".to_string(),
+            serde_json::json!(date.format("%Y-%m-%d").to_string()),
+        );
+    }
+    value
+}
+
 fn find_fix_target_for_date(
     fix_targets: &[FixTarget],
     date: NaiveDate,
@@ -752,7 +763,7 @@ impl ShaonMcpServer {
     }
 
     #[tool(
-        description = "Fill attendance for a date range. Defaults to dry-run preview. Skips weekends (Fri/Sat). Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
+        description = "Fill attendance for a date range. Defaults to dry-run preview. Skips weekends (Fri/Sat). Returns one full server-generated preview object per processed day so a client can show the dry-run before approval. Human-attested write. Only set execute=true after the user has reviewed the dry-run preview and explicitly confirmed submission."
     )]
     async fn shaon_fill(&self, Parameters(req): Parameters<FillParam>) -> String {
         json_or_error(|| async {
@@ -792,13 +803,7 @@ impl ShaonMcpServer {
             let results: Vec<serde_json::Value> = dates
                 .into_iter()
                 .zip(previews.iter())
-                .map(|(date, preview)| {
-                    serde_json::json!({
-                        "date": date.format("%Y-%m-%d").to_string(),
-                        "executed": preview.executed,
-                        "employee_id": preview.debug_field("employee_id"),
-                    })
-                })
+                .map(|(date, preview)| fill_result_json(date, preview))
                 .collect();
 
             Ok(serde_json::json!({

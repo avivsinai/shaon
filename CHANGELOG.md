@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed
+- `shaon auth` now re-prompts and refreshes stored credentials when the existing password fails verification, and `shaon auth --force-prompt` forces a deterministic credential refresh.
+- `shaon payroll payslip password` now requires `--force-sensitive-output` and carries stronger current-password-only warning text in CLI/docs/skill routing.
+- `shaon_fill` MCP responses now return full per-day preview objects instead of only `{date, executed, employee_id}` stubs.
+
+### Security
+- Async ASP.NET write responses now fail closed with an outcome-unknown error when Hilan returns HTML/login content or malformed delta instead of a valid async write response.
+- Downloaded payslip PDFs are now chmod `0600` on Unix after write.
 
 ## [0.8.1] - 2026-04-12
 ### Added

@@ -17,11 +17,28 @@ const KEYRING_SERVICE: &str = "shaon-cli";
 const KEYRING_SCHEMA_VERSION: u32 = 1;
 pub const LOCAL_MASTER_KEY_LEN: usize = 32;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 struct StoredCredentials {
     v: u32,
     password: String,
     local_master_key: String,
+}
+
+impl fmt::Debug for StoredCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredCredentials")
+            .field("v", &self.v)
+            .field("password", &"[REDACTED]")
+            .field("local_master_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for StoredCredentials {
+    fn drop(&mut self) {
+        self.password.zeroize();
+        self.local_master_key.zeroize();
+    }
 }
 
 impl StoredCredentials {
@@ -123,7 +140,8 @@ impl Config {
         }
 
         if let Some(credentials) = self.load_stored_credentials()? {
-            return Ok(SecretString::from(credentials.password));
+            // Clone (not move) so StoredCredentials' Drop can zeroize the source string.
+            return Ok(SecretString::from(credentials.password.clone()));
         }
 
         if self.password.is_some() {

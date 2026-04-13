@@ -214,6 +214,8 @@ struct WriteOutput<'a> {
     preview: &'a attendance::SubmitPreview,
 }
 
+const PAYSLIP_PASSWORD_WARNING: &str = "Sensitive: prints the current Hilan account password in plaintext to standard output. It does not recover historical passwords used for PDFs encrypted before a password change. Output may be captured by shells, terminals, logs, remote sessions, screenshots, and agent transcripts. Run only on a private interactive terminal you control.";
+
 impl<'a> WriteOutput<'a> {
     fn new(action: &'a str, preview: &'a attendance::SubmitPreview) -> Self {
         Self {
@@ -292,6 +294,13 @@ struct ReportColumn {
 struct ReportRow {
     index: usize,
     cells: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct AuthArgs {
+    /// Prompt for a new password even if stored credentials already exist
+    #[arg(long)]
+    force_prompt: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -486,8 +495,12 @@ enum PayslipCommand {
         month: Option<String>,
     },
 
-    /// Sensitive: reveals the current Hilan login password in plaintext; use only to open an older password-protected PDF and avoid shared terminals, screenshots, and agent transcripts
-    Password,
+    /// Sensitive: prints the current Hilan login password in plaintext to standard output. Requires --force-sensitive-output and should only be used on a private terminal you control.
+    Password {
+        /// Required acknowledgement for printing the current Hilan password in plaintext
+        #[arg(long)]
+        force_sensitive_output: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -535,7 +548,7 @@ enum CacheCommand {
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
     /// Authenticate with Hilan and store verified credentials
-    Auth,
+    Auth(AuthArgs),
 
     /// Attendance reads and writes
     Attendance {
@@ -614,7 +627,7 @@ pub async fn run() -> Result<()> {
     let json = cli.json;
 
     match cli.command {
-        Commands::Auth => run_auth(config, json).await?,
+        Commands::Auth(args) => run_auth(config, json, args.force_prompt).await?,
         Commands::Attendance { command } => {
             let client = provider_hilan::build_provider(config)?.into_inner();
             run_attendance_command(command, client, &subdomain, json).await?;
@@ -638,33 +651,49 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn run_auth(mut config: Config, json: bool) -> Result<()> {
-    let mut verified_during_setup = false;
-
-    match config.get_password() {
-        Ok(_) => {
-            eprintln!("Password already available. Testing login...");
-        }
-        Err(_) => {
-            let password =
-                rpassword::prompt_password("Enter your Hilan password (input is hidden): ")
-                    .context("read password from terminal")?;
-            let pending = config.prepare_stored_credentials(password);
-            let mut client = provider_hilan::build_provider(config.clone())?.into_inner();
-            client.login_with_password(pending.password()).await?;
-            config = pending.commit()?;
-            verified_during_setup = true;
+async fn run_auth(config: Config, json: bool, force_prompt: bool) -> Result<()> {
+    if force_prompt {
+        prompt_and_store_credentials(config).await?;
+    } else {
+        match config.get_password() {
+            Ok(_) => {
+                eprintln!("Password already available. Testing login...");
+                let mut client = provider_hilan::build_provider(config.clone())?.into_inner();
+                if let Err(err) = client.login().await {
+                    if should_prompt_for_fresh_password(&err) {
+                        eprintln!(
+                            "Stored credentials failed verification. Prompting for a new password..."
+                        );
+                        prompt_and_store_credentials(config).await?;
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
+            Err(_) => {
+                prompt_and_store_credentials(config).await?;
+            }
         }
     }
 
-    if !verified_during_setup {
-        let mut client = provider_hilan::build_provider(config)?.into_inner();
-        client.login().await?;
-    }
     if json {
         print_json(&serde_json::json!({"status": "ok"}))?;
     }
     Ok(())
+}
+
+fn should_prompt_for_fresh_password(err: &anyhow::Error) -> bool {
+    let message = err.to_string().to_lowercase();
+    message.contains("login failed") || message.contains("password change required")
+}
+
+async fn prompt_and_store_credentials(config: Config) -> Result<Config> {
+    let password = rpassword::prompt_password("Enter your Hilan password (input is hidden): ")
+        .context("read password from terminal")?;
+    let pending = config.prepare_stored_credentials(password);
+    let mut client = provider_hilan::build_provider(config.clone())?.into_inner();
+    client.login_with_password(pending.password()).await?;
+    pending.commit()
 }
 
 async fn run_attendance_command(
@@ -1005,8 +1034,16 @@ async fn run_payslip_command(
                 );
             }
         }
-        PayslipCommand::Password => {
+        PayslipCommand::Password {
+            force_sensitive_output,
+        } => {
+            if !force_sensitive_output {
+                bail!(
+                    "Sensitive command. Re-run `shaon payroll payslip password --force-sensitive-output` only on a private interactive terminal you control."
+                );
+            }
             let password = client.config().get_password()?;
+            eprintln!("{PAYSLIP_PASSWORD_WARNING}");
             if json {
                 print_json(&serde_json::json!({
                     "password": password.expose_secret(),
@@ -1775,6 +1812,27 @@ mod tests {
     }
 
     #[test]
+    fn auth_force_prompt_flag_parses() {
+        let cli = Cli::try_parse_from(["shaon", "auth", "--force-prompt"]).expect("parse auth");
+
+        match cli.command {
+            Commands::Auth(AuthArgs { force_prompt }) => assert!(force_prompt),
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_prompt_for_fresh_password_only_on_credential_failures() {
+        let stale = anyhow::anyhow!("Login failed: wrong password");
+        let changed = anyhow::anyhow!("Password change required. Please update your password.");
+        let captcha = anyhow::anyhow!("CAPTCHA required. Please log in via browser.");
+
+        assert!(should_prompt_for_fresh_password(&stale));
+        assert!(should_prompt_for_fresh_password(&changed));
+        assert!(!should_prompt_for_fresh_password(&captcha));
+    }
+
+    #[test]
     fn find_fix_target_for_date_returns_the_matching_target() {
         let target = CoreFixTarget {
             date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
@@ -1967,5 +2025,24 @@ mod tests {
 
         assert_eq!(value["entries"][0]["month"], "2026-03");
         assert_eq!(value["entries"][0]["amount"], 123456);
+    }
+
+    #[test]
+    fn payslip_password_requires_force_sensitive_output_flag() {
+        let err = Cli::try_parse_from(["shaon", "payroll", "payslip", "password"])
+            .expect("parse without force flag still succeeds");
+
+        match err.command {
+            Commands::Payroll {
+                command:
+                    PayrollCommand::Payslip {
+                        command:
+                            PayslipCommand::Password {
+                                force_sensitive_output,
+                            },
+                    },
+            } => assert!(!force_sensitive_output),
+            other => panic!("unexpected command shape: {other:?}"),
+        }
     }
 }
