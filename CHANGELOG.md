@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-04-13
 ### Added
 - Windows packaging is now part of the release pipeline, enabling Scoop distribution for future releases.
 - Release metadata validation now checks skill frontmatter versions in addition to plugin manifests and `Cargo.toml`.
@@ -15,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Release automation now follows the same PR-based flow as `yoetz`: merge `chore(release): vX.Y.Z` on `main`, let CI create the tag/release, and then open `gh`-driven PRs to update Homebrew and Scoop.
 - `README.md` now documents the marketplace, `skills.sh`, Homebrew, Scoop, checksum verification, and release/download surfaces in the same style as the other public Aviv Sinai CLI repos.
 - Plugin metadata and the `shaon` skill frontmatter are now kept in-version with the workspace release.
+
 
 ## [0.8.2] - 2026-04-13
 ### Added

@@ -1,6 +1,6 @@
 ---
 name: shaon
-version: 0.8.2
+version: 0.8.3
 description: >
   Personal attendance, payslip, salary, and related self-service tasks on the
   user's own Hilan account. Trigger on shaon, attendance, clock in/out, payslip,
