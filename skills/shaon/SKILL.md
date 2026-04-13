@@ -80,6 +80,13 @@ shaon auth
 
 `attendance overview` is usually the best first move for an agent because it bundles identity, summary, errors, missing days, and suggested actions.
 
+JSON contract notes:
+
+- `attendance status --json` returns `{ month, employee_id, days[] }` with `day_name`, `entry_time`, `exit_time`, `attendance_type`, `total_hours`, `has_error`, `error_message`, and `source`.
+- `attendance overview --json` returns `missing_days` as `{ date, day_name }` objects.
+- `suggested_actions` is keyed by `kind`; fields are top-level, not nested inside a generic `params` object.
+- `attendance overview --json --detailed` adds a `days[]` array using the same schema as `attendance status --json`.
+
 ## Write Commands
 
 ### Explicit reporting
