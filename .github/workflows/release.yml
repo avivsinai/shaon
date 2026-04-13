@@ -306,7 +306,6 @@ jobs:
     needs: [prepare, release]
     if: >-
       needs.prepare.result == 'success' && needs.release.result == 'success'
-      && secrets.SKILD_AUTH_JSON != ''
       && (github.event_name == 'push' || inputs.skip_skill_publish != true)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -321,18 +320,35 @@ jobs:
         with:
           node-version: 20
 
+      - name: Check skild auth
+        id: skild_auth
+        shell: bash
+        env:
+          SKILD_AUTH_JSON: ${{ secrets.SKILD_AUTH_JSON }}
+        run: |
+          if [[ -z "${SKILD_AUTH_JSON:-}" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "SKILD_AUTH_JSON is not configured; skipping skill publish."
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
       - name: Install skild
+        if: steps.skild_auth.outputs.available == 'true'
         run: npm install -g skild
 
       - name: Configure skild auth
+        if: steps.skild_auth.outputs.available == 'true'
         run: |
           mkdir -p ~/.skild
           echo '${{ secrets.SKILD_AUTH_JSON }}' > ~/.skild/registry-auth.json
 
       - name: Verify release metadata
+        if: steps.skild_auth.outputs.available == 'true'
         run: ./scripts/check-release-version.sh "${{ needs.prepare.outputs.version }}"
 
       - name: Publish skills
+        if: steps.skild_auth.outputs.available == 'true'
         run: |
           TAG_VERSION="${{ needs.prepare.outputs.version }}"
 
@@ -394,7 +410,6 @@ jobs:
     needs: [prepare, release]
     if: >-
       needs.prepare.result == 'success' && needs.prepare.outputs.prerelease != 'true'
-      && secrets.PACKAGING_REPO_GITHUB_TOKEN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -405,7 +420,21 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Check packaging token
+        id: packaging_token
+        shell: bash
+        env:
+          PACKAGING_REPO_GITHUB_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
+        run: |
+          if [[ -z "${PACKAGING_REPO_GITHUB_TOKEN:-}" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "PACKAGING_REPO_GITHUB_TOKEN is not configured; skipping Homebrew update."
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
       - name: Open tap update PR
+        if: steps.packaging_token.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -503,7 +532,6 @@ jobs:
     needs: [prepare, release]
     if: >-
       needs.prepare.result == 'success' && needs.prepare.outputs.prerelease != 'true'
-      && secrets.PACKAGING_REPO_GITHUB_TOKEN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -514,7 +542,21 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Check packaging token
+        id: packaging_token
+        shell: bash
+        env:
+          PACKAGING_REPO_GITHUB_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
+        run: |
+          if [[ -z "${PACKAGING_REPO_GITHUB_TOKEN:-}" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "PACKAGING_REPO_GITHUB_TOKEN is not configured; skipping Scoop update."
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
       - name: Open bucket update PR
+        if: steps.packaging_token.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}

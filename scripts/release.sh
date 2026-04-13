@@ -259,17 +259,20 @@ pr_url="$(
     --body "${pr_body}"
 )"
 
+auto_merge_enabled=0
 if [[ "$auto_merge" -eq 1 ]]; then
-  gh pr merge --auto --squash --delete-branch "$pr_url" || {
+  if gh pr merge --auto --squash --delete-branch "$pr_url"; then
+    auto_merge_enabled=1
+  else
     echo "warning: failed to enable auto-merge; merge manually or rerun with --no-auto-merge" >&2
-  }
+  fi
 fi
 
 echo ""
 echo "Prepared ${tag}"
 echo "Release branch: ${branch}"
 echo "Pull request: ${pr_url}"
-if [[ "$auto_merge" -eq 1 ]]; then
+if [[ "$auto_merge_enabled" -eq 1 ]]; then
   echo "Auto-merge: enabled (squash)"
 else
   echo "Auto-merge: not enabled — merge manually"
