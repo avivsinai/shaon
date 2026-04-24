@@ -29,7 +29,7 @@ hkdf = "0.12"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 lopdf = "0.40"
 predicates = "3"
-rand = "0.8"
+rand = "0.10"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "charset", "http2"] }
 reqwest_cookie_store = "0.8"
