@@ -252,6 +252,7 @@ struct OverviewResponse {
 
 #[derive(Debug, Clone)]
 pub struct ShaonMcpServer {
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
