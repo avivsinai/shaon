@@ -6,6 +6,9 @@ aspx = "aspx"
 asmx = "asmx"
 # Variable name for <th> elements in HTML parsing
 ths = "ths"
+# Hilan uses these misspellings in CSS classes and control IDs.
+Abcense = "Abcense"
+Updator = "Updator"
 
 [files]
 extend-exclude = [
