@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::sync::LazyLock;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -19,6 +19,16 @@ static CAL_MESSAGE_SEL: LazyLock<Selector> =
 static CAL_ICON_SEL: LazyLock<Selector> = LazyLock::new(|| {
     Selector::parse("td.imageContainerStyle span.calendarIcon").expect("valid selector")
 });
+static REPORT_DAY_ROW_SEL: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse(r#"tr[id*="_RG_Days_"][id$="_row_0"]"#).expect("valid selector")
+});
+static REPORT_DATE_CELL_SEL: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse(r#"td[id*="cellOf_ReportDate_row_"]"#).expect("valid selector")
+});
+static TABLE_CELL_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("td").expect("valid selector"));
+static INPUT_SEL: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("input").expect("valid selector"));
 static SELECT_SEL: LazyLock<Selector> =
     LazyLock::new(|| Selector::parse("select").expect("valid selector"));
 static OPTION_SELECTED_SEL: LazyLock<Selector> =
@@ -33,6 +43,16 @@ static ROW_0_TOP_CELL_SEL: LazyLock<Selector> =
 const LABEL_WORK_DAY: &str = "work day";
 const LABEL_VACATION: &str = "vacation";
 const EMPTY_OBJECT_ID: &str = "00000000-0000-0000-0000-000000000000";
+
+/// Hilan calendar-row form field name fragments. The actual form field
+/// names embed these as `{prefix}$cellOf_{FRAGMENT}_row_0_0${FRAGMENT}_row_0_0`,
+/// and the detail-row parser matches them against `name`/`id` attributes.
+const FIELD_MANUAL_ENTRY: &str = "ManualEntry_EmployeeReports";
+const FIELD_MANUAL_EXIT: &str = "ManualExit_EmployeeReports";
+const FIELD_MANUAL_TOTAL: &str = "ManualTotal_EmployeeReports";
+const FIELD_COMMENT: &str = "Comment_EmployeeReports";
+const FIELD_SYMBOL: &str = "Symbol.SymbolId_EmployeeReports";
+const FIELD_COMPLETION: &str = "CompletionToStandard_EmployeeReports";
 const CONFLICTING_REPORT_MESSAGE_FRAGMENT: &str = "קיים דיווח";
 const CALENDAR_BROWSER_FIELDS: &[&str] = &[
     "DisableTimeout",
@@ -584,6 +604,7 @@ async fn probe_month_days(
 fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>> {
     let document = Html::parse_document(html);
     let mut days = parse_calendar_grid(&document, month);
+    days.extend(parse_calendar_detail_rows_from_dom(&document, month));
 
     if days.is_empty() {
         // Fallback for the tabular attendance grid, which appears in some
@@ -607,35 +628,165 @@ fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>>
         }
     }
 
-    // Sort by date
-    days.sort_by_key(|d| d.date);
-
-    // Deduplicate by date (keep the one with more information)
-    days.dedup_by(|b, a| {
-        if a.date == b.date {
-            // Keep whichever has more data
-            if b.entry_time.is_some() && a.entry_time.is_none() {
-                *a = CalendarDay {
-                    date: b.date,
-                    day_name: std::mem::take(&mut b.day_name),
-                    has_error: b.has_error || a.has_error,
-                    error_message: b.error_message.take().or(a.error_message.take()),
-                    entry_time: b.entry_time.take(),
-                    exit_time: b.exit_time.take(),
-                    attendance_type: b.attendance_type.take().or(a.attendance_type.take()),
-                    total_hours: b.total_hours.take().or(a.total_hours.take()),
-                    source: preferred_source(b.source, a.source),
-                };
-            } else {
-                a.source = preferred_source(a.source, b.source);
-            }
-            true
-        } else {
-            false
-        }
-    });
+    let days = merge_calendar_days(days);
 
     Ok(days)
+}
+
+fn merge_calendar_days(days: Vec<CalendarDay>) -> Vec<CalendarDay> {
+    let mut merged = BTreeMap::new();
+    for day in days {
+        match merged.entry(day.date) {
+            Entry::Vacant(entry) => {
+                entry.insert(day);
+            }
+            Entry::Occupied(mut entry) => {
+                merge_calendar_day_into(entry.get_mut(), day);
+            }
+        }
+    }
+    merged.into_values().collect()
+}
+
+fn merge_calendar_day_into(existing: &mut CalendarDay, candidate: CalendarDay) {
+    let candidate_source = candidate.source;
+
+    if !candidate.day_name.is_empty() {
+        existing.day_name = candidate.day_name;
+    }
+    existing.has_error |= candidate.has_error;
+    if candidate.error_message.is_some() {
+        existing.error_message = candidate.error_message;
+    }
+    if candidate.entry_time.is_some() {
+        existing.entry_time = candidate.entry_time;
+    }
+    if candidate.exit_time.is_some() {
+        existing.exit_time = candidate.exit_time;
+    }
+    if candidate.attendance_type.is_some() {
+        existing.attendance_type = candidate.attendance_type;
+    }
+    if candidate.total_hours.is_some() {
+        existing.total_hours = candidate.total_hours;
+    }
+    existing.source = preferred_source(existing.source, candidate_source);
+}
+
+fn parse_calendar_detail_rows_from_dom(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
+    let mut days = Vec::new();
+
+    for row in document.select(&REPORT_DAY_ROW_SEL) {
+        let Some(date) = parse_detail_row_date(&row, month) else {
+            continue;
+        };
+
+        let entry_time = detail_input_value(&row, FIELD_MANUAL_ENTRY)
+            .or_else(|| detail_cell_time(&row, &format!("cellOf_{FIELD_MANUAL_ENTRY}")));
+        let exit_time = detail_input_value(&row, FIELD_MANUAL_EXIT)
+            .or_else(|| detail_cell_time(&row, &format!("cellOf_{FIELD_MANUAL_EXIT}")));
+        let total_hours = detail_cell_time(&row, &format!("cellOf_{FIELD_MANUAL_TOTAL}"));
+        let attendance_type = detail_cell_text(&row, &format!("cellOf_{FIELD_SYMBOL}"))
+            .or_else(|| detail_select_text(&row, FIELD_SYMBOL));
+
+        if entry_time.is_none()
+            && exit_time.is_none()
+            && total_hours.is_none()
+            && attendance_type.is_none()
+        {
+            continue;
+        }
+
+        let source = if attendance_type.is_some() || entry_time.is_some() || exit_time.is_some() {
+            source_from_calendar_state("", None, attendance_type.as_deref())
+        } else {
+            hr_core::AttendanceSource::Unreported
+        };
+
+        days.push(CalendarDay {
+            date,
+            day_name: date.format("%a").to_string(),
+            has_error: false,
+            error_message: None,
+            entry_time,
+            exit_time,
+            attendance_type,
+            total_hours,
+            source,
+        });
+    }
+
+    days
+}
+
+fn parse_detail_row_date(row: &ElementRef<'_>, month: NaiveDate) -> Option<NaiveDate> {
+    let cell = row.select(&REPORT_DATE_CELL_SEL).next()?;
+    let day_num = cell
+        .value()
+        .attr("ov")
+        .and_then(extract_day_number)
+        .or_else(|| cell.value().attr("title").and_then(extract_day_number))
+        .or_else(|| extract_day_number(&cell_visible_text(&cell)))?;
+
+    NaiveDate::from_ymd_opt(month.year(), month.month(), day_num)
+}
+
+fn detail_input_value(row: &ElementRef<'_>, field_fragment: &str) -> Option<String> {
+    row.select(&INPUT_SEL)
+        .find(|input| {
+            element_attr_contains(input, "name", field_fragment)
+                || element_attr_contains(input, "id", field_fragment)
+        })
+        .and_then(|input| normalized_cell_value(input.value().attr("value")))
+}
+
+fn detail_cell_time(row: &ElementRef<'_>, cell_fragment: &str) -> Option<String> {
+    detail_cell_text(row, cell_fragment).filter(|text| is_time_pattern(text))
+}
+
+fn detail_cell_text(row: &ElementRef<'_>, cell_fragment: &str) -> Option<String> {
+    row.select(&TABLE_CELL_SEL)
+        .find(|cell| element_attr_contains(cell, "id", cell_fragment))
+        .and_then(|cell| {
+            let text = cell_visible_text(&cell);
+            normalized_cell_value(Some(text.as_str()))
+                .or_else(|| normalized_cell_value(cell.value().attr("ov")))
+        })
+}
+
+fn detail_select_text(row: &ElementRef<'_>, field_fragment: &str) -> Option<String> {
+    let select = row.select(&SELECT_SEL).find(|select| {
+        element_attr_contains(select, "name", field_fragment)
+            || element_attr_contains(select, "id", field_fragment)
+    })?;
+
+    select
+        .select(&OPTION_SELECTED_SEL)
+        .next()
+        .or_else(|| {
+            select
+                .select(&OPTION_ANY_SEL)
+                .find(|option| option.value().attr("value").is_some_and(|v| !v.is_empty()))
+        })
+        .or_else(|| select.select(&OPTION_ANY_SEL).next())
+        .and_then(|option| normalized_cell_value(Some(&option.text().collect::<String>())))
+}
+
+fn element_attr_contains(element: &ElementRef<'_>, attr: &str, needle: &str) -> bool {
+    element
+        .value()
+        .attr(attr)
+        .is_some_and(|value| value.contains(needle))
+}
+
+fn normalized_cell_value(value: Option<&str>) -> Option<String> {
+    let value = value?.replace('\u{a0}', " ");
+    let value = value.trim();
+    if value.is_empty() || value == "--:--" || value == "&nbsp;" {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 /// Try to interpret a table row as a calendar day entry.
@@ -1146,11 +1297,12 @@ pub(crate) async fn submit_day_with_context(
         context = refreshed_context;
     }
 
+    let object_id = calendar_submit_object_id(&context).to_string();
     let submit_result = replay_submit_with_fields(
         client,
         &context.url,
         submit,
-        EMPTY_OBJECT_ID,
+        &object_id,
         "שמירה",
         execute,
         context.fields.clone(),
@@ -1196,11 +1348,12 @@ pub(crate) async fn submit_day_with_context(
                         preview,
                     )
                 }));
+                let object_id = calendar_submit_object_id(&refreshed_context).to_string();
                 let preview = replay_submit_with_fields(
                     client,
                     &refreshed_context.url,
                     submit,
-                    EMPTY_OBJECT_ID,
+                    &object_id,
                     "שמירה",
                     execute,
                     refreshed_context.fields,
@@ -1218,6 +1371,16 @@ pub(crate) async fn submit_day_with_context(
         }
         Err(err) => Err(err),
     }
+}
+
+fn calendar_submit_object_id(context: &CalendarSubmitContext) -> &str {
+    // Hilan submits against the first populated row ObjectId in the selected-day grid.
+    context
+        .reports
+        .iter()
+        .find(|report| report.object_id != EMPTY_OBJECT_ID)
+        .map(|report| report.object_id.as_str())
+        .unwrap_or(EMPTY_OBJECT_ID)
 }
 
 pub(crate) async fn load_calendar_submit_context(
@@ -1440,17 +1603,23 @@ async fn load_calendar_submit_form(
         .with_context(|| format!("load calendar form for {}", date.format("%Y-%m-%d")))?;
     let (_html, fields) = load_month_page(client, url, html, fields, date).await?;
     let selected_day = calendar_selected_day_value(date);
+    // RefreshSelectedDays expects the browser's leading-comma encoding; save posts the bare day.
+    let refresh_selected_days = format!(",{selected_day}");
     let month_value = month_field_value(date);
     let response = client
-        .post_aspx_async(
+        .post_aspx_async_event_write(
             url,
             &fields,
             &[
-                ("__calendarSelectedDays", selected_day.as_str()),
+                ("__calendarSelectedDays", refresh_selected_days.as_str()),
                 ("ctl00$mp$currentMonth", month_value.as_str()),
+                ("ctl00$mp$RefreshSelectedDays", "ימים נבחרים"),
             ],
             "ctl00$ms",
-            "ctl00$mp$RefreshSelectedDays",
+            "ctl00$mp$upBtns|ctl00$mp$RefreshSelectedDays",
+            "",
+            "",
+            true,
         )
         .await
         .with_context(|| format!("select calendar day {}", date.format("%Y-%m-%d")))?;
@@ -1459,7 +1628,7 @@ async fn load_calendar_submit_form(
         &response,
     );
 
-    let fields = if response.contains("<html") || response.contains("<!DOCTYPE") {
+    let mut fields = if response.contains("<html") || response.contains("<!DOCTYPE") {
         crate::client::parse_aspx_form_fields(&response)
     } else {
         let entries = crate::client::parse_aspx_delta(&response);
@@ -1479,6 +1648,9 @@ async fn load_calendar_submit_form(
             date.format("%Y-%m-%d")
         );
     }
+    // Delta refreshes omit these browser-maintained fields, but the final save depends on them.
+    fields.insert("__calendarSelectedDays".to_string(), selected_day);
+    fields.insert("ctl00$mp$currentMonth".to_string(), month_value);
 
     Ok((response, fields))
 }
@@ -1505,20 +1677,13 @@ async fn replay_submit_with_fields(
     let short_employee_id = bootstrap.employee_id;
 
     let prefix = day_field_prefix(&employee_id, submit.date);
-    let entry_key = format!(
-        "{prefix}$cellOf_ManualEntry_EmployeeReports_row_0_0$ManualEntry_EmployeeReports_row_0_0"
-    );
-    let exit_key = format!(
-        "{prefix}$cellOf_ManualExit_EmployeeReports_row_0_0$ManualExit_EmployeeReports_row_0_0"
-    );
-    let comment_key =
-        format!("{prefix}$cellOf_Comment_EmployeeReports_row_0_0$Comment_EmployeeReports_row_0_0");
-    let type_key = format!(
-        "{prefix}$cellOf_Symbol.SymbolId_EmployeeReports_row_0_0$Symbol.SymbolId_EmployeeReports_row_0_0"
-    );
-    let completion_key = format!(
-        "{prefix}$cellOf_CompletionToStandard_EmployeeReports_row_0_0$CompletionToStandard_EmployeeReports_row_0_0"
-    );
+    let row_field =
+        |fragment: &str| format!("{prefix}$cellOf_{fragment}_row_0_0${fragment}_row_0_0");
+    let entry_key = row_field(FIELD_MANUAL_ENTRY);
+    let exit_key = row_field(FIELD_MANUAL_EXIT);
+    let comment_key = row_field(FIELD_COMMENT);
+    let type_key = row_field(FIELD_SYMBOL);
+    let completion_key = row_field(FIELD_COMPLETION);
     let button_name = format!("{prefix}$btnSave");
 
     let mut replay_fields = base_fields;
@@ -1534,6 +1699,9 @@ async fn replay_submit_with_fields(
     // by the browser. Drop those to match browser fidelity.
     let allowlist = browser_field_allowlist(page);
     replay_fields.retain(|key, _| allowlist.contains(&key.as_str()) || key.starts_with(&prefix));
+    if page == SubmitPage::Calendar {
+        replay_fields.insert("ctl00$mp$Strip$ACESearch_Value".to_string(), String::new());
+    }
 
     let mut overrides: Vec<(String, String)> = Vec::new();
 
@@ -1586,8 +1754,13 @@ async fn replay_submit_with_fields(
 
     // Build the DirtyFields JSON that Hilan requires to confirm which fields changed.
     // Without this, the server silently ignores all form field updates.
-    let dirty_fields_json =
-        build_dirty_fields_json(submit, short_employee_id, object_id, needs_completion_dirty);
+    let include_completion_dirty = page == SubmitPage::Calendar || needs_completion_dirty;
+    let dirty_fields_json = build_dirty_fields_json(
+        submit,
+        short_employee_id,
+        object_id,
+        include_completion_dirty,
+    );
     let reports_grid_key = format!(
         "ctl00_mp_RG_Days_{}_{:04}_{:02}_reportsGrid_data",
         employee_id,
@@ -1598,7 +1771,7 @@ async fn replay_submit_with_fields(
     overrides.push((
         "ReportPageMode".to_string(),
         match page {
-            SubmitPage::Calendar => "7",
+            SubmitPage::Calendar => "2",
             SubmitPage::ErrorWizard => "Days",
         }
         .to_string(),
@@ -2200,6 +2373,64 @@ mod tests {
         assert_eq!(day.source, hr_core::AttendanceSource::UserReported);
         assert!(day.is_reported());
         assert!(!day.has_error);
+    }
+
+    #[test]
+    fn selected_day_detail_row_enriches_visual_calendar_status() {
+        let html = r#"
+            <html><body>
+                <table><tbody><tr>
+                    <td class="cDIES CSD" Days="9612" tabindex="0" aria-label="26" title="9:00">
+                        <table class="iDSIE">
+                            <tr class="dayImageNumberContainer">
+                                <td class="dTS">26</td>
+                                <td class="imageContainerStyle"></td>
+                            </tr>
+                            <tr>
+                                <td class="calendarMessageCell" colspan="2"><div class="cDM">9:00</div></td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr></tbody></table>
+                <table><tbody>
+                    <tr id="ctl00_mp_RG_Days_460627_2026_04_row_0">
+                        <td id="ctl00_mp_RG_Days_460627_2026_04_cellOf_ReportDate_row_0" ov="26/04 יום&nbsp;א">
+                            <span>26/04 יום&nbsp;א</span>
+                        </td>
+                        <td>
+                            <table><tbody>
+                                <tr id="ctl00_mp_RG_Days_460627_2026_04_EmployeeReports_row_0_0">
+                                    <td>
+                                        <input name="ctl00$mp$RG_Days_460627_2026_04$cellOf_ManualEntry_EmployeeReports_row_0_0$ManualEntry_EmployeeReports_row_0_0" value="09:00" />
+                                    </td>
+                                    <td>
+                                        <input name="ctl00$mp$RG_Days_460627_2026_04$cellOf_ManualExit_EmployeeReports_row_0_0$ManualExit_EmployeeReports_row_0_0" value="18:00" />
+                                    </td>
+                                    <td>
+                                        <select name="ctl00$mp$RG_Days_460627_2026_04$cellOf_Symbol.SymbolId_EmployeeReports_row_0_0$Symbol.SymbolId_EmployeeReports_row_0_0">
+                                            <option value="0">work day</option>
+                                            <option selected="selected" value="120">work from home</option>
+                                        </select>
+                                    </td>
+                                </tr>
+                            </tbody></table>
+                        </td>
+                    </tr>
+                </tbody></table>
+            </body></html>
+        "#;
+        let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+
+        let days = parse_calendar_html(html, month).expect("parse selected day detail");
+        let day = days
+            .iter()
+            .find(|day| day.date == NaiveDate::from_ymd_opt(2026, 4, 26).unwrap())
+            .expect("day 2026-04-26");
+
+        assert_eq!(day.entry_time.as_deref(), Some("09:00"));
+        assert_eq!(day.exit_time.as_deref(), Some("18:00"));
+        assert_eq!(day.attendance_type.as_deref(), Some("work from home"));
+        assert_eq!(day.source, hr_core::AttendanceSource::UserReported);
     }
 
     #[test]
