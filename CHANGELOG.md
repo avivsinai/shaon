@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- macOS binaries are now signed through `scripts/codesign-macos.sh` with the canonical identifier `io.github.avivsinai.shaon` and an explicit identifier-based designated requirement, so Keychain approvals survive local rebuilds and release upgrades. Existing macOS users may need one final "Always Allow" approval, or to recreate the `shaon-cli` Keychain item, because old approvals were tied to the previous signing requirement.
+
+### Changed
+- `scripts/run.sh` and the release workflow now share the same macOS codesigning helper; `scripts/setup-codesign.sh` is retained as a compatibility notice and is no longer required for normal builds.
 
 ## [0.8.3] - 2026-04-13
 ### Added
@@ -140,7 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Calendar parser: reads `ov` attribute for attendance type (not dropdown text)
 - ASMX API: parse raw JSON directly (no `{"d": ...}` wrapper assumption)
 - Salary: uses `PaymentsAndDeductionsApiapi/GetInitialData` JSON API
-- Codesign: stable identifier `com.avivsinai.shaon` for keychain persistence
+- Codesign: stable shaon identifier for keychain persistence
 - Release script: PR-based workflow (creates branch + PR, not direct push)
 
 ### Fixed

@@ -22,6 +22,9 @@
 The repo is a Cargo workspace. `crates/hr-core` holds the provider-agnostic
 surface, `crates/provider-hilan` contains the Hilan implementation, and the
 root `shaon` package is the compatibility facade plus binary entrypoint.
+On macOS, `scripts/run.sh` signs rebuilt binaries through
+`scripts/codesign-macos.sh` with the release identifier so Keychain approvals
+do not churn between local builds and release artifacts.
 
 For the high-level code map, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
