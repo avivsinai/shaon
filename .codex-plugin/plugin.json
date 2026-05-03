@@ -1,6 +1,6 @@
 {
   "name": "shaon",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "description": "Rust CLI and agent skill for personal attendance, payslip, salary, and related self-service tasks on the user's own Hilan account.",
   "author": {
     "name": "Aviv Sinai",

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-03
+### Changed
+- Calendar attendance submit now mirrors Hilan's async browser transport more closely, including selected-day refresh encoding, browser headers, redirect rejection, hidden field preservation, and existing row ObjectId reuse when overwriting a day.
+- Calendar status parsing now reads selected-day detail rows so entry, exit, total-hours, and attendance-type values survive the visual calendar merge.
+
+### Security
+- Post-login `GetAppInitialData` hydration errors no longer include response bodies, avoiding Hilan app-bootstrap PII in propagated errors and warning logs.
+
 ## [0.8.3] - 2026-04-13
 ### Added
 - Windows packaging is now part of the release pipeline, enabling Scoop distribution for future releases.
