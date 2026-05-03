@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-03
+
 ## [0.8.3] - 2026-04-13
 ### Added
 - Windows packaging is now part of the release pipeline, enabling Scoop distribution for future releases.
