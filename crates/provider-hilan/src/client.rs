@@ -54,6 +54,7 @@ pub struct HilanClient {
 }
 
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const BROWSER_ACCEPT_LANGUAGE: &str = "en-IL,en;q=0.9,he-IL;q=0.8,he;q=0.7,en-US;q=0.6";
 const COOKIE_KEY_LEN: usize = 32;
 const COOKIE_NONCE_LEN: usize = 12;
 const LOCAL_KEY_DERIVATION_SALT: &[u8] = b"shaon-v1";
@@ -236,7 +237,7 @@ impl HilanClient {
         if self.org_id.is_none() {
             self.fetch_org_id().await?;
         }
-        let org_id = self.org_id.as_ref().unwrap();
+        let org_id = self.org_id.as_ref().unwrap().clone();
 
         let url = format!(
             "{}/HilanCenter/Public/api/LoginApi/LoginRequest",
@@ -291,6 +292,7 @@ impl HilanClient {
         }
 
         self.session_candidate = true;
+        self.hydrate_post_login_session().await;
         self.save_cookies();
         let masked_user = if self.config.username.len() > 4 {
             format!(
@@ -301,6 +303,70 @@ impl HilanClient {
             "***".to_string()
         };
         tracing::info!("Logged in as {} (org: {})", masked_user, org_id);
+        Ok(())
+    }
+
+    async fn hydrate_post_login_session(&mut self) {
+        if let Err(err) = self.try_hydrate_post_login_session().await {
+            tracing::warn!(
+                "post-login session hydration failed; continuing without browser-parity cookies: {err:#}"
+            );
+        }
+    }
+
+    async fn try_hydrate_post_login_session(&mut self) -> Result<()> {
+        let route_url = format!("{}/HilanCenter/Login/Route.aspx?mode=2", self.base_url);
+
+        tracing::debug!("GET {} (post-login hydration)", route_url);
+        let route_resp = self
+            .client
+            .get(&route_url)
+            .send()
+            .await
+            .context("GET post-login route")?;
+        let route_status = route_resp.status();
+        let final_url = route_resp.url().to_string();
+        let _ = route_resp
+            .text()
+            .await
+            .context("read post-login route response body")?;
+        if !route_status.is_success() {
+            bail!(
+                "post-login route returned HTTP {} at {}",
+                route_status,
+                final_url
+            );
+        }
+
+        let home_url = format!("{}/Hilannetv2/ng/management/home", self.base_url);
+        let initial_data_url = format!(
+            "{}/Hilannetv2/Services/Public/WS/HGeneralApiapi.asmx/GetAppInitialData",
+            self.base_url
+        );
+
+        tracing::debug!("POST {} (post-login hydration)", initial_data_url);
+        let initial_resp = self
+            .client
+            .post(&initial_data_url)
+            .header("Content-Type", "application/json")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("Referer", home_url.as_str())
+            .body("{}")
+            .send()
+            .await
+            .context("POST post-login app initial data")?;
+        let initial_status = initial_resp.status();
+        let _ = initial_resp
+            .text()
+            .await
+            .context("read post-login app initial data response body")?;
+        if !initial_status.is_success() {
+            bail!(
+                "post-login app initial data returned HTTP {}",
+                initial_status
+            );
+        }
+
         Ok(())
     }
 
@@ -885,11 +951,11 @@ impl HilanClient {
         .await
     }
 
-    /// POST an ASP.NET async UpdatePanel write with full browser fidelity.
+    /// POST an ASP.NET async UpdatePanel button postback with full browser fidelity.
     ///
     /// Sends `__ASYNCPOST=true`, ScriptManager field, `X-MicrosoftAjax: Delta=true` header,
-    /// and `X-Requested-With: XMLHttpRequest`. Used for error wizard and calendar save flows
-    /// which require the server to see the request as an AJAX postback.
+    /// and `X-Requested-With: XMLHttpRequest`. Used for UpdatePanel button submits that
+    /// require the server to see the request as an AJAX postback.
     pub async fn post_aspx_async_write(
         &mut self,
         url: &str,
@@ -909,14 +975,22 @@ impl HilanClient {
         merged.insert("__ASYNCPOST".to_string(), "true".to_string());
         merged.insert(script_manager.to_string(), sm_value);
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
+        let xsrf_token = form_pairs
+            .iter()
+            .find(|(key, _)| key == "H-XSRF-Token")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        let origin = self.base_url.clone();
+        let referer = url.to_string();
 
         let response = self
             .send_with_retry(&format!("POST {url} (async write)"), retryable, |c| {
-                c.post(url)
-                    .header("X-MicrosoftAjax", "Delta=true")
-                    .header("X-Requested-With", "XMLHttpRequest")
-                    .header("Cache-Control", "no-cache")
-                    .form(&form_pairs)
+                apply_browser_async_headers(
+                    c.post(url).form(&form_pairs),
+                    origin.as_str(),
+                    referer.as_str(),
+                    xsrf_token.as_str(),
+                )
             })
             .await?;
         if !response.status.is_success() {
@@ -948,14 +1022,22 @@ impl HilanClient {
         merged.insert("__ASYNCPOST".to_string(), "true".to_string());
         merged.insert(script_manager.to_string(), script_manager_value.to_string());
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
+        let xsrf_token = form_pairs
+            .iter()
+            .find(|(key, _)| key == "H-XSRF-Token")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        let origin = self.base_url.clone();
+        let referer = url.to_string();
 
         let response = self
             .send_with_retry(&format!("POST {url} (async event write)"), retryable, |c| {
-                c.post(url)
-                    .header("X-MicrosoftAjax", "Delta=true")
-                    .header("X-Requested-With", "XMLHttpRequest")
-                    .header("Cache-Control", "no-cache")
-                    .form(&form_pairs)
+                apply_browser_async_headers(
+                    c.post(url).form(&form_pairs),
+                    origin.as_str(),
+                    referer.as_str(),
+                    xsrf_token.as_str(),
+                )
             })
             .await?;
         if !response.status.is_success() {
@@ -1105,7 +1187,43 @@ fn validate_async_write_response(final_url: &str, body: &str) -> Result<()> {
         bail!("async write outcome unknown: received an empty ASP.NET delta");
     }
 
+    for ((entry_type, _), content) in &entries {
+        if entry_type != "pageRedirect" {
+            continue;
+        }
+        let target = urlencoding::decode(content)
+            .map(|decoded| decoded.into_owned())
+            .unwrap_or_else(|_| content.clone());
+        if target.to_ascii_lowercase().contains("/error.aspx") {
+            bail!("async write rejected by server: redirected to {target}");
+        }
+        bail!("async write outcome unknown: redirected by ASP.NET delta to {target}");
+    }
+
     Ok(())
+}
+
+fn apply_browser_async_headers(
+    builder: reqwest::RequestBuilder,
+    origin: &str,
+    referer: &str,
+    xsrf_token: &str,
+) -> reqwest::RequestBuilder {
+    // NOTE: Do NOT set Content-Type here. reqwest::RequestBuilder::header()
+    // appends (does not replace); since callers invoke .form() before this,
+    // adding Content-Type here would create a duplicate Content-Type header
+    // and IIS rejects the request with HTTP 400 "invalid header name".
+    // Browser sends Content-Type: application/x-www-form-urlencoded; charset=UTF-8,
+    // but the server also accepts the no-charset variant set by .form().
+    builder
+        .header("Accept", "*/*")
+        .header("Accept-Language", BROWSER_ACCEPT_LANGUAGE)
+        .header("X-MicrosoftAjax", "Delta=true")
+        .header("X-Requested-With", "XMLHttpRequest")
+        .header("Cache-Control", "no-cache")
+        .header("H-XSRF-Token", xsrf_token)
+        .header("Origin", origin)
+        .header("Referer", referer)
 }
 
 fn take_chars(s: &str, char_len: usize) -> Option<(&str, usize)> {
@@ -1538,6 +1656,8 @@ mod tests {
     struct RecordedRequest {
         method: String,
         path: String,
+        header_lines: Vec<(String, String)>,
+        headers: BTreeMap<String, String>,
         body: String,
     }
 
@@ -1553,6 +1673,13 @@ mod tests {
         let mut response = headers.into_bytes();
         response.extend_from_slice(body);
         response
+    }
+
+    fn http_redirect(location: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes()
     }
 
     fn async_delta_response(entries: &[(&str, &str, &str)]) -> Vec<u8> {
@@ -1622,14 +1749,26 @@ mod tests {
                 let mut parts = request_line.split_whitespace();
                 let method = parts.next().unwrap_or_default().to_string();
                 let path = parts.next().unwrap_or_default().to_string();
+                let header_lines: Vec<(String, String)> = headers
+                    .lines()
+                    .skip(1)
+                    .filter_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        Some((name.to_ascii_lowercase(), value.trim().to_string()))
+                    })
+                    .collect();
+                let headers = header_lines.iter().cloned().collect();
                 let body =
                     String::from_utf8_lossy(&buffer[body_start..body_start + content_length])
                         .to_string();
 
-                recorded_clone
-                    .lock()
-                    .unwrap()
-                    .push(RecordedRequest { method, path, body });
+                recorded_clone.lock().unwrap().push(RecordedRequest {
+                    method,
+                    path,
+                    header_lines,
+                    headers,
+                    body,
+                });
 
                 stream.write_all(&response).unwrap();
                 stream.flush().unwrap();
@@ -1654,6 +1793,46 @@ mod tests {
                 (decode_form_component(key), decode_form_component(value))
             })
             .collect()
+    }
+
+    fn header_count(request: &RecordedRequest, name: &str) -> usize {
+        request
+            .header_lines
+            .iter()
+            .filter(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+            .count()
+    }
+
+    fn assert_browser_async_headers(request: &RecordedRequest, origin: &str, referer: &str) {
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("*/*")
+        );
+        assert_eq!(
+            request.headers.get("accept-language").map(String::as_str),
+            Some(BROWSER_ACCEPT_LANGUAGE)
+        );
+        assert_eq!(
+            request.headers.get("content-type").map(String::as_str),
+            Some("application/x-www-form-urlencoded")
+        );
+        assert_eq!(header_count(request, "content-type"), 1);
+        assert_eq!(
+            request.headers.get("origin").map(String::as_str),
+            Some(origin)
+        );
+        assert_eq!(
+            request.headers.get("referer").map(String::as_str),
+            Some(referer)
+        );
+        assert_eq!(
+            request.headers.get("x-microsoftajax").map(String::as_str),
+            Some("Delta=true")
+        );
+        assert_eq!(
+            request.headers.get("x-requested-with").map(String::as_str),
+            Some("XMLHttpRequest")
+        );
     }
 
     fn input_field(name: &str, value: &str) -> String {
@@ -1760,10 +1939,15 @@ mod tests {
     }
 
     fn calendar_form_html(employee_id: &str) -> String {
+        calendar_form_html_with_selected_day(employee_id, "")
+    }
+
+    fn calendar_form_html_with_selected_day(employee_id: &str, selected_day: &str) -> String {
         format!(
             r#"
             <html><body>
                 <form id="aspnetForm">
+                    {}
                     {}
                     {}
                     {}
@@ -1777,10 +1961,44 @@ mod tests {
             input_field("__VIEWSTATE", "calendar-viewstate"),
             input_field("__VIEWSTATEGENERATOR", "calendar-generator"),
             input_field("H-XSRF-Token", "calendar-xsrf"),
+            input_field("ctl00$mp$Strip$ACESearch_Value", employee_id),
             input_field("ctl00$mp$Strip$hCurrentItemId", employee_id),
             input_field("ctl00$mp$currentMonth", "01/04/2026"),
-            input_field("__calendarSelectedDays", ""),
+            input_field("__calendarSelectedDays", selected_day),
             input_field("ctl00$mp$scriptBox", "")
+        )
+    }
+
+    fn calendar_selection_delta_fragment(
+        employee_id: &str,
+        date: NaiveDate,
+        employee_short_id: u32,
+    ) -> String {
+        calendar_selection_delta_fragment_with_object_id(
+            employee_id,
+            date,
+            employee_short_id,
+            "00000000-0000-0000-0000-000000000000",
+        )
+    }
+
+    fn calendar_selection_delta_fragment_with_object_id(
+        employee_id: &str,
+        date: NaiveDate,
+        employee_short_id: u32,
+        object_id: &str,
+    ) -> String {
+        let row_data = vec![work_day_row_data(object_id, employee_short_id)];
+        let report_date_input = format!(
+            r#"<input name="ctl00$mp$RG_Days_{employee_id}_{:04}_{:02}$cellOf_ReportDate_row_0$ctl02" type="text" value="" />"#,
+            date.year(),
+            date.month()
+        );
+        format!(
+            "<table><tbody>{}</tbody></table>{}{}",
+            calendar_row0(employee_id),
+            report_date_input,
+            row_data_script(date, &row_data)
         )
     }
 
@@ -2028,13 +2246,18 @@ mod tests {
                 r#"{"IsFail":false,"IsShowCaptcha":false}"#,
                 "application/json",
             ),
+            http_redirect("/Hilannetv2/main.aspx"),
+            http_redirect("/Hilannetv2/ng/management/home"),
+            http_response("<html>home</html>", "text/html; charset=utf-8"),
+            http_response(r#"{"d":{}}"#, "application/json"),
         ]);
 
+        let expected_referer = format!("{base_url}/Hilannetv2/ng/management/home");
         let mut client = build_test_client(base_url, true);
         client.login().await.unwrap();
 
         let requests = recorded.lock().unwrap();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 6);
         assert_eq!(requests[0].method, "GET");
         assert_eq!(requests[0].path, "/");
         assert_eq!(requests[1].method, "POST");
@@ -2045,6 +2268,33 @@ mod tests {
         assert!(requests[1].body.contains("username=12345"));
         assert!(requests[1].body.contains("password=s3cret"));
         assert!(requests[1].body.contains("orgId=1234"));
+        assert_eq!(requests[2].method, "GET");
+        assert_eq!(requests[2].path, "/HilanCenter/Login/Route.aspx?mode=2");
+        assert_eq!(requests[3].method, "GET");
+        assert_eq!(requests[3].path, "/Hilannetv2/main.aspx");
+        assert_eq!(requests[4].method, "GET");
+        assert_eq!(requests[4].path, "/Hilannetv2/ng/management/home");
+        assert_eq!(requests[5].method, "POST");
+        assert_eq!(
+            requests[5].path,
+            "/Hilannetv2/Services/Public/WS/HGeneralApiapi.asmx/GetAppInitialData"
+        );
+        assert_eq!(requests[5].body, "{}");
+        assert_eq!(
+            requests[5].headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            requests[5]
+                .headers
+                .get("x-requested-with")
+                .map(String::as_str),
+            Some("XMLHttpRequest")
+        );
+        assert_eq!(
+            requests[5].headers.get("referer").map(String::as_str),
+            Some(expected_referer.as_str())
+        );
 
         drop(requests);
         handle.join().unwrap();
@@ -2208,14 +2458,17 @@ mod tests {
             ),
             async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
             http_response(&calendar_form_html(employee_id), "text/html; charset=utf-8"),
-            http_response(
-                &calendar_selection_html(employee_id, date, false, employee_short_id),
-                "text/html; charset=utf-8",
-            ),
+            async_delta_response(&[(
+                "updatePanel",
+                "calendarGrid",
+                &calendar_selection_delta_fragment(employee_id, date, employee_short_id),
+            )]),
             async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
         ]);
 
-        let client = build_test_client(base_url, true);
+        let calendar_url =
+            format!("{base_url}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true");
+        let client = build_test_client(base_url.clone(), true);
         let mut provider = HilanProvider::from_client(client);
         let preview = provider
             .fix_day(
@@ -2289,18 +2542,33 @@ mod tests {
         let refresh_body = parse_form_body(&requests[4].body);
         assert_eq!(
             refresh_body.get("__EVENTTARGET").map(String::as_str),
-            Some("ctl00$mp$RefreshSelectedDays")
+            Some("")
+        );
+        assert_eq!(
+            refresh_body.get("__EVENTARGUMENT").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            refresh_body.get("__ASYNCPOST").map(String::as_str),
+            Some("true")
         );
         assert_eq!(
             refresh_body.get("ctl00$ms").map(String::as_str),
-            Some("ctl00$ms|ctl00$mp$RefreshSelectedDays")
+            Some("ctl00$mp$upBtns|ctl00$mp$RefreshSelectedDays")
+        );
+        assert_eq!(
+            refresh_body
+                .get("ctl00$mp$RefreshSelectedDays")
+                .map(String::as_str),
+            Some("ימים נבחרים")
         );
         assert_eq!(
             refresh_body
                 .get("__calendarSelectedDays")
                 .map(String::as_str),
-            Some("9596")
+            Some(",9596")
         );
+        assert_browser_async_headers(&requests[4], &base_url, &calendar_url);
 
         let save_body = parse_form_body(&requests[5].body);
         assert_eq!(
@@ -2328,11 +2596,230 @@ mod tests {
                 .map(String::as_str),
             Some("שמירה")
         );
+        assert_eq!(
+            save_body.get("ReportPageMode").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            save_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$cellOf_ReportDate_row_0$ctl02")
+                .map(String::as_str),
+            Some("")
+        );
+        let dirty_json = save_body
+            .get("ctl00_mp_RG_Days_460627_2026_04_reportsGrid_data")
+            .expect("reportsGrid_data dirty fields");
+        let dirty_rows: serde_json::Value =
+            serde_json::from_str(dirty_json).expect("parse dirty fields json");
+        assert_eq!(
+            dirty_rows[0]["DirtyFields"]["CompletionToStandard"],
+            serde_json::json!(true)
+        );
         assert!(
             !requests
                 .iter()
                 .any(|request| request.body.contains("DELETE_ROW")),
             "no-conflict flow should not issue a delete"
+        );
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn calendar_submit_save_uses_requested_selected_day_after_refresh() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("calendar-submit-selected-day");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let date = NaiveDate::from_ymd_opt(2026, 4, 23).unwrap();
+        let employee_id = "460627";
+        let employee_short_id = 27;
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            http_response(
+                &calendar_form_html_with_selected_day(employee_id, "9587"),
+                "text/html; charset=utf-8",
+            ),
+            async_delta_response(&[(
+                "updatePanel",
+                "calendarGrid",
+                &calendar_selection_delta_fragment(employee_id, date, employee_short_id),
+            )]),
+            http_response(
+                &bootstrap_response(employee_id, employee_short_id),
+                "application/json",
+            ),
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
+        ]);
+
+        let calendar_url =
+            format!("{base_url}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true");
+        let client = build_test_client(base_url.clone(), true);
+        let mut provider = HilanProvider::from_client(client);
+        let preview = provider
+            .submit_day(
+                &AttendanceChange {
+                    date,
+                    attendance_type_code: Some("120".to_string()),
+                    use_default_attendance_type: false,
+                    entry_time: Some("09:00".to_string()),
+                    exit_time: Some("18:00".to_string()),
+                    comment: None,
+                    clear_entry: false,
+                    clear_exit: false,
+                    clear_comment: false,
+                },
+                WriteMode::Execute,
+            )
+            .await
+            .expect("execute calendar submit against local test server");
+
+        assert!(preview.executed);
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+
+        let refresh_body = parse_form_body(&requests[1].body);
+        assert_eq!(
+            refresh_body.get("__EVENTTARGET").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            refresh_body.get("__EVENTARGUMENT").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            refresh_body.get("__ASYNCPOST").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            refresh_body.get("ctl00$ms").map(String::as_str),
+            Some("ctl00$mp$upBtns|ctl00$mp$RefreshSelectedDays")
+        );
+        assert_eq!(
+            refresh_body
+                .get("ctl00$mp$RefreshSelectedDays")
+                .map(String::as_str),
+            Some("ימים נבחרים")
+        );
+        assert_eq!(
+            refresh_body
+                .get("__calendarSelectedDays")
+                .map(String::as_str),
+            Some(",9609")
+        );
+        assert_browser_async_headers(&requests[1], &base_url, &calendar_url);
+
+        let save_body = parse_form_body(&requests[3].body);
+        assert_eq!(
+            save_body.get("__calendarSelectedDays").map(String::as_str),
+            Some("9609")
+        );
+        assert_eq!(
+            save_body.get("ctl00$mp$currentMonth").map(String::as_str),
+            Some("01/04/2026")
+        );
+        assert_eq!(
+            save_body
+                .get("ctl00$mp$Strip$ACESearch_Value")
+                .map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            save_body
+                .get("ctl00$mp$RG_Days_460627_2026_04$cellOf_ReportDate_row_0$ctl02")
+                .map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            save_body.get("ReportPageMode").map(String::as_str),
+            Some("2")
+        );
+        let dirty_json = save_body
+            .get("ctl00_mp_RG_Days_460627_2026_04_reportsGrid_data")
+            .expect("reportsGrid_data dirty fields");
+        assert!(dirty_json.contains(r#""ReportDate":"2026-4-23""#));
+        let dirty_rows: serde_json::Value =
+            serde_json::from_str(dirty_json).expect("parse dirty fields json");
+        assert_eq!(
+            dirty_rows[0]["DirtyFields"]["CompletionToStandard"],
+            serde_json::json!(true)
+        );
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn calendar_submit_save_reuses_existing_report_object_id() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("calendar-submit-existing-object-id");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let date = NaiveDate::from_ymd_opt(2026, 4, 23).unwrap();
+        let employee_id = "460627";
+        let employee_short_id = 27;
+        let existing_object_id = "99f11d83-95d6-441c-885c-5515defd0310";
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            http_response(&calendar_form_html(employee_id), "text/html; charset=utf-8"),
+            async_delta_response(&[(
+                "updatePanel",
+                "calendarGrid",
+                &calendar_selection_delta_fragment_with_object_id(
+                    employee_id,
+                    date,
+                    employee_short_id,
+                    existing_object_id,
+                ),
+            )]),
+            http_response(
+                &bootstrap_response(employee_id, employee_short_id),
+                "application/json",
+            ),
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
+        ]);
+
+        let client = build_test_client(base_url, true);
+        let mut provider = HilanProvider::from_client(client);
+        let preview = provider
+            .submit_day(
+                &AttendanceChange {
+                    date,
+                    attendance_type_code: Some("120".to_string()),
+                    use_default_attendance_type: false,
+                    entry_time: Some("09:00".to_string()),
+                    exit_time: Some("18:00".to_string()),
+                    comment: None,
+                    clear_entry: false,
+                    clear_exit: false,
+                    clear_comment: false,
+                },
+                WriteMode::Execute,
+            )
+            .await
+            .expect("execute calendar submit against local test server");
+
+        assert!(preview.executed);
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        let save_body = parse_form_body(&requests[3].body);
+        let dirty_json = save_body
+            .get("ctl00_mp_RG_Days_460627_2026_04_reportsGrid_data")
+            .expect("reportsGrid_data dirty fields");
+        let dirty_rows: serde_json::Value =
+            serde_json::from_str(dirty_json).expect("parse dirty fields json");
+        assert_eq!(
+            dirty_rows[0]["ObjectId"],
+            serde_json::json!(existing_object_id)
         );
 
         drop(requests);
@@ -2363,10 +2850,11 @@ mod tests {
             ),
             async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
             http_response(&calendar_form_html(employee_id), "text/html; charset=utf-8"),
-            http_response(
+            async_delta_response(&[(
+                "updatePanel",
+                "calendarGrid",
                 &calendar_selection_html(employee_id, date, true, employee_short_id),
-                "text/html; charset=utf-8",
-            ),
+            )]),
             async_delta_response(&[(
                 "updatePanel",
                 "calendarGrid",
@@ -2547,6 +3035,102 @@ mod tests {
 
         assert!(err.to_string().contains("outcome unknown"));
 
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn async_write_rejects_page_redirect_to_error() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("async-write-page-redirect");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, _recorded) = spawn_test_server(vec![async_delta_response(&[(
+            "pageRedirect",
+            "",
+            "%2fhilannetv2%2fError.aspx%3faspxerrorpath%3d%2fHilannetv2%2fAttendance%2fcalendarpage.aspx",
+        )])]);
+
+        let mut client = build_test_client(base_url.clone(), true);
+        let base_fields = BTreeMap::from([("__VIEWSTATE".to_string(), "abc".to_string())]);
+
+        let err = client
+            .post_aspx_async_write(
+                &format!("{base_url}/calendarpage.aspx"),
+                &base_fields,
+                &[],
+                "ctl00$ms",
+                "ctl00$mp$btnSave",
+                false,
+            )
+            .await
+            .expect_err("Error.aspx pageRedirect should fail closed");
+
+        let message = err.to_string();
+        assert!(message.contains("redirected"));
+        assert!(message.contains("Error.aspx"));
+
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn async_write_helpers_send_browser_security_headers() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("async-write-browser-headers");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
+            async_delta_response(&[("scriptStartupBlock", "ScriptContentNoTags", "")]),
+        ]);
+        let url = format!("{base_url}/calendarpage.aspx?isOnSelf=true");
+        let base_fields = BTreeMap::from([
+            ("__VIEWSTATE".to_string(), "abc".to_string()),
+            ("H-XSRF-Token".to_string(), String::new()),
+        ]);
+
+        let mut client = build_test_client(base_url.clone(), true);
+        client
+            .post_aspx_async_write(
+                &url,
+                &base_fields,
+                &[],
+                "ctl00$ms",
+                "ctl00$mp$btnSave",
+                false,
+            )
+            .await
+            .expect("async write succeeds");
+        client
+            .post_aspx_async_event_write(
+                &url,
+                &base_fields,
+                &[],
+                "ctl00$ms",
+                "ctl00$ms|ctl00$mp$reportsGrid",
+                "ctl00$mp$reportsGrid",
+                "{}",
+                false,
+            )
+            .await
+            .expect("async event write succeeds");
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert_browser_async_headers(request, &base_url, &url);
+            assert_eq!(
+                request.headers.get("h-xsrf-token").map(String::as_str),
+                Some("")
+            );
+        }
+
+        drop(requests);
         handle.join().unwrap();
         std::fs::remove_dir_all(home).unwrap();
     }
