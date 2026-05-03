@@ -326,10 +326,9 @@ impl HilanClient {
             .context("GET post-login route")?;
         let route_status = route_resp.status();
         let final_url = route_resp.url().to_string();
-        let _ = route_resp
-            .text()
-            .await
-            .context("read post-login route response body")?;
+        // Cookies are committed on header receipt; the body is unused. Drop the
+        // response without buffering it.
+        drop(route_resp);
         if !route_status.is_success() {
             bail!(
                 "post-login route returned HTTP {} at {}",
@@ -356,10 +355,7 @@ impl HilanClient {
             .await
             .context("POST post-login app initial data")?;
         let initial_status = initial_resp.status();
-        let _ = initial_resp
-            .text()
-            .await
-            .context("read post-login app initial data response body")?;
+        drop(initial_resp);
         if !initial_status.is_success() {
             bail!(
                 "post-login app initial data returned HTTP {}",
@@ -975,11 +971,7 @@ impl HilanClient {
         merged.insert("__ASYNCPOST".to_string(), "true".to_string());
         merged.insert(script_manager.to_string(), sm_value);
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
-        let xsrf_token = form_pairs
-            .iter()
-            .find(|(key, _)| key == "H-XSRF-Token")
-            .map(|(_, value)| value.clone())
-            .unwrap_or_default();
+        let xsrf_token = extract_xsrf_token(&form_pairs);
         let origin = self.base_url.clone();
         let referer = url.to_string();
 
@@ -1022,11 +1014,7 @@ impl HilanClient {
         merged.insert("__ASYNCPOST".to_string(), "true".to_string());
         merged.insert(script_manager.to_string(), script_manager_value.to_string());
         let form_pairs: Vec<(String, String)> = merged.into_iter().collect();
-        let xsrf_token = form_pairs
-            .iter()
-            .find(|(key, _)| key == "H-XSRF-Token")
-            .map(|(_, value)| value.clone())
-            .unwrap_or_default();
+        let xsrf_token = extract_xsrf_token(&form_pairs);
         let origin = self.base_url.clone();
         let referer = url.to_string();
 
@@ -1201,6 +1189,14 @@ fn validate_async_write_response(final_url: &str, body: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn extract_xsrf_token(form_pairs: &[(String, String)]) -> String {
+    form_pairs
+        .iter()
+        .find(|(key, _)| key == "H-XSRF-Token")
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default()
 }
 
 fn apply_browser_async_headers(

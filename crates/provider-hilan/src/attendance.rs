@@ -43,6 +43,16 @@ static ROW_0_TOP_CELL_SEL: LazyLock<Selector> =
 const LABEL_WORK_DAY: &str = "work day";
 const LABEL_VACATION: &str = "vacation";
 const EMPTY_OBJECT_ID: &str = "00000000-0000-0000-0000-000000000000";
+
+/// Hilan calendar-row form field name fragments. The actual form field
+/// names embed these as `{prefix}$cellOf_{FRAGMENT}_row_0_0${FRAGMENT}_row_0_0`,
+/// and the detail-row parser matches them against `name`/`id` attributes.
+const FIELD_MANUAL_ENTRY: &str = "ManualEntry_EmployeeReports";
+const FIELD_MANUAL_EXIT: &str = "ManualExit_EmployeeReports";
+const FIELD_MANUAL_TOTAL: &str = "ManualTotal_EmployeeReports";
+const FIELD_COMMENT: &str = "Comment_EmployeeReports";
+const FIELD_SYMBOL: &str = "Symbol.SymbolId_EmployeeReports";
+const FIELD_COMPLETION: &str = "CompletionToStandard_EmployeeReports";
 const CONFLICTING_REPORT_MESSAGE_FRAGMENT: &str = "קיים דיווח";
 const CALENDAR_BROWSER_FIELDS: &[&str] = &[
     "DisableTimeout",
@@ -671,13 +681,13 @@ fn parse_calendar_detail_rows_from_dom(document: &Html, month: NaiveDate) -> Vec
             continue;
         };
 
-        let entry_time = detail_input_value(&row, "ManualEntry_EmployeeReports")
-            .or_else(|| detail_cell_time(&row, "cellOf_ManualEntry_EmployeeReports"));
-        let exit_time = detail_input_value(&row, "ManualExit_EmployeeReports")
-            .or_else(|| detail_cell_time(&row, "cellOf_ManualExit_EmployeeReports"));
-        let total_hours = detail_cell_time(&row, "cellOf_ManualTotal_EmployeeReports");
-        let attendance_type = detail_cell_text(&row, "cellOf_Symbol.SymbolId_EmployeeReports")
-            .or_else(|| detail_select_text(&row, "Symbol.SymbolId_EmployeeReports"));
+        let entry_time = detail_input_value(&row, FIELD_MANUAL_ENTRY)
+            .or_else(|| detail_cell_time(&row, &format!("cellOf_{FIELD_MANUAL_ENTRY}")));
+        let exit_time = detail_input_value(&row, FIELD_MANUAL_EXIT)
+            .or_else(|| detail_cell_time(&row, &format!("cellOf_{FIELD_MANUAL_EXIT}")));
+        let total_hours = detail_cell_time(&row, &format!("cellOf_{FIELD_MANUAL_TOTAL}"));
+        let attendance_type = detail_cell_text(&row, &format!("cellOf_{FIELD_SYMBOL}"))
+            .or_else(|| detail_select_text(&row, FIELD_SYMBOL));
 
         if entry_time.is_none()
             && exit_time.is_none()
@@ -723,10 +733,9 @@ fn parse_detail_row_date(row: &ElementRef<'_>, month: NaiveDate) -> Option<Naive
 
 fn detail_input_value(row: &ElementRef<'_>, field_fragment: &str) -> Option<String> {
     row.select(&INPUT_SEL)
-        .find(|input| element_attr_contains(input, "name", field_fragment))
-        .or_else(|| {
-            row.select(&INPUT_SEL)
-                .find(|input| element_attr_contains(input, "id", field_fragment))
+        .find(|input| {
+            element_attr_contains(input, "name", field_fragment)
+                || element_attr_contains(input, "id", field_fragment)
         })
         .and_then(|input| normalized_cell_value(input.value().attr("value")))
 }
@@ -746,13 +755,10 @@ fn detail_cell_text(row: &ElementRef<'_>, cell_fragment: &str) -> Option<String>
 }
 
 fn detail_select_text(row: &ElementRef<'_>, field_fragment: &str) -> Option<String> {
-    let select = row
-        .select(&SELECT_SEL)
-        .find(|select| element_attr_contains(select, "name", field_fragment))
-        .or_else(|| {
-            row.select(&SELECT_SEL)
-                .find(|select| element_attr_contains(select, "id", field_fragment))
-        })?;
+    let select = row.select(&SELECT_SEL).find(|select| {
+        element_attr_contains(select, "name", field_fragment)
+            || element_attr_contains(select, "id", field_fragment)
+    })?;
 
     select
         .select(&OPTION_SELECTED_SEL)
@@ -1671,20 +1677,13 @@ async fn replay_submit_with_fields(
     let short_employee_id = bootstrap.employee_id;
 
     let prefix = day_field_prefix(&employee_id, submit.date);
-    let entry_key = format!(
-        "{prefix}$cellOf_ManualEntry_EmployeeReports_row_0_0$ManualEntry_EmployeeReports_row_0_0"
-    );
-    let exit_key = format!(
-        "{prefix}$cellOf_ManualExit_EmployeeReports_row_0_0$ManualExit_EmployeeReports_row_0_0"
-    );
-    let comment_key =
-        format!("{prefix}$cellOf_Comment_EmployeeReports_row_0_0$Comment_EmployeeReports_row_0_0");
-    let type_key = format!(
-        "{prefix}$cellOf_Symbol.SymbolId_EmployeeReports_row_0_0$Symbol.SymbolId_EmployeeReports_row_0_0"
-    );
-    let completion_key = format!(
-        "{prefix}$cellOf_CompletionToStandard_EmployeeReports_row_0_0$CompletionToStandard_EmployeeReports_row_0_0"
-    );
+    let row_field =
+        |fragment: &str| format!("{prefix}$cellOf_{fragment}_row_0_0${fragment}_row_0_0");
+    let entry_key = row_field(FIELD_MANUAL_ENTRY);
+    let exit_key = row_field(FIELD_MANUAL_EXIT);
+    let comment_key = row_field(FIELD_COMMENT);
+    let type_key = row_field(FIELD_SYMBOL);
+    let completion_key = row_field(FIELD_COMPLETION);
     let button_name = format!("{prefix}$btnSave");
 
     let mut replay_fields = base_fields;
