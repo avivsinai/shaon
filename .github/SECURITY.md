@@ -30,7 +30,7 @@ This policy applies to:
 - For interactive macOS / Linux use, the default credential path stores the Hilan password and a per-install master key in the OS keychain (`shaon-cli` service); `SHAON_PASSWORD` and `SHAON_MASTER_KEY` are headless escape hatches that bypass the keychain.
 - The shipped configuration parser does not require a plaintext password in `config.toml`. Operators may still place secrets in environment variables, shell history, or other files outside `shaon`'s control.
 - HTTPS requests use `reqwest` with `rustls-tls` and standard certificate validation. Network operators, custom root stores, and MITM tooling on the host are out of scope.
-- On macOS, the helper script `scripts/run.sh` codesigns the binary with a stable local identity when available (and falls back to ad-hoc) to keep keychain ACLs stable across rebuilds; this does not provide tamper resistance.
+- On macOS, `scripts/run.sh` and release builds codesign the binary with the stable identifier `io.github.avivsinai.shaon` and an explicit identifier-based designated requirement to keep Keychain ACLs stable across rebuilds and upgrades; this does not provide tamper resistance.
 - CI runs gitleaks secret scanning and `cargo-deny` dependency auditing on a best-effort basis.
 
 These measures reduce common accidental-exposure risks; they do not make the tool resistant to a determined local attacker, malicious agents, or compromised hosts.

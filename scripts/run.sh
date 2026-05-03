@@ -81,6 +81,7 @@ CACHE_DIR="$(cache_root)"
 VERSION_DIR="$CACHE_DIR/$VERSION"
 TARGET_DIR="$CACHE_DIR/target"
 BIN_PATH="$VERSION_DIR/shaon"
+MACOS_CODESIGN_ID="io.github.avivsinai.shaon"
 
 if needs_rebuild "$BIN_PATH"; then
     echo "[shaon] Building shaon v${VERSION}..." >&2
@@ -93,25 +94,12 @@ if needs_rebuild "$BIN_PATH"; then
         exit 1
     fi
 
-    # Codesign on macOS so the keyring crate can access the Keychain.
-    # Prefer the self-signed identity created by scripts/setup-codesign.sh
-    # (ACL sticks across rebuilds); fall back to ad-hoc only when the identity
-    # is not installed. If it's installed but signing fails, surface a clear
-    # warning instead of silently regressing to the old cdhash-churn behavior.
-    #
-    # We sign the fresh cargo output directly (before copy). That way anyone
-    # invoking "$TARGET_DIR/release/shaon" (direct CDP experiments, sub-agents,
-    # example binaries copied from the same tree) gets the stable identity too.
-    if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1; then
-        if security find-identity -v -p codesigning 2>/dev/null | grep -q "shaon-cli-signer"; then
-            if ! codesign -s "shaon-cli-signer" -f --identifier "com.avivsinai.shaon" "$SOURCE_BIN" 2>/dev/null; then
-                echo "[shaon] WARNING: signing with shaon-cli-signer failed. Falling back to ad-hoc;" >&2
-                echo "[shaon]          macOS keychain will re-prompt for 'Always Allow' on every rebuild." >&2
-                echo "[shaon]          Re-run scripts/setup-codesign.sh to reinstall the signing identity." >&2
-                codesign -s - -f --identifier "com.avivsinai.shaon" "$SOURCE_BIN" 2>/dev/null || true
-            fi
-        else
-            codesign -s - -f --identifier "com.avivsinai.shaon" "$SOURCE_BIN" 2>/dev/null || true
+    # Codesign on macOS so Keychain approvals survive local rebuilds. We sign
+    # the fresh cargo output directly (before copy) so direct target/release
+    # invocations use the same stable designated requirement.
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        if ! "$SCRIPT_DIR/codesign-macos.sh" "$SOURCE_BIN" "$MACOS_CODESIGN_ID" "darwin" 2>/dev/null; then
+            echo "[shaon] WARNING: macOS codesign failed; Keychain may ask for approval again." >&2
         fi
     fi
 

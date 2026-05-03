@@ -226,7 +226,7 @@ jobs:
 
       - name: Codesign macOS binary
         if: runner.os == 'macOS'
-        run: codesign --force --sign - --identifier io.github.avivsinai.shaon target/${{ matrix.target }}/release/${{ matrix.artifact }}
+        run: ./scripts/codesign-macos.sh target/${{ matrix.target }}/release/${{ matrix.artifact }} io.github.avivsinai.shaon darwin
 
       - name: Package (unix)
         if: runner.os != 'Windows'

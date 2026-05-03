@@ -107,4 +107,4 @@ When possible, document stable concepts instead of fragile counts.
 - Passwords live in the OS keychain by default (`shaon-cli` service)
 - Session cookies are encrypted at rest with AES-256-GCM
 - `SHAON_PASSWORD` and `SHAON_MASTER_KEY` are the headless / CI escape hatches
-- On macOS, `scripts/run.sh` uses the stable local signing identity from `scripts/setup-codesign.sh` when available
+- On macOS, `scripts/run.sh` signs rebuilt binaries through `scripts/codesign-macos.sh` with the stable identifier `io.github.avivsinai.shaon`

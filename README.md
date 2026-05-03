@@ -87,6 +87,11 @@ If you are working from a repo checkout, prefer:
 scripts/run.sh <command> [args]
 ```
 
+On macOS, `scripts/run.sh` signs the local build with the same stable
+identifier-based designated requirement used by release artifacts. If you
+previously approved an older local build in Keychain, macOS may ask for
+"Always Allow" once after upgrading to this signing model.
+
 ### Agent Skill
 
 Install the `shaon` skill for Claude Code or repo-native skill managers:
