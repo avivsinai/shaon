@@ -1648,6 +1648,15 @@ async fn load_calendar_submit_form(
             date.format("%Y-%m-%d")
         );
     }
+    if selected_row_can_be_changed(&response, date) == Some(false) {
+        let range = calendar_editable_range(&response)
+            .map(|(min, max)| format!("; editable range is {min} through {max}"))
+            .unwrap_or_default();
+        bail!(
+            "Hilan does not allow self-service edits for {} (selected calendar row is disabled{range})",
+            date.format("%Y-%m-%d")
+        );
+    }
     // Delta refreshes omit these browser-maintained fields, but the final save depends on them.
     fields.insert("__calendarSelectedDays".to_string(), selected_day);
     fields.insert("ctl00$mp$currentMonth".to_string(), month_value);
@@ -2057,6 +2066,34 @@ fn extract_row_data_json_for_date<'a>(html: &'a str, row_date: &str) -> Option<&
     let start = html[..row_date_start].rfind(needle)?;
     let content_start = start + needle.len();
     Some(&html[content_start..row_date_start])
+}
+
+fn selected_row_can_be_changed(html: &str, date: NaiveDate) -> Option<bool> {
+    let row_date = format!("{}-{}-{}", date.year(), date.month(), date.day());
+    let row_date_needle = format!("\"RowDate\":\"{row_date}\"");
+    let row_date_start = html.find(&row_date_needle)?;
+    let can_change_key = "\"CanBeChanged\":";
+    let start = html[..row_date_start].rfind(can_change_key)? + can_change_key.len();
+    let rest = &html[start..];
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn calendar_editable_range(html: &str) -> Option<(NaiveDate, NaiveDate)> {
+    let min = json_date_value(html, "\"MinDate\":\"")?;
+    let max = json_date_value(html, "\"MaxDate\":\"")?;
+    Some((min, max))
+}
+
+fn json_date_value(html: &str, needle: &str) -> Option<NaiveDate> {
+    let start = html.find(needle)? + needle.len();
+    let date = html.get(start..start + "YYYY-MM-DD".len())?;
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
 fn row_data_report_date_to_iso_utc(row: &RowDataEntry) -> Option<String> {
@@ -2790,6 +2827,28 @@ mod tests {
                 .as_ref()
                 .and_then(|symbol| symbol.first.as_deref()),
             Some("120")
+        );
+    }
+
+    #[test]
+    fn selected_row_metadata_reports_disabled_edit_window() {
+        let html = r#"
+            <script>
+                $create(Hilan.HilanNet.Web.Controls.HAttendanceGridV2.HReportsGridControlBehavior, {"MaxDate":"2026-09-30T00:00:00","MinDate":"2026-06-01T00:00:00"}, null, null, $get("ctl00_mp_RG_Days_460627_2026_05_reportsGrid"));
+                $create(Hilan.HilanNet.Web.Controls.HAttendanceGrid.HReportsGridRow.HReportsGridRowBehavior, {"CanBeChanged":false,"RowData":"[{\"ID\":\"00000000-0000-0000-0000-000000000000\",\"IsRange\":false,\"EmployeeId\":27,\"ReportDate\":\"\\/Date(1779829200000)\\/\",\"IsReportDeleted\":false}]","RowDate":"2026-5-27"});
+            </script>
+        "#;
+
+        assert_eq!(
+            selected_row_can_be_changed(html, NaiveDate::from_ymd_opt(2026, 5, 27).unwrap()),
+            Some(false)
+        );
+        assert_eq!(
+            calendar_editable_range(html),
+            Some((
+                NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 9, 30).unwrap()
+            ))
         );
     }
 
