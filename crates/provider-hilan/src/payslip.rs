@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 use lopdf::dictionary;
 use lopdf::encryption::crypt_filters::{Aes128CryptFilter, CryptFilter};
-use lopdf::{Document, EncryptionState, EncryptionVersion, Permissions};
+use lopdf::{Document, EncryptionState, EncryptionVersion, LoadOptions, Permissions};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ pub fn seal_pdf(bytes: &[u8], password: &str) -> Result<Vec<u8>> {
 }
 
 pub fn unseal_pdf(bytes: &[u8], password: &str) -> Result<Vec<u8>> {
-    let mut doc = Document::load_mem_with_password(bytes, password)
+    let mut doc = Document::load_mem_with_options(bytes, LoadOptions::with_password(password))
         .context("decrypt password-protected payslip PDF")?;
     let mut out = Vec::new();
     doc.save_to(&mut out)
