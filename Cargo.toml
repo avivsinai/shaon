@@ -27,7 +27,7 @@ clap_complete = "4"
 cookie_store = "0.21"
 hkdf = "0.12"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
-lopdf = "0.40"
+lopdf = "0.41"
 predicates = "3"
 rand = "0.8"
 regex = "1"
