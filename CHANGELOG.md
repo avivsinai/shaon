@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- Attendance day reporting now fails closed when Hilan renders the selected calendar row as disabled, including the self-service editable date range in the error, so dry runs do not advertise stale months as reportable.
 
 ## [0.9.1] - 2026-05-03
 ### Fixed
