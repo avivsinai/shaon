@@ -16,7 +16,7 @@ repository = "https://github.com/avivsinai/shaon"
 authors = ["Aviv Sinai"]
 
 [workspace.dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 anyhow = "1"
 assert_cmd = "2"
 async-trait = "0.1"
