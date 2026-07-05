@@ -1486,10 +1486,11 @@ fn encrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], plaintext: &[u8]) -> Result<V
     let mut nonce_bytes = [0_u8; COOKIE_NONCE_LEN];
     let mut rng = rand::rngs::OsRng;
     rand::RngCore::fill_bytes(&mut rng, &mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce =
+        Nonce::try_from(&nonce_bytes[..]).map_err(|e| anyhow!("build AES-GCM nonce: {e}"))?;
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .map_err(|e| anyhow!("encrypt cookie blob: {e}"))?;
 
     let mut out = Vec::with_capacity(COOKIE_NONCE_LEN + ciphertext.len());
@@ -1506,10 +1507,10 @@ fn decrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], encrypted: &[u8]) -> Result<V
     let cipher =
         Aes256Gcm::new_from_slice(key).map_err(|e| anyhow!("build AES-256-GCM cipher: {e}"))?;
     let (nonce_bytes, ciphertext) = encrypted.split_at(COOKIE_NONCE_LEN);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|e| anyhow!("build AES-GCM nonce: {e}"))?;
 
     cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| anyhow!("decrypt cookie blob: {e}"))
 }
 

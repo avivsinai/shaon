@@ -16,7 +16,7 @@ repository = "https://github.com/avivsinai/shaon"
 authors = ["Aviv Sinai"]
 
 [workspace.dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 anyhow = "1"
 assert_cmd = "2"
 async-trait = "0.1"
@@ -27,7 +27,7 @@ clap_complete = "4"
 cookie_store = "0.21"
 hkdf = "0.12"
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
-lopdf = "0.41"
+lopdf = "0.43"
 predicates = "3"
 rand = "0.8"
 regex = "1"
