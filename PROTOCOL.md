@@ -106,6 +106,12 @@ Key form fields (full set scraped dynamically at runtime — do not hardcode):
 | `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$cellOf_CompletionToStandard_EmployeeReports_row_0_0$CompletionToStandard_EmployeeReports_row_0_0` | Auto-fill to standard hours | `on` |
 | `ctl00$mp$RG_Days_{empId}_{YYYY}_{MM}$btnSave` | Submit button | `שמירה` |
 
+### Edit-Lock Signal
+
+The `RefreshSelectedDays` delta declares the self-service window as `"MinDate"`/`"MaxDate"` on `HReportsGridControlBehavior`. For a day outside that window, Hilan renders the grid's edit inputs and save button with `disabled="disabled"`; that rendered attribute is the authoritative "cannot edit" signal.
+
+Do NOT trust `"CanBeChanged"` on `HReportsGridRowBehavior`: Hilan serializes it as `false` even for days it accepts edits for (observed on empty, reported, and system-auto-filled days alike). A day pre-filled by the system (e.g. auto vacation) still renders an enabled `EmployeeReports` row and accepts a full-form-replay save; only the system row itself is locked.
+
 ### Filter Buttons
 - `ctl00$mp$RefreshSelectedDays` → "ימים נבחרים" (selected days)
 - `ctl00$mp$RefreshErrorsDays` → "ימים שגויים" (error days)

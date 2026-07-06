@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Fixed
+- Attendance day edits no longer reject every self-service day. The 0.9.2 disabled-row guard read the grid's `CanBeChanged` flag, which Hilan serializes as `false` even for editable days, so every calendar write failed closed. The guard now keys off the rendered save-button `disabled` attribute, which correctly distinguishes locked days (outside the self-service window) from editable ones.
 
 ## [0.9.2] - 2026-06-29
 ### Fixed

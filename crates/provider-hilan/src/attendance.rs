@@ -1648,7 +1648,7 @@ async fn load_calendar_submit_form(
             date.format("%Y-%m-%d")
         );
     }
-    if selected_row_can_be_changed(&response, date) == Some(false) {
+    if calendar_save_button_disabled(&response, date) == Some(true) {
         let range = calendar_editable_range(&response)
             .map(|(min, max)| format!("; editable range is {min} through {max}"))
             .unwrap_or_default();
@@ -2068,20 +2068,28 @@ fn extract_row_data_json_for_date<'a>(html: &'a str, row_date: &str) -> Option<&
     Some(&html[content_start..row_date_start])
 }
 
-fn selected_row_can_be_changed(html: &str, date: NaiveDate) -> Option<bool> {
-    let row_date = format!("{}-{}-{}", date.year(), date.month(), date.day());
-    let row_date_needle = format!("\"RowDate\":\"{row_date}\"");
-    let row_date_start = html.find(&row_date_needle)?;
-    let can_change_key = "\"CanBeChanged\":";
-    let start = html[..row_date_start].rfind(can_change_key)? + can_change_key.len();
-    let rest = &html[start..];
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
+/// Whether Hilan rendered the selected day's save button as disabled.
+///
+/// The `CanBeChanged` flag in `HReportsGridRowBehavior` is NOT a reliable
+/// signal: Hilan serializes it as `false` even for days it accepts edits
+/// for. Locked days (outside the self-service window) are instead rendered
+/// with `disabled="disabled"` on the grid's edit inputs and save button.
+fn calendar_save_button_disabled(html: &str, date: NaiveDate) -> Option<bool> {
+    let document = Html::parse_document(html);
+    let name_suffix = format!("_{:04}_{:02}$btnSave", date.year(), date.month());
+    let id_suffix = format!("_{:04}_{:02}_btnSave", date.year(), date.month());
+    document
+        .select(&INPUT_SEL)
+        .find(|input| {
+            let value = input.value();
+            value
+                .attr("name")
+                .is_some_and(|name| name.contains("$RG_Days_") && name.ends_with(&name_suffix))
+                || value
+                    .attr("id")
+                    .is_some_and(|id| id.contains("_RG_Days_") && id.ends_with(&id_suffix))
+        })
+        .map(|input| input.value().attr("disabled").is_some())
 }
 
 fn calendar_editable_range(html: &str) -> Option<(NaiveDate, NaiveDate)> {
@@ -2832,16 +2840,17 @@ mod tests {
 
     #[test]
     fn selected_row_metadata_reports_disabled_edit_window() {
+        // Day outside the self-service window: Hilan disables the save button.
         let html = r#"
             <script>
                 $create(Hilan.HilanNet.Web.Controls.HAttendanceGridV2.HReportsGridControlBehavior, {"MaxDate":"2026-09-30T00:00:00","MinDate":"2026-06-01T00:00:00"}, null, null, $get("ctl00_mp_RG_Days_460627_2026_05_reportsGrid"));
-                $create(Hilan.HilanNet.Web.Controls.HAttendanceGrid.HReportsGridRow.HReportsGridRowBehavior, {"CanBeChanged":false,"RowData":"[{\"ID\":\"00000000-0000-0000-0000-000000000000\",\"IsRange\":false,\"EmployeeId\":27,\"ReportDate\":\"\\/Date(1779829200000)\\/\",\"IsReportDeleted\":false}]","RowDate":"2026-5-27"});
             </script>
+            <input type="submit" name="ctl00$mp$RG_Days_460627_2026_05$btnSave" value="שמירה" disabled="disabled" id="ctl00_mp_RG_Days_460627_2026_05_btnSave" class="primary me-1 hbutton2 buttonNormalBody" />
         "#;
 
         assert_eq!(
-            selected_row_can_be_changed(html, NaiveDate::from_ymd_opt(2026, 5, 27).unwrap()),
-            Some(false)
+            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 5, 27).unwrap()),
+            Some(true)
         );
         assert_eq!(
             calendar_editable_range(html),
@@ -2849,6 +2858,41 @@ mod tests {
                 NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
                 NaiveDate::from_ymd_opt(2026, 9, 30).unwrap()
             ))
+        );
+    }
+
+    #[test]
+    fn editable_day_save_button_is_enabled_despite_can_be_changed_false() {
+        // Hilan renders `"CanBeChanged":false` even for editable days; the
+        // save button state is the authoritative signal (regression: #91
+        // rejected every self-service edit).
+        let html = r#"
+            <script>
+                $create(Hilan.HilanNet.Web.Controls.HAttendanceGrid.HReportsGridRow.HReportsGridRowBehavior, {"CanBeChanged":false,"RowDate":"2026-7-7"});
+            </script>
+            <input type="submit" name="ctl00$mp$RG_Days_460627_2026_07$btnSave" value="שמירה" id="ctl00_mp_RG_Days_460627_2026_07_btnSave" class="primary me-1 hbutton2 buttonNormalBody" onmousedown="this.className='x'" />
+        "#;
+
+        assert_eq!(
+            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 7, 7).unwrap()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn save_button_lookup_ignores_other_month_grids() {
+        let html = r#"
+            <input type="submit" name="ctl00$mp$RG_Days_460627_2026_06$btnSave" value="שמירה" disabled="disabled" id="ctl00_mp_RG_Days_460627_2026_06_btnSave" />
+            <input type="submit" name="ctl00$mp$RG_Days_460627_2026_07$btnSave" value="שמירה" id="ctl00_mp_RG_Days_460627_2026_07_btnSave" />
+        "#;
+
+        assert_eq!(
+            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 7, 7).unwrap()),
+            Some(false)
+        );
+        assert_eq!(
+            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()),
+            Some(true)
         );
     }
 
