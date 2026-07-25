@@ -1260,7 +1260,7 @@ pub fn print_errors(cal: &MonthCalendar) {
         println!(
             "{:<date_w$}  {:<day_w$}  {:<msg_w$}",
             day.date.format("%Y-%m-%d"),
-            &day.day_name,
+            day.day_name,
             msg,
         );
     }
