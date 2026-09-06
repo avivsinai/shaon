@@ -1,192 +1,76 @@
 ---
 name: shaon
 version: 0.9.3
-description: >
-  Personal attendance, payslip, salary, and related self-service tasks on the
-  user's own Hilan account. Trigger on shaon, attendance, clock in/out, payslip,
-  salary slip, work hours, תלוש, תלוש שכר, משכורת, דוח נוכחות, corrections log,
-  forgot to clock in, forgot to report, or any request about the user's own
-  Israeli employer self-service portal.
+description: Manage personal Hilan attendance, corrections, payslips, and salary data through shaon.
 ---
 
 # Shaon
 
-Claude Code skill for the `shaon` repo and binary.
+Use the MCP tool when it covers the requested operation. Use the `shaon` CLI
+for unsupported operations, diagnosis, or when the user asks for the CLI.
+Inspect `shaon --help` or the relevant subcommand help for exact flags.
 
-## Tool Selection
+## Choose the task
 
-- Prefer the **MCP server** when a tool already covers the domain operation.
-- Fall back to the **CLI** for local-machine or interactive operations:
-  `auth`, `payroll payslip view`, `reports show`, `cache refresh attendance-types`,
-  `serve`, and `completions`.
-- Use this **skill** to pick the right surface, the right command/tool, and the
-  right safety flow.
+- Month status, missing days, and errors: start with `shaon attendance overview`.
+- Daily or monthly attendance details: use `shaon attendance` read commands.
+- Corrections: preview the relevant `attendance report` or `attendance resolve` command first.
+- Payslips and salary: use `shaon payroll` commands.
+- Authentication or account setup: use `shaon auth` commands.
+
+Prefer structured output when another tool will consume the result. Do not
+request credentials or a browser login for a read until the command reports
+that authentication is required.
 
 ## Human-attested writes
 
-All write commands (`attendance report today/day/range`, `attendance auto-fill`, `attendance resolve`) submit under the user's identity against their real employer's system. When driving these, ALWAYS:
+Attendance submissions are claims about real work performed. The user must
+attest the facts; neither inferred calendar events nor an agent's judgment is
+enough.
 
-1. Run with `--dry-run` (the default) first.
-2. Show the resulting preview to the user.
-3. Require the user to explicitly confirm in the conversation before rerunning with `--execute`.
+- Reporting commands preview by default. Show the employee, date or range,
+  times, report type, and resulting action.
+- Run with `--execute` (or MCP `execute: true`) only after the user explicitly
+  authorizes that concrete submission.
+- Never autonomously rerun a write with `--execute`.
+- After an ambiguous timeout or transport error, read back attendance state
+  before proposing another submission.
+- CAPTCHA and attended login steps must be completed by the user.
 
-Never autonomously rerun a write with `--execute`. Writes must be treated as user-authorized actions and must not be submitted without explicit user confirmation.
-
-## CLI Entry Point
-
-If working from a repo checkout, prefer:
-
-```bash
-scripts/run.sh <command> [args]
-```
-
-If installed globally:
+Example safe flow:
 
 ```bash
-shaon <command> [args]
+shaon attendance overview --month 2026-09
+shaon attendance report day 2026-09-03 --type regular --hours 09:00-17:30
+# Only after the user confirms that preview:
+shaon attendance report day 2026-09-03 --type regular --hours 09:00-17:30 --execute
 ```
 
-## First-Time Setup
+Use `shaon attendance report range --help` before a range correction; resolve
+weekends, holidays, leave, and partial days instead of assuming identical work
+hours for every date.
 
-Create `~/.shaon/config.toml`:
+Range reports and auto-fill skip Friday and Saturday unless explicitly
+overridden. Auto-fill is capped at 10 days by default; use its help before
+changing that limit.
 
-```toml
-subdomain = "mycompany"
-username = "123456789"
-payslip_folder = "/path/to/payslips"   # optional
-payslip_format = "%Y-%m.pdf"           # optional
-```
+## Payroll and sensitive output
 
-Then authenticate:
+List available payslips before downloading one. Keep salary documents and
+values within the user's requested destination and scope.
 
-```bash
-shaon auth
-```
-
-If stored credentials are stale and you want a deterministic refresh prompt:
-
-```bash
-shaon auth --force-prompt
-```
-
-## Pick The Right Read Command
-
-| User intent | Use |
-|-------------|-----|
-| "what's my current month state?" | `shaon attendance overview --json` |
-| "show me the raw calendar / what did Hilan record per day?" | `shaon attendance status --month YYYY-MM` |
-| "what errors do I need to fix?" | `shaon attendance errors --month YYYY-MM` |
-| "what attendance types can I report?" | `shaon attendance types` |
-| "what absence symbols mean?" | `shaon attendance absences` |
-| "show the analyzed hours sheet" | `shaon reports sheet` |
-| "show the manual correction log / audit trail" | `shaon reports corrections` |
-| "show a named Hilan report page" | `shaon reports show <name>` |
-| "download my payslip" | `shaon payroll payslip download --month YYYY-MM` |
-| "open my payslip locally" | `shaon payroll payslip view --month YYYY-MM` |
-| "how much did I earn recently?" | `shaon payroll salary --months N` |
-
-`attendance overview` is usually the best first move for an agent because it bundles identity, summary, errors, missing days, and suggested actions.
-
-JSON contract notes:
-
-- `attendance status --json` returns `{ month, employee_id, days[] }` with `day_name`, `entry_time`, `exit_time`, `attendance_type`, `total_hours`, `has_error`, `error_message`, and `source`.
-- `attendance overview --json` returns `missing_days` as `{ date, day_name }` objects.
-- `suggested_actions` is keyed by `kind`; fields are top-level, not nested inside a generic `params` object.
-- `attendance overview --json --detailed` adds a `days[]` array using the same schema as `attendance status --json`.
-
-## Write Commands
-
-### Explicit reporting
-
-| Intent | Command |
-|--------|---------|
-| clock in now | `shaon attendance report today --in` |
-| clock out now | `shaon attendance report today --out` |
-| report one explicit day | `shaon attendance report day YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
-| report a range | `shaon attendance report range --from YYYY-MM-DD --to YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
-| auto-fill missing days in a month | `shaon attendance auto-fill --month YYYY-MM --type "regular" --hours 09:00-18:00` |
-| resolve an existing error day | `shaon attendance resolve YYYY-MM-DD --type "regular" --hours 09:00-18:00` |
-
-### Safety Model
-
-- Every write is **preview-only by default**.
-- The agent should show the preview summary to the user before rerunning with `--execute` or `execute: true`.
-- The agent must wait for explicit user confirmation before any live submit.
-- `attendance report range` and `attendance auto-fill` skip Fri/Sat unless explicitly overridden.
-- `attendance auto-fill` is capped at `--max-days 10` by default to prevent accidental bulk edits.
-
-## MCP Coverage
-
-Current MCP tools cover:
-
-- `shaon_status`
-- `shaon_errors`
-- `shaon_types`
-- `shaon_clock_in`
-- `shaon_clock_out`
-- `shaon_fill`
-- `shaon_auto_fill`
-- `shaon_resolve`
-- `shaon_payslip_download`
-- `shaon_salary`
-- `shaon_sheet`
-- `shaon_corrections`
-- `shaon_absences`
-- `shaon_overview`
-
-CLI-only features:
-
-- `shaon auth`
-- `shaon payroll payslip view`
-- `shaon reports show <name>`
-- `shaon cache refresh attendance-types`
-- `shaon serve`
-- `shaon completions`
-
-## Agent Workflows
-
-### Review the month first
-
-```bash
-shaon attendance overview --json
-```
-
-### Fix an attendance error safely
-
-```bash
-shaon attendance errors --month 2026-04 --json
-shaon attendance resolve 2026-04-09 --type "regular" --hours 09:00-18:00
-# After explicit user confirmation:
-shaon attendance resolve 2026-04-09 --type "regular" --hours 09:00-18:00 --execute
-```
-
-### Fill a missing range safely
-
-```bash
-shaon attendance report range --from 2026-04-01 --to 2026-04-05 --type "regular" --hours 09:00-18:00
-# After explicit user confirmation:
-shaon attendance report range --from 2026-04-01 --to 2026-04-05 --type "regular" --hours 09:00-18:00 --execute
-```
-
-### Hebrew payslip workflow
-
-```bash
-shaon payroll payslip download --month 2026-03
-shaon payroll payslip view --month 2026-03
-```
-
-### Sensitive recovery command
-
-`shaon payroll payslip password --force-sensitive-output` prints the current Hilan account password in plaintext to standard output. It does not recover historical passwords used for PDFs encrypted before a password change. Output may be captured by shells, terminals, logs, remote sessions, screenshots, and agent transcripts. Run it only on a private interactive terminal you control.
+`shaon payroll payslip password --force-sensitive-output` prints the current
+Hilan password in plaintext. It may be captured by terminals, logs, remote
+sessions, screenshots, and agent transcripts. Run it only when the user
+explicitly requests password recovery in a private interactive terminal. It
+does not recover historical PDF passwords.
 
 ## Troubleshooting
 
-- **CAPTCHA**: the user must solve it in the browser first.
-- **Type resolution fails**: run `shaon cache refresh attendance-types` or pass the numeric type code directly.
-- **Session expired or stale stored credentials**: rerun `shaon auth --force-prompt` to verify and replace the stored password.
+- Use the command's structured error before changing configuration.
+- If authentication expired, use the supported login flow; do not scrape or
+  expose session material.
+- State-changing requests must not be retried automatically.
+- Do not disable TLS validation or credential protections to bypass an error.
 
-## Further Reading
-
-- [README.md](../../README.md)
-- [ARCHITECTURE.md](../../ARCHITECTURE.md)
-- [PROTOCOL.md](../../PROTOCOL.md)
+For repository architecture and development checks, read `CLAUDE.md`.
