@@ -194,10 +194,10 @@ jobs:
             artifact: shaon
             cross: true
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             artifact: shaon
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             artifact: shaon
           - target: x86_64-pc-windows-msvc
             os: windows-latest
