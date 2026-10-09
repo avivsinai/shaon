@@ -9,7 +9,7 @@ use hr_core::{
 use provider_hilan::{Config, HilanProvider};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
+    model::{ServerCapabilities, ServerConfig},
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
@@ -1070,8 +1070,8 @@ impl ShaonMcpServer {
 
 #[tool_handler]
 impl ServerHandler for ShaonMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Shaon attendance & payslip server. \
                  Read tools return JSON data. \
                  Write tools (clock_in, clock_out, fill, auto_fill, resolve) default to dry-run; \
