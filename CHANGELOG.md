@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.10.0] - 2026-10-11
 ### Changed
 - Migrated the MCP server to rmcp 3 (breaking dependency upgrade); also bumped lopdf, rustls, base64 and other dependencies.
 - macOS release binaries are now built on macos-15 runners.
@@ -14,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The MCP server now reports `shaon` as its server identity in `serverInfo`.
 - Bumped `rand` to 0.8.6 to address an unsoundness advisory with a custom logger.
 - Satisfied Rust 1.99 clippy lints.
+
 
 ## [0.9.3] - 2026-07-06
 ### Fixed
