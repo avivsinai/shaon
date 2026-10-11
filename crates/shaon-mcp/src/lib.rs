@@ -9,7 +9,7 @@ use hr_core::{
 use provider_hilan::{Config, HilanProvider};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerConfig},
+    model::{Implementation, ServerCapabilities, ServerConfig},
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
@@ -1071,12 +1071,14 @@ impl ShaonMcpServer {
 #[tool_handler]
 impl ServerHandler for ShaonMcpServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Shaon attendance & payslip server. \
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("shaon", env!("CARGO_PKG_VERSION")))
+            .with_instructions(
+                "Shaon attendance & payslip server. \
                  Read tools return JSON data. \
                  Write tools (clock_in, clock_out, fill, auto_fill, resolve) default to dry-run; \
                  set execute=true to submit.",
-        )
+            )
     }
 }
 
@@ -1085,6 +1087,13 @@ mod tests {
     use super::*;
     use hr_core::{AttendanceSource, CalendarDay, MonthCalendar, UserIdentity};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn get_info_reports_shaon_identity() {
+        let info = ShaonMcpServer::new().get_info();
+        assert_eq!(info.server_info.name, "shaon");
+        assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+    }
 
     fn sample_overview(targets: Vec<FixTarget>) -> use_cases::OverviewData {
         let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
