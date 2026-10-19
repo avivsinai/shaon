@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Changed
+- Bumped `serde_json` to 1.0.154 and `zeroize` to 1.9.1.
 
 ## [0.10.0] - 2026-10-11
 ### Changed
