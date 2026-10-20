@@ -1,6 +1,6 @@
 ---
 name: shaon
-version: 0.10.1
+version: 0.10.2
 description: Manage personal Hilan attendance, corrections, payslips, and salary data through shaon.
 ---
 
