@@ -660,7 +660,9 @@ jobs:
 
             def caveats
               <<~EOS
-                macOS may ask you to re-approve Keychain access after upgrades.
+                macOS may ask you once to approve Keychain access after an upgrade from an
+                ad-hoc signed build. Developer ID signed releases keep that approval across
+                later upgrades.
               EOS
             end
 
