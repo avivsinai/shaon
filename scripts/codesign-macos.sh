@@ -23,16 +23,77 @@ if ! command -v codesign >/dev/null 2>&1; then
   exit 1
 fi
 
-# Sign ad-hoc with an explicit Designated Requirement pinned to the identifier.
+# Release builds: sign with the Developer ID that release.yml imports, then
+# notarize.
+#
+# Keychain checks two things on each read. The item ACL matches the caller by
+# its Designated Requirement, and the item partition list matches the caller by
+# a partition ID. For ad-hoc code the partition ID is `cdhash:<hash>`, which
+# changes on every build, so each upgrade prompts again even with a pinned DR.
+# For Developer ID code it is `teamid:<TEAM_ID>`, which is stable, so one
+# "Always Allow" survives upgrades. Keep the default DR here: it anchors to the
+# Apple-issued certificate of our team, not only to the identifier.
+if [[ -n "${SHAON_MACOS_TEAM_ID:-}" ]]; then
+  : "${SHAON_MACOS_KEYCHAIN:?SHAON_MACOS_KEYCHAIN must be set with SHAON_MACOS_TEAM_ID}"
+  : "${SHAON_MACOS_SIGN_IDENTITY:?SHAON_MACOS_SIGN_IDENTITY must be set with SHAON_MACOS_TEAM_ID}"
+  : "${SHAON_NOTARY_KEY_PATH:?SHAON_NOTARY_KEY_PATH must be set with SHAON_MACOS_TEAM_ID}"
+  : "${SHAON_NOTARY_KEY_ID:?SHAON_NOTARY_KEY_ID must be set with SHAON_MACOS_TEAM_ID}"
+  : "${SHAON_NOTARY_ISSUER_ID:?SHAON_NOTARY_ISSUER_ID must be set with SHAON_MACOS_TEAM_ID}"
+
+  codesign \
+    --force \
+    --options runtime \
+    --timestamp \
+    --keychain "$SHAON_MACOS_KEYCHAIN" \
+    --sign "$SHAON_MACOS_SIGN_IDENTITY" \
+    --identifier "$identifier" \
+    "$binary_path"
+
+  team_id="$(codesign -dv "$binary_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+  if [[ "$team_id" != "$SHAON_MACOS_TEAM_ID" ]]; then
+    echo "error: $binary_path has TeamIdentifier '$team_id', expected '$SHAON_MACOS_TEAM_ID'" >&2
+    exit 1
+  fi
+
+  # notarytool takes a zip; a bare Mach-O cannot be stapled, so Gatekeeper
+  # checks the ticket online.
+  work_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/shaon-notary.XXXXXX")"
+  trap 'rm -rf "$work_dir"' EXIT
+  ditto -c -k --keepParent "$binary_path" "$work_dir/shaon.zip"
+  submit_rc=0
+  xcrun notarytool submit "$work_dir/shaon.zip" \
+    --key "$SHAON_NOTARY_KEY_PATH" \
+    --key-id "$SHAON_NOTARY_KEY_ID" \
+    --issuer "$SHAON_NOTARY_ISSUER_ID" \
+    --wait \
+    --timeout 20m \
+    --output-format json >"$work_dir/result.json" || submit_rc=$?
+
+  status="$(plutil -extract status raw -o - "$work_dir/result.json" 2>/dev/null || echo "unknown (notarytool exit $submit_rc)")"
+  if [[ "$status" != "Accepted" ]]; then
+    submission_id="$(plutil -extract id raw -o - "$work_dir/result.json" 2>/dev/null || true)"
+    echo "error: notarization of $binary_path ended with status '$status' (submission $submission_id)" >&2
+    if [[ -n "$submission_id" ]]; then
+      xcrun notarytool log "$submission_id" \
+        --key "$SHAON_NOTARY_KEY_PATH" \
+        --key-id "$SHAON_NOTARY_KEY_ID" \
+        --issuer "$SHAON_NOTARY_ISSUER_ID" >&2 || true
+    fi
+    exit 1
+  fi
+  exit 0
+fi
+
+# Local, fork and snapshot builds: sign ad-hoc with an explicit Designated
+# Requirement pinned to the identifier.
 #
 # Without -r, ad-hoc signatures derive a DR from the cdhash, which changes on
-# every rebuild. That invalidates macOS Keychain "Always Allow" approvals after
-# local rebuilds and release upgrades. Pinning the DR to the identifier keeps the
-# Keychain ACL stable for both scripts/run.sh builds and published artifacts.
+# every rebuild and breaks the Keychain ACL match. The pin keeps the ACL match
+# stable, but ad-hoc code still gets a new `cdhash:` partition ID per build
+# (see above), so these builds prompt once after each rebuild.
 #
 # Security trade-off: any other ad-hoc binary that claims this identifier can
-# satisfy the same DR. This is acceptable for shaon's current local-user threat
-# model; a Developer ID signature would provide a stricter anchor in the future.
+# satisfy the same DR. This is acceptable for shaon's local-user threat model.
 codesign \
   --force \
   --sign - \
