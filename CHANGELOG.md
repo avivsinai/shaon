@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-25
+### Fixed
+- The release workflow creates the `v*` tag with the release App and creates
+  the GitHub release with the same App token. The v0.10.3 tag was created but
+  its release step failed with 401 Bad credentials (expired PAT), so no
+  release was published; this release publishes the v0.10.3 artifacts as
+  v0.10.4.
+
 ## [0.10.3] - 2026-10-25
 ### Security
 - Updated rustls to 0.23.46, rustls-webpki to 0.103.16 and quinn-proto to 0.11.19 to fix current RustSec advisories.
