@@ -346,6 +346,10 @@ jobs:
           else
             gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$RELEASE_SHA" >/dev/null
           fi
+          # The API created the tag on the server; this checkout does not see
+          # it until it is fetched, and later steps (gh release create
+          # --verify-tag) validate against the local tag.
+          git fetch --force --tags origin
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.0
         with:
@@ -575,23 +579,20 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Check packaging token
-        id: packaging_token
-        shell: bash
-        env:
-          PACKAGING_REPO_GITHUB_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
-        run: |
-          if [[ -z "${PACKAGING_REPO_GITHUB_TOKEN:-}" ]]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "PACKAGING_REPO_GITHUB_TOKEN is not configured; skipping Homebrew update."
-            exit 0
-          fi
-          echo "available=true" >> "$GITHUB_OUTPUT"
+      # The App opens/merges the packaging PRs; the PAT is only a fallback
+      # (it expired and caused the v0.10.4 401 failures).
+      - name: Mint release App token for packaging repos
+        id: packaging_app
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: homebrew-tap,scoop-bucket
 
       - name: Open tap update PR
-        if: steps.packaging_token.outputs.available == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.packaging_app.outputs.token || secrets.PACKAGING_REPO_GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
         shell: bash
@@ -699,23 +700,18 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Check packaging token
-        id: packaging_token
-        shell: bash
-        env:
-          PACKAGING_REPO_GITHUB_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
-        run: |
-          if [[ -z "${PACKAGING_REPO_GITHUB_TOKEN:-}" ]]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "PACKAGING_REPO_GITHUB_TOKEN is not configured; skipping Scoop update."
-            exit 0
-          fi
-          echo "available=true" >> "$GITHUB_OUTPUT"
+      - name: Mint release App token for packaging repos (Scoop)
+        id: packaging_app_scoop
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: homebrew-tap,scoop-bucket
 
       - name: Open bucket update PR
-        if: steps.packaging_token.outputs.available == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PACKAGING_REPO_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.packaging_app_scoop.outputs.token || secrets.PACKAGING_REPO_GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
         shell: bash
