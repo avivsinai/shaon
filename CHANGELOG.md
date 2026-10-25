@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- Updated rustls to 0.23.46, rustls-webpki to 0.103.16 and quinn-proto to 0.11.19 to fix current RustSec advisories.
+- Updated the bundled root certificates (webpki-roots 1.0.10).
+- Release and skill-publishing workflows run on Node 24.
+
+### Changed
+- Bumped `rmcp` to 3.7.0 and `tokio` to 1.54.1.
+
 ## [0.10.2] - 2026-10-20
 ### Fixed
 - macOS release binaries are signed with a Developer ID and notarized when the release signing secrets are configured. Keychain then keys the `shaon-cli` item's partition to the team ID instead of the build hash, so one "Always Allow" survives `brew upgrade`. The first run of the first signed release asks one last time.
