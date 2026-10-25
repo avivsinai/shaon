@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-10-25
 ### Security
 - Updated rustls to 0.23.46, rustls-webpki to 0.103.16 and quinn-proto to 0.11.19 to fix current RustSec advisories.
 - Updated the bundled root certificates (webpki-roots 1.0.10).
@@ -14,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Bumped `rmcp` to 3.7.0 and `tokio` to 1.54.1.
+
 
 ## [0.10.2] - 2026-10-20
 ### Fixed
