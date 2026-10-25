@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-25
+
 ## [0.10.3] - 2026-10-25
 ### Security
 - Updated rustls to 0.23.46, rustls-webpki to 0.103.16 and quinn-proto to 0.11.19 to fix current RustSec advisories.
