@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- The Homebrew and Scoop packaging jobs now open and merge their PRs with a short-lived release App token scoped to homebrew-tap,scoop-bucket. v0.10.4's packaging steps failed with 401 Bad credentials (expired PACKAGING_REPO_GITHUB_TOKEN PAT).
+- The release workflow re-fetches the freshly created tag so tag-validating steps see it.
+
 ## [0.10.4] - 2026-10-25
 ### Fixed
 - The release workflow creates the `v*` tag with the release App and creates
