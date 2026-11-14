@@ -55,8 +55,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
-          arguments: --all-features
-        continue-on-error: true  # advisory DB parse errors are upstream, non-blocking
+          arguments: --all-features --locked
 
   rust:
     name: Rust (${{ matrix.os }})
@@ -80,13 +79,13 @@ jobs:
         uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2.8.1
 
       - name: Cargo check
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
 
       - name: Cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Cargo test
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets --locked
 
       - name: Cargo fmt
         if: matrix.os == 'ubuntu-latest'
