@@ -59,6 +59,9 @@ All three surfaces eventually go through `provider-hilan`, which implements the 
 
 State-changing requests are intentionally not retried automatically.
 
+HTTPS uses rustls with the operating system's root certificates. Certificate
+chain and hostname verification remain enabled.
+
 ### 3. Domain Provider
 
 `HilanProvider` adapts Hilan-specific behavior to the generic traits in `hr-core`:

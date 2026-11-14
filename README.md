@@ -30,6 +30,9 @@ You are responsible for all attendance submissions, payslip downloads, and crede
 
 ## Installation
 
+HTTPS connections trust the operating system's certificate store. Minimal Linux
+images need their distribution's `ca-certificates` package installed.
+
 ### Homebrew (macOS / Linux)
 
 ```bash
