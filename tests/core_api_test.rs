@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use jiff::{civil::Date, ToSpan};
 use shaon::core::{
     AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, AttendanceType,
     CalendarDay, DocumentDownload, FixTarget, MonthCalendar, PayslipProvider, ProviderError,
@@ -21,7 +21,7 @@ impl AttendanceProvider for DummyProvider {
         })
     }
 
-    async fn month_calendar(&mut self, month: NaiveDate) -> Result<MonthCalendar, ProviderError> {
+    async fn month_calendar(&mut self, month: Date) -> Result<MonthCalendar, ProviderError> {
         Ok(MonthCalendar {
             month,
             employee_id: "e-1".to_string(),
@@ -47,7 +47,7 @@ impl AttendanceProvider for DummyProvider {
         }])
     }
 
-    async fn fix_targets(&mut self, month: NaiveDate) -> Result<Vec<FixTarget>, ProviderError> {
+    async fn fix_targets(&mut self, month: Date) -> Result<Vec<FixTarget>, ProviderError> {
         Ok(vec![FixTarget {
             date: month,
             issue_kind: Some("missing_standard_day".to_string()),
@@ -91,12 +91,12 @@ impl AttendanceProvider for DummyProvider {
 #[async_trait::async_trait]
 impl SalaryProvider for DummyProvider {
     async fn salary_summary(&mut self, months: u32) -> Result<SalarySummary, ProviderError> {
-        let base_month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let base_month = Date::new(2026, 4, 1).unwrap();
         Ok(SalarySummary {
             label: "Bruto".to_string(),
             entries: (0..months)
                 .map(|offset| SalaryEntry {
-                    month: base_month - chrono::Months::new(offset),
+                    month: base_month - i64::from(offset).months(),
                     amount: 10_000 + u64::from(offset),
                 })
                 .collect(),
@@ -120,7 +120,7 @@ impl AbsenceProvider for DummyProvider {
 impl PayslipProvider for DummyProvider {
     async fn download_payslip(
         &mut self,
-        month: NaiveDate,
+        month: Date,
         output: Option<&Path>,
     ) -> Result<DocumentDownload, ProviderError> {
         Ok(DocumentDownload {
@@ -150,7 +150,7 @@ impl ReportProvider for DummyProvider {
 #[tokio::test]
 async fn core_traits_are_usable_from_library_consumers() {
     let mut provider = DummyProvider;
-    let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+    let month = Date::new(2026, 4, 1).unwrap();
 
     let identity = provider.identity().await.expect("identity");
     assert_eq!(identity.display_name, "Test User");

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp};
 use scraper::{Html, Selector};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -19,7 +19,26 @@ pub struct AttendanceType {
 pub struct OrgOntology {
     pub subdomain: String,
     pub types: Vec<AttendanceType>,
-    pub fetched_at: DateTime<Utc>,
+    #[serde(serialize_with = "serialize_fetched_at")]
+    pub fetched_at: Timestamp,
+}
+
+fn serialize_fetched_at<S: Serializer>(
+    timestamp: &Timestamp,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // Keep the cache's UTC strings and their existing fractional-second precision.
+    let nanos = timestamp.subsec_nanosecond();
+    let precision = if nanos == 0 {
+        0
+    } else if nanos % 1_000_000 == 0 {
+        3
+    } else if nanos % 1_000 == 0 {
+        6
+    } else {
+        9
+    };
+    serializer.collect_str(&format_args!("{timestamp:.precision$}"))
 }
 
 impl OrgOntology {
@@ -28,13 +47,13 @@ impl OrgOntology {
         let path = ontology_path(subdomain);
         if path.exists() {
             let ontology = Self::load(&path)?;
-            let age = Utc::now() - ontology.fetched_at;
-            if age < chrono::Duration::hours(24) {
+            let age = Timestamp::now().duration_since(ontology.fetched_at);
+            if age < SignedDuration::from_hours(24) {
                 return Ok(ontology);
             }
             eprintln!(
                 "Ontology cache is {} hours old, refreshing...",
-                age.num_hours()
+                age.as_hours()
             );
         } else {
             eprintln!("No cached types found, syncing from server...");
@@ -145,7 +164,7 @@ impl OrgOntology {
         println!(
             "\nCached from {} at {}",
             self.subdomain,
-            self.fetched_at.format("%Y-%m-%d %H:%M UTC")
+            self.fetched_at.strftime("%Y-%m-%d %H:%M UTC")
         );
     }
 }
@@ -215,7 +234,7 @@ pub async fn sync_from_calendar(client: &mut HilanClient, subdomain: &str) -> Re
     let ontology = OrgOntology {
         subdomain: subdomain.to_string(),
         types,
-        fetched_at: Utc::now(),
+        fetched_at: Timestamp::now(),
     };
 
     let path = ontology_path(subdomain);
@@ -272,4 +291,33 @@ fn parse_symbol_dropdown(html: &str) -> Result<Vec<(String, String)>> {
     }
 
     Ok(types)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_timestamps_keep_utc_and_fractional_second_precision() {
+        for (cached, expected) in [
+            ("2026-04-01T00:00:00Z", "2026-04-01T00:00:00Z"),
+            ("2026-04-01T00:00:00.100Z", "2026-04-01T00:00:00.100Z"),
+            ("2026-04-01T00:00:00.123400Z", "2026-04-01T00:00:00.123400Z"),
+            (
+                "2026-04-01T00:00:00.123456789+02:00",
+                "2026-03-31T22:00:00.123456789Z",
+            ),
+        ] {
+            let ontology: OrgOntology = serde_json::from_value(serde_json::json!({
+                "subdomain": "example",
+                "types": [],
+                "fetched_at": cached,
+            }))
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(ontology).unwrap()["fetched_at"],
+                expected
+            );
+        }
+    }
 }

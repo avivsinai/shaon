@@ -115,6 +115,7 @@ Some error-fix flows require multiple steps, for example clearing a Hilan error 
 
 ## Stable JSON Contracts
 
+- Provider traits and DTOs use `shaon::core::Date`, a Jiff civil date. The CLI and MCP continue to use `YYYY-MM-DD` for dates and `YYYY-MM` for month arguments and responses.
 - `reports sheet`, `reports corrections`, and `reports show <name>` do not expose raw `{name, headers, rows}` directly from the provider layer.
 - Both CLI JSON mode and MCP return a stable report envelope:
   `report { kind, requested, provider_name }`, `column_count`, `row_count`, `columns[]`, and `rows[]`.

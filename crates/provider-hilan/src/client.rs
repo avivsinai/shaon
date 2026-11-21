@@ -1,8 +1,12 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{Datelike, Local, NaiveDate};
 use hkdf::Hkdf;
+use jiff::{
+    civil::Date,
+    fmt::strtime::{BrokenDownTime, Config as StrtimeConfig, PosixCustom},
+    Span, ToSpan, Zoned,
+};
 use regex::Regex;
 use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
@@ -62,14 +66,14 @@ const COOKIE_CACHE_KEY_INFO: &[u8] = b"shaon-cookie-cache-v1";
 
 #[derive(Debug, Serialize)]
 pub struct PayslipDownload {
-    pub month: NaiveDate,
+    pub month: Date,
     pub path: PathBuf,
     pub size_bytes: usize,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SalaryEntry {
-    pub month: NaiveDate,
+    pub month: Date,
     pub amount: u64,
 }
 
@@ -438,13 +442,9 @@ impl HilanClient {
         }
     }
 
-    pub async fn payslip(
-        &mut self,
-        month: NaiveDate,
-        output: Option<&Path>,
-    ) -> Result<PayslipDownload> {
+    pub async fn payslip(&mut self, month: Date, output: Option<&Path>) -> Result<PayslipDownload> {
         let bytes = self.password_protected_payslip_bytes(month).await?;
-        let path = self.resolve_payslip_path(month, output);
+        let path = self.resolve_payslip_path(month, output)?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create output directory {}", parent.display()))?;
@@ -465,7 +465,7 @@ impl HilanClient {
         })
     }
 
-    pub async fn payslip_pdf_bytes(&mut self, month: NaiveDate) -> Result<Vec<u8>> {
+    pub async fn payslip_pdf_bytes(&mut self, month: Date) -> Result<Vec<u8>> {
         self.ensure_authenticated().await?;
         if self.org_id.is_none() {
             self.org_id = Some(crate::api::bootstrap(self).await?.org_id);
@@ -485,27 +485,30 @@ impl HilanClient {
             self.config.username
         );
 
-        tracing::debug!("GET payslip {} (UserId=<redacted>)", month.format("%Y-%m"));
+        tracing::debug!(
+            "GET payslip {} (UserId=<redacted>)",
+            month.strftime("%Y-%m")
+        );
         let bytes = self
-            .send_bytes_with_retry(&format!("GET payslip {}", month.format("%Y-%m")), &url)
+            .send_bytes_with_retry(&format!("GET payslip {}", month.strftime("%Y-%m")), &url)
             .await?;
         if !bytes.starts_with(b"%PDF") {
             bail!(
                 "Payslip download did not return a PDF for {}. The session may be invalid or the payslip is unavailable.",
-                month.format("%Y-%m")
+                month.strftime("%Y-%m")
             );
         }
 
         Ok(bytes)
     }
 
-    pub async fn password_protected_payslip_bytes(&mut self, month: NaiveDate) -> Result<Vec<u8>> {
+    pub async fn password_protected_payslip_bytes(&mut self, month: Date) -> Result<Vec<u8>> {
         let bytes = self.payslip_pdf_bytes(month).await?;
         let secret = self.config.get_password()?;
         seal_pdf(&bytes, secret.expose_secret()).context("password-protect payslip PDF")
     }
 
-    pub async fn viewable_payslip_pdf_bytes(&mut self, month: NaiveDate) -> Result<Vec<u8>> {
+    pub async fn viewable_payslip_pdf_bytes(&mut self, month: Date) -> Result<Vec<u8>> {
         self.payslip_pdf_bytes(month).await
     }
 
@@ -532,9 +535,13 @@ impl HilanClient {
     }
 
     async fn salary_from_html(&mut self, months: u32) -> Result<SalarySummary> {
-        let latest_month = previous_month_start(Local::now().date_naive());
-        let oldest_month = shift_month(latest_month, -((months - 1) as i32));
-        let month_range = month_range(oldest_month, months);
+        let latest_month = previous_month_start(Zoned::now().date())?;
+        let offset = i32::try_from(months - 1).context("salary month range is too large")?;
+        let oldest_month = shift_month(latest_month, -offset)?;
+        let month_range = oldest_month
+            .series(1.month())
+            .take(months as usize)
+            .collect();
         let date_picker_state = format!(
             "01/{:02}/{:04},0,30/{:02}/{:04},0",
             oldest_month.month(),
@@ -623,20 +630,24 @@ impl HilanClient {
         })
     }
 
-    fn resolve_payslip_path(&self, month: NaiveDate, output: Option<&Path>) -> PathBuf {
-        let default_name = month.format(self.config.payslip_fmt()).to_string();
-
-        match output {
-            Some(path) if path.is_dir() => path.join(default_name),
-            Some(path) => path.to_path_buf(),
+    fn resolve_payslip_path(&self, month: Date, output: Option<&Path>) -> Result<PathBuf> {
+        let directory = match output {
+            Some(path) if path.is_dir() => path.to_path_buf(),
+            Some(path) => return Ok(path.to_path_buf()),
             None => self
                 .config
                 .payslip_folder
                 .as_ref()
                 .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(default_name),
-        }
+                .unwrap_or_default(),
+        };
+
+        // Keep the existing rendering of locale-dependent specifiers such as %x.
+        let format_config = StrtimeConfig::new().custom(PosixCustom::new());
+        let filename = BrokenDownTime::from(month)
+            .to_string_with_config(&format_config, self.config.payslip_fmt())
+            .context("format payslip filename from payslip_format")?;
+        Ok(directory.join(filename))
     }
 
     async fn post_salary_page(
@@ -677,7 +688,7 @@ impl HilanClient {
         Ok(response.body)
     }
 
-    fn parse_salary_summary(&self, html: &str, months: Vec<NaiveDate>) -> Result<SalarySummary> {
+    fn parse_salary_summary(&self, html: &str, months: Vec<Date>) -> Result<SalarySummary> {
         let rows = extract_salary_rows(html)?;
 
         let (label, amounts) = rows
@@ -1416,7 +1427,7 @@ fn extract_amount(cell: &str) -> Option<u64> {
     }
 }
 
-fn parse_selected_salary_months(data: &crate::api::SalaryInitialData) -> Result<Vec<NaiveDate>> {
+fn parse_selected_salary_months(data: &crate::api::SalaryInitialData) -> Result<Vec<Date>> {
     let raw_months: Vec<&str> = if data.selected_dates.is_empty() {
         data.selected_single_date
             .iter()
@@ -1436,8 +1447,8 @@ fn parse_selected_salary_months(data: &crate::api::SalaryInitialData) -> Result<
         .collect()
 }
 
-fn parse_salary_month_token(token: &str) -> Result<NaiveDate> {
-    NaiveDate::parse_from_str(&format!("01/{token}"), "%d/%m/%Y")
+fn parse_salary_month_token(token: &str) -> Result<Date> {
+    Date::strptime("%d/%m/%Y", format!("01/{token}"))
         .with_context(|| format!("parse salary month token {token}"))
 }
 
@@ -1514,21 +1525,14 @@ fn decrypt_cookie_blob(key: &[u8; COOKIE_KEY_LEN], encrypted: &[u8]) -> Result<V
         .map_err(|e| anyhow!("decrypt cookie blob: {e}"))
 }
 
-pub fn previous_month_start(today: NaiveDate) -> NaiveDate {
-    shift_month(today.with_day(1).unwrap(), -1)
+/// Returns the first day of the month preceding `today`.
+pub fn previous_month_start(today: Date) -> Result<Date, jiff::Error> {
+    shift_month(today, -1)
 }
 
-pub(crate) fn month_range(start: NaiveDate, months: u32) -> Vec<NaiveDate> {
-    (0..months)
-        .map(|offset| shift_month(start, offset as i32))
-        .collect()
-}
-
-pub(crate) fn shift_month(month_start: NaiveDate, delta_months: i32) -> NaiveDate {
-    let total_months = month_start.year() * 12 + month_start.month0() as i32 + delta_months;
-    let year = total_months.div_euclid(12);
-    let month0 = total_months.rem_euclid(12) as u32;
-    NaiveDate::from_ymd_opt(year, month0 + 1, 1).unwrap()
+pub(crate) fn shift_month(date: Date, months: i32) -> Result<Date, jiff::Error> {
+    date.first_of_month()
+        .checked_add(Span::new().try_months(months)?)
 }
 
 /// Signed percentage change from `previous` to `current`.
@@ -1607,6 +1611,29 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Mutex;
+
+    #[test]
+    fn payslip_path_keeps_default_and_custom_date_formats() {
+        let mut client = HilanClient::new(Config {
+            subdomain: "shaon-payslip-filename-test".to_string(),
+            username: "12345".to_string(),
+            password: None,
+            payslip_folder: None,
+            payslip_format: None,
+        })
+        .unwrap();
+        let month = jiff::civil::date(2026, 4, 1);
+        assert_eq!(
+            client.resolve_payslip_path(month, None).unwrap(),
+            Path::new("2026-04.pdf")
+        );
+
+        client.config.payslip_format = Some("%B-%Y (%x).pdf".to_string());
+        assert_eq!(
+            client.resolve_payslip_path(month, None).unwrap(),
+            Path::new("April-2026 (04/01/26).pdf"),
+        );
+    }
 
     fn test_home_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1866,7 +1893,7 @@ mod tests {
         )
     }
 
-    fn row_data_script(date: NaiveDate, entries: &[serde_json::Value]) -> String {
+    fn row_data_script(date: Date, entries: &[serde_json::Value]) -> String {
         let row_data = serde_json::to_string(entries).expect("serialize row data");
         let escaped = serde_json::to_string(&row_data).expect("escape row data");
         let escaped = escaped
@@ -1968,7 +1995,7 @@ mod tests {
 
     fn calendar_selection_delta_fragment(
         employee_id: &str,
-        date: NaiveDate,
+        date: Date,
         employee_short_id: u32,
     ) -> String {
         calendar_selection_delta_fragment_with_object_id(
@@ -1981,7 +2008,7 @@ mod tests {
 
     fn calendar_selection_delta_fragment_with_object_id(
         employee_id: &str,
-        date: NaiveDate,
+        date: Date,
         employee_short_id: u32,
         object_id: &str,
     ) -> String {
@@ -2001,7 +2028,7 @@ mod tests {
 
     fn calendar_selection_html(
         employee_id: &str,
-        date: NaiveDate,
+        date: Date,
         include_conflict: bool,
         employee_short_id: u32,
     ) -> String {
@@ -2046,7 +2073,7 @@ mod tests {
         )
     }
 
-    fn change_to_work_from_home(date: NaiveDate) -> AttendanceChange {
+    fn change_to_work_from_home(date: Date) -> AttendanceChange {
         AttendanceChange {
             date,
             attendance_type_code: Some("120".to_string()),
@@ -2060,7 +2087,7 @@ mod tests {
         }
     }
 
-    fn missing_report_target(date: NaiveDate) -> FixTarget {
+    fn missing_report_target(date: Date) -> FixTarget {
         FixTarget {
             date,
             issue_kind: Some("missing".to_string()),
@@ -2118,10 +2145,7 @@ mod tests {
 
         assert_eq!(summary.label, "ברוטו");
         assert_eq!(summary.entries.len(), 1);
-        assert_eq!(
-            summary.entries[0].month,
-            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
-        );
+        assert_eq!(summary.entries[0].month, Date::new(2026, 3, 1).unwrap());
         assert_eq!(summary.entries[0].amount, 12_345);
         assert!(summary.percent_diff.is_none());
     }
@@ -2141,10 +2165,7 @@ mod tests {
 
         assert_eq!(summary.label, "ברוטו");
         assert_eq!(summary.entries.len(), 1);
-        assert_eq!(
-            summary.entries[0].month,
-            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
-        );
+        assert_eq!(summary.entries[0].month, Date::new(2026, 3, 1).unwrap());
         assert_eq!(summary.entries[0].amount, 12_345);
     }
 
@@ -2349,7 +2370,7 @@ mod tests {
 
         let mut client = build_test_client(base_url, true);
         let output = home.join("payslip.pdf");
-        let month = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let month = Date::new(2026, 3, 1).unwrap();
 
         let download = client.payslip(month, Some(&output)).await.unwrap();
 
@@ -2440,7 +2461,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("HOME", &home);
 
-        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let date = Date::new(2026, 4, 10).unwrap();
         let employee_id = "460627";
         let employee_short_id = 27;
 
@@ -2632,7 +2653,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("HOME", &home);
 
-        let date = NaiveDate::from_ymd_opt(2026, 4, 23).unwrap();
+        let date = Date::new(2026, 4, 23).unwrap();
         let employee_id = "460627";
         let employee_short_id = 27;
 
@@ -2760,7 +2781,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("HOME", &home);
 
-        let date = NaiveDate::from_ymd_opt(2026, 4, 23).unwrap();
+        let date = Date::new(2026, 4, 23).unwrap();
         let employee_id = "460627";
         let employee_short_id = 27;
         let existing_object_id = "99f11d83-95d6-441c-885c-5515defd0310";
@@ -2832,7 +2853,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("HOME", &home);
 
-        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let date = Date::new(2026, 4, 10).unwrap();
         let employee_id = "460627";
         let employee_short_id = 27;
 
