@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{Datelike, NaiveDate};
 use hr_core::{
-    AbsenceProvider, AbsenceSymbol, AttendanceChange, AttendanceProvider, DocumentDownload,
-    FixTarget, MonthCalendar, PayslipProvider, ProviderError, ReportProvider, ReportSpec,
-    ReportTable, SalaryProvider, SalarySummary, UserIdentity, WriteMode, WritePreview,
+    AbsenceProvider, AbsenceSymbol, AnnualDocumentDownload, AttendanceChange, AttendanceProvider,
+    DocumentDownload, FixTarget, MonthCalendar, PayslipProvider, ProviderError, ReportProvider,
+    ReportSpec, ReportTable, SalaryProvider, SalarySummary, TaxFormProvider, UserIdentity,
+    WriteMode, WritePreview,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -584,6 +585,21 @@ impl PayslipProvider for HilanProvider {
             .await
             .map(Into::into)
             .map_err(|err| Self::provider_error("payslip_download_failed", err))
+    }
+}
+
+#[async_trait]
+impl TaxFormProvider for HilanProvider {
+    async fn download_form106(
+        &mut self,
+        year: i32,
+        output: Option<&Path>,
+    ) -> Result<AnnualDocumentDownload, ProviderError> {
+        self.client
+            .form106(year, output)
+            .await
+            .map(Into::into)
+            .map_err(|err| Self::provider_error("form106_download_failed", err))
     }
 }
 

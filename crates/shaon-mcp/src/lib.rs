@@ -4,7 +4,7 @@ use chrono::{Datelike, Local, NaiveDate};
 use hr_core::use_cases;
 use hr_core::{
     AttendanceChange, AttendanceProvider, FixTarget, PayslipProvider, ProviderError,
-    ReportProvider, ReportSpec, SalaryProvider, WriteMode, WritePreview,
+    ReportProvider, ReportSpec, SalaryProvider, TaxFormProvider, WriteMode, WritePreview,
 };
 use provider_hilan::{Config, HilanProvider};
 use rmcp::{
@@ -140,6 +140,18 @@ pub struct PayslipDownloadParam {
     pub output_path: Option<String>,
     #[schemars(
         description = "Sensitive payroll document. Prefer output_path for local storage; include_bytes is explicit opt-in because MCP responses may be logged."
+    )]
+    pub include_bytes: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct Form106DownloadParam {
+    #[schemars(description = "Tax year, e.g. 2025 (default: previous year)")]
+    pub year: Option<i32>,
+    #[schemars(description = "Optional output path for saving the PDF locally")]
+    pub output_path: Option<String>,
+    #[schemars(
+        description = "Sensitive tax document. Prefer output_path for local storage; include_bytes is explicit opt-in because MCP responses may be logged."
     )]
     pub include_bytes: Option<bool>,
 }
@@ -625,11 +637,11 @@ fn report_response_json(
     })
 }
 
-fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+fn write_bytes_to_path(path: &Path, bytes: &[u8], error_code: &str) -> Result<(), ToolError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| {
             ToolError::new(
-                "payslip_write_failed",
+                error_code,
                 format!("failed to create {}: {e}", parent.display()),
             )
         })?;
@@ -637,7 +649,7 @@ fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
 
     fs::write(path, bytes).map_err(|e| {
         ToolError::new(
-            "payslip_write_failed",
+            error_code,
             format!("failed to write {}: {e}", path.display()),
         )
     })
@@ -966,7 +978,7 @@ impl ShaonMcpServer {
                     .await
                     .map_err(|err| ToolError::new("payslip_download_failed", err.to_string()))?;
                 if let Some(path) = output_path.as_deref() {
-                    write_bytes_to_path(path, &bytes)?;
+                    write_bytes_to_path(path, &bytes, "payslip_write_failed")?;
                 }
                 Ok(serde_json::json!({
                     "month": month.format("%Y-%m").to_string(),
@@ -987,6 +999,60 @@ impl ShaonMcpServer {
                     .map_err(ToolError::from)?;
                 Ok(serde_json::json!({
                     "month": download.month.format("%Y-%m").to_string(),
+                    "mime_type": "application/pdf",
+                    "password_protected": true,
+                    "size_bytes": download.size_bytes,
+                    "path": download.path.display().to_string(),
+                }))
+            }
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Download the annual Form 106 tax statement as a password-protected PDF. Sensitive tax document. Prefer output_path for local storage; include_bytes is explicit opt-in because MCP responses may be logged."
+    )]
+    async fn shaon_form106_download(
+        &self,
+        Parameters(req): Parameters<Form106DownloadParam>,
+    ) -> String {
+        json_or_error(|| async {
+            let year = req.year.unwrap_or_else(|| Local::now().year() - 1);
+            let output_path = req.output_path.as_ref().map(PathBuf::from);
+            let include_bytes = req.include_bytes.unwrap_or(false);
+
+            if !include_bytes && output_path.is_none() {
+                return Err(ToolError::new(
+                    "invalid_form106_request",
+                    "set include_bytes=true or provide output_path",
+                ));
+            }
+
+            if include_bytes {
+                let mut client = new_provider().await?.into_inner();
+                let bytes = client
+                    .password_protected_form106_bytes(year)
+                    .await
+                    .map_err(|err| ToolError::new("form106_download_failed", err.to_string()))?;
+                if let Some(path) = output_path.as_deref() {
+                    write_bytes_to_path(path, &bytes, "form106_write_failed")?;
+                }
+                Ok(serde_json::json!({
+                    "year": year,
+                    "mime_type": "application/pdf",
+                    "password_protected": true,
+                    "size_bytes": bytes.len(),
+                    "path": output_path.as_ref().map(|path| path.display().to_string()),
+                    "bytes_base64": STANDARD.encode(&bytes),
+                }))
+            } else {
+                let mut provider = new_provider().await?;
+                let download = provider
+                    .download_form106(year, output_path.as_deref())
+                    .await
+                    .map_err(ToolError::from)?;
+                Ok(serde_json::json!({
+                    "year": download.year,
                     "mime_type": "application/pdf",
                     "password_protected": true,
                     "size_bytes": download.size_bytes,

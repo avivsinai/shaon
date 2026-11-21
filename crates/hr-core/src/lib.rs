@@ -153,6 +153,13 @@ pub struct DocumentDownload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnnualDocumentDownload {
+    pub year: i32,
+    pub path: PathBuf,
+    pub size_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ReportSpec {
     Named(String),
     Path(String),
@@ -244,6 +251,16 @@ pub trait PayslipProvider: Send {
         month: NaiveDate,
         output: Option<&Path>,
     ) -> Result<DocumentDownload, ProviderError>;
+}
+
+#[async_trait]
+pub trait TaxFormProvider: Send {
+    /// Download the annual employer tax statement (Israeli Form 106) for `year`.
+    async fn download_form106(
+        &mut self,
+        year: i32,
+        output: Option<&Path>,
+    ) -> Result<AnnualDocumentDownload, ProviderError>;
 }
 
 #[async_trait]

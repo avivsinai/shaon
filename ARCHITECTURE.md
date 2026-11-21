@@ -70,7 +70,7 @@ chain and hostname verification remain enabled.
 - attendance writes and error fixes
 - absence/type lookup
 - salary summary
-- payslip download
+- payslip and Form 106 download
 - named report fetches
 
 ### 4. Frontends
