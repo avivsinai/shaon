@@ -1,7 +1,7 @@
 use anyhow::Result;
 use hr_core::{
-    AbsenceSymbol, AttendanceChange, AttendanceType, DocumentDownload, FixTarget, MonthCalendar,
-    ReportTable, SalaryEntry, SalarySummary, UserIdentity, WritePreview,
+    AbsenceSymbol, AnnualDocumentDownload, AttendanceChange, AttendanceType, DocumentDownload,
+    FixTarget, MonthCalendar, ReportTable, SalaryEntry, SalarySummary, UserIdentity, WritePreview,
 };
 use std::collections::BTreeMap;
 
@@ -142,6 +142,16 @@ impl From<client::PayslipDownload> for DocumentDownload {
     fn from(value: client::PayslipDownload) -> Self {
         Self {
             month: value.month,
+            path: value.path,
+            size_bytes: value.size_bytes,
+        }
+    }
+}
+
+impl From<client::Form106Download> for AnnualDocumentDownload {
+    fn from(value: client::Form106Download) -> Self {
+        Self {
+            year: value.year,
             path: value.path,
             size_bytes: value.size_bytes,
         }

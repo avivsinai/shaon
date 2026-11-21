@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+### Added
+- `shaon payroll form106 download --year YYYY` and the MCP tool `shaon_form106_download` download the annual Form 106 tax statement as a PDF sealed with the Hilan password.
 
 ## [0.10.6] - 2026-10-25
 ### Fixed
