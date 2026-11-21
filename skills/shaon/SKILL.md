@@ -1,6 +1,6 @@
 ---
 name: shaon
-version: 0.10.6
+version: 0.11.0
 description: Manage personal Hilan attendance, corrections, payslips, and salary data through shaon.
 ---
 
@@ -15,7 +15,7 @@ Inspect `shaon --help` or the relevant subcommand help for exact flags.
 - Month status, missing days, and errors: start with `shaon attendance overview`.
 - Daily or monthly attendance details: use `shaon attendance` read commands.
 - Corrections: preview the relevant `attendance report` or `attendance resolve` command first.
-- Payslips and salary: use `shaon payroll` commands.
+- Payslips, the annual Form 106 tax statement, and salary: use `shaon payroll` commands.
 - Authentication or account setup: use `shaon auth` commands.
 
 Prefer structured output when another tool will consume the result. Do not

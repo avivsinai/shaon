@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-21
+### Added
+- `shaon payroll form106 download --year YYYY` and the MCP tool `shaon_form106_download` download the annual Form 106 tax statement as a PDF sealed with the Hilan password.
+
+
 ## [0.10.6] - 2026-10-25
 ### Fixed
 - The Homebrew and Scoop packaging jobs now open and merge their PRs with a short-lived release App token scoped to homebrew-tap,scoop-bucket. v0.10.4's packaging steps failed with 401 Bad credentials (expired PACKAGING_REPO_GITHUB_TOKEN PAT).

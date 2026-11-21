@@ -209,6 +209,15 @@ Returns raw PDF. Validate first 4 bytes = `%PDF`.
 
 In the current implementation, the authenticated payslip path gets `orgId` from bootstrap (`GetData`) rather than scraping it from the homepage again.
 
+### Form 106 (annual tax statement)
+```
+POST /Hilannetv2/Services/Public/WS/Form106Apiapi.asmx/GetInitialData
+GET  /Hilannetv2/PersonalFile/Pdf106.aspx/Pdf106-{YYYY}.pdf?UserId={orgId}{username}&Year={YYYY}
+```
+`GetInitialData` (body `{}`) is what the Angular `personal-file/form-106` page loads. Its model has `Dates` (available years, newest first), `SelectedYear`, `IsPdfPinCodeRequired`, and `PdfViewLink`, which is the relative `Pdf106.aspx` path above. shaon builds that path directly with the payslip `UserId`.
+
+The PDF endpoint returns raw PDF bytes. For a year that has no form, it returns an HTML error page with HTTP 200, so validate the `%PDF` prefix. The page's "download" button uses `GetEncryptedPdf` plus the file-download service; shaon does not use that flow.
+
 ### Payslip Range Print
 ```
 GET /Hilannetv2/PersonalFile/PaySlipRangePrint.aspx

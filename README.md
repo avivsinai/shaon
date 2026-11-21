@@ -16,7 +16,7 @@
 
 - **One tool, three surfaces**: use `shaon` as a CLI, an MCP server (`shaon serve`), or an agent skill for Claude Code / Codex-compatible workflows.
 - **Safety-first writes**: attendance writes preview by default and require explicit `--execute` for live submission.
-- **Payslips and salary**: download or open password-protected payslips and fetch recent salary history.
+- **Payslips, tax forms, and salary**: download or open password-protected payslips, download the annual Form 106, and fetch recent salary history.
 - **Agent-friendly JSON**: status, overview, errors, reports, and payroll commands return stable structured output.
 - **Release-ready distribution**: GitHub Releases publish checksummed binaries; Homebrew and Scoop are updated from the release workflow.
 
@@ -200,7 +200,10 @@ shaon attendance auto-fill --month 2026-04 --type "work from home" --hours 09:00
 ```bash
 shaon payroll payslip download --month 2026-03
 shaon payroll payslip view --month 2026-03
+shaon payroll form106 download --year 2025
 ```
+
+`payroll form106 download` saves the annual Form 106 (טופס 106) tax statement, sealed with your Hilan password like a payslip. `--year` defaults to the previous year; a year your employer has not issued yet fails with `form106_download_failed`.
 
 `shaon payroll payslip password --force-sensitive-output` prints the current Hilan account password in plaintext to standard output. It does not recover historical passwords used for PDFs encrypted before a password change. Run it only on a private interactive terminal you control.
 

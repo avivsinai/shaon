@@ -3,7 +3,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use hr_core::{
     AttendanceProvider, AttendanceType as CoreAttendanceType, DocumentDownload,
     FixTarget as CoreFixTarget, PayslipProvider, ProviderError, ReportProvider, ReportSpec,
-    ReportTable, SalaryProvider, WriteMode as CoreWriteMode, WritePreview as CoreWritePreview,
+    ReportTable, SalaryProvider, TaxFormProvider, WriteMode as CoreWriteMode,
+    WritePreview as CoreWritePreview,
 };
 use jiff::{civil::Date, Zoned};
 use secrecy::ExposeSecret;
@@ -511,8 +512,28 @@ enum PayrollCommand {
         command: PayslipCommand,
     },
 
+    /// Download the annual Form 106 tax statement
+    Form106 {
+        #[command(subcommand)]
+        command: Form106Command,
+    },
+
     /// Show salary summary for recent months
     Salary(SalaryArgs),
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum Form106Command {
+    /// Download a password-protected Form 106 PDF
+    Download {
+        /// Tax year (defaults to the previous year)
+        #[arg(long)]
+        year: Option<i32>,
+
+        /// Output file path
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -971,6 +992,26 @@ async fn run_payroll_command(
 ) -> Result<()> {
     match command {
         PayrollCommand::Payslip { command } => run_payslip_command(command, client, json).await?,
+        PayrollCommand::Form106 {
+            command: Form106Command::Download { year, output },
+        } => {
+            let year = year.unwrap_or_else(|| i32::from(Zoned::now().year()) - 1);
+            let mut provider = HilanProvider::from_client(client);
+            let download = provider
+                .download_form106(year, output.as_deref())
+                .await
+                .map_err(provider_error)?;
+            if json {
+                print_json(&download)?;
+            } else {
+                println!(
+                    "Saved password-protected Form 106 for {} to {} ({} bytes)",
+                    download.year,
+                    download.path.display(),
+                    download.size_bytes
+                );
+            }
+        }
         PayrollCommand::Salary(args) => {
             let mut provider = HilanProvider::from_client(client);
             let summary = provider

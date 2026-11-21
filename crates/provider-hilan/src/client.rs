@@ -72,6 +72,13 @@ pub struct PayslipDownload {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Form106Download {
+    pub year: i32,
+    pub path: PathBuf,
+    pub size_bytes: usize,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SalaryEntry {
     pub month: Date,
     pub amount: u64,
@@ -445,18 +452,7 @@ impl HilanClient {
     pub async fn payslip(&mut self, month: Date, output: Option<&Path>) -> Result<PayslipDownload> {
         let bytes = self.password_protected_payslip_bytes(month).await?;
         let path = self.resolve_payslip_path(month, output)?;
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create output directory {}", parent.display()))?;
-        }
-
-        fs::write(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("chmod 600 {}", path.display()))?;
-        }
+        write_private_file(&path, &bytes)?;
 
         Ok(PayslipDownload {
             month,
@@ -466,46 +462,76 @@ impl HilanClient {
     }
 
     pub async fn payslip_pdf_bytes(&mut self, month: Date) -> Result<Vec<u8>> {
-        self.ensure_authenticated().await?;
-        if self.org_id.is_none() {
-            self.org_id = Some(crate::api::bootstrap(self).await?.org_id);
-        }
-
-        let org_id = self
-            .org_id
-            .as_ref()
-            .context("missing org ID after fetching payslip context")?;
-
+        let user_id = self.personal_file_user_id().await?;
         let url = format!(
-            "{}/Hilannetv2/PersonalFile/PdfPaySlip.aspx?Date=01/{:02}/{:04}&UserId={}{}",
+            "{}/Hilannetv2/PersonalFile/PdfPaySlip.aspx?Date=01/{:02}/{:04}&UserId={}",
             self.base_url,
             month.month(),
             month.year(),
-            org_id,
-            self.config.username
+            user_id
         );
 
-        tracing::debug!(
-            "GET payslip {} (UserId=<redacted>)",
-            month.strftime("%Y-%m")
-        );
-        let bytes = self
-            .send_bytes_with_retry(&format!("GET payslip {}", month.strftime("%Y-%m")), &url)
-            .await?;
-        if !bytes.starts_with(b"%PDF") {
-            bail!(
-                "Payslip download did not return a PDF for {}. The session may be invalid or the payslip is unavailable.",
-                month.strftime("%Y-%m")
-            );
-        }
-
-        Ok(bytes)
+        let label = format!("Payslip {}", month.strftime("%Y-%m"));
+        self.personal_file_pdf(&label, &url).await
     }
 
     pub async fn password_protected_payslip_bytes(&mut self, month: Date) -> Result<Vec<u8>> {
         let bytes = self.payslip_pdf_bytes(month).await?;
         let secret = self.config.get_password()?;
         seal_pdf(&bytes, secret.expose_secret()).context("password-protect payslip PDF")
+    }
+
+    /// Download the annual Form 106 for `year`, sealed with the Hilan password like a payslip.
+    pub async fn form106(&mut self, year: i32, output: Option<&Path>) -> Result<Form106Download> {
+        let bytes = self.password_protected_form106_bytes(year).await?;
+        let path = self.resolve_payroll_document_path(format!("form106-{year}.pdf"), output);
+        write_private_file(&path, &bytes)?;
+
+        Ok(Form106Download {
+            year,
+            path,
+            size_bytes: bytes.len(),
+        })
+    }
+
+    pub async fn password_protected_form106_bytes(&mut self, year: i32) -> Result<Vec<u8>> {
+        let user_id = self.personal_file_user_id().await?;
+        let url = format!(
+            "{}/Hilannetv2/PersonalFile/Pdf106.aspx/Pdf106-{year}.pdf?UserId={user_id}&Year={year}",
+            self.base_url
+        );
+        let bytes = self
+            .personal_file_pdf(&format!("Form 106 {year}"), &url)
+            .await?;
+        let secret = self.config.get_password()?;
+        seal_pdf(&bytes, secret.expose_secret()).context("password-protect Form 106 PDF")
+    }
+
+    /// `UserId` query value for personal-file documents: `{orgId}{username}`.
+    async fn personal_file_user_id(&mut self) -> Result<String> {
+        self.ensure_authenticated().await?;
+        if self.org_id.is_none() {
+            self.org_id = Some(crate::api::bootstrap(self).await?.org_id);
+        }
+        let org_id = self
+            .org_id
+            .as_ref()
+            .context("missing org ID after fetching personal-file context")?;
+        Ok(format!("{}{}", org_id, self.config.username))
+    }
+
+    /// GET a personal-file PDF. Hilan answers an unavailable document with an HTML page.
+    async fn personal_file_pdf(&mut self, label: &str, url: &str) -> Result<Vec<u8>> {
+        tracing::debug!("GET {label} (UserId=<redacted>)");
+        let bytes = self
+            .send_bytes_with_retry(&format!("GET {label}"), url)
+            .await?;
+        if !bytes.starts_with(b"%PDF") {
+            bail!(
+                "{label} download did not return a PDF. The session may be invalid or the document is unavailable."
+            );
+        }
+        Ok(bytes)
     }
 
     pub async fn viewable_payslip_pdf_bytes(&mut self, month: Date) -> Result<Vec<u8>> {
@@ -631,23 +657,34 @@ impl HilanClient {
     }
 
     fn resolve_payslip_path(&self, month: Date, output: Option<&Path>) -> Result<PathBuf> {
-        let directory = match output {
-            Some(path) if path.is_dir() => path.to_path_buf(),
-            Some(path) => return Ok(path.to_path_buf()),
-            None => self
-                .config
-                .payslip_folder
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_default(),
-        };
+        if let Some(path) = output.filter(|path| !path.is_dir()) {
+            return Ok(path.to_path_buf());
+        }
 
         // Keep the existing rendering of locale-dependent specifiers such as %x.
         let format_config = StrtimeConfig::new().custom(PosixCustom::new());
         let filename = BrokenDownTime::from(month)
             .to_string_with_config(&format_config, self.config.payslip_fmt())
             .context("format payslip filename from payslip_format")?;
-        Ok(directory.join(filename))
+        Ok(self.resolve_payroll_document_path(filename, output))
+    }
+
+    fn resolve_payroll_document_path(
+        &self,
+        default_name: String,
+        output: Option<&Path>,
+    ) -> PathBuf {
+        match output {
+            Some(path) if path.is_dir() => path.join(default_name),
+            Some(path) => path.to_path_buf(),
+            None => self
+                .config
+                .payslip_folder
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(default_name),
+        }
     }
 
     async fn post_salary_page(
@@ -1385,6 +1422,22 @@ pub fn format_form_fields_for_display(
     }
 
     lines.join("\n")
+}
+
+/// Write a sensitive document, creating parent directories, readable only by the owner.
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create output directory {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 600 {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn contains_salary_rows(html: &str) -> Result<bool> {
@@ -2392,6 +2445,56 @@ mod tests {
         assert_eq!(requests[1].method, "GET");
         assert!(requests[1].path.starts_with(
             "/Hilannetv2/PersonalFile/PdfPaySlip.aspx?Date=01/03/2026&UserId=432112345"
+        ));
+
+        drop(requests);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn form106_downloads_sealed_pdf_for_year() {
+        let _env_guard = crate::config::test_env_lock().lock().unwrap();
+        let home = test_home_dir("form106-download");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let (base_url, handle, recorded) = spawn_test_server(vec![
+            http_response(
+                r#"{"PrincipalUser":{"UserId":"12345","EmployeeId":99,"Name":"Test User","IsManager":false},"OrganizationId":"4321"}"#,
+                "application/json",
+            ),
+            http_response_bytes(&crate::payslip::sample_pdf_bytes(), "application/pdf"),
+        ]);
+
+        let mut client = build_test_client(base_url, true);
+        let download = client.form106(2025, Some(&home)).await.unwrap();
+
+        assert_eq!(download.year, 2025);
+        assert_eq!(download.path, home.join("form106-2025.pdf"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::metadata(&download.path).unwrap().permissions();
+            assert_eq!(permissions.mode() & 0o777, 0o600);
+        }
+        let written = std::fs::read(&download.path).unwrap();
+        assert_ne!(written, crate::payslip::sample_pdf_bytes());
+        let unsealed = crate::payslip::unseal_pdf(&written, "s3cret").unwrap();
+        assert_eq!(
+            lopdf::Document::load_mem(&unsealed)
+                .unwrap()
+                .get_pages()
+                .len(),
+            1
+        );
+
+        let requests = recorded.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].method, "GET");
+        assert!(requests[1].path.starts_with(
+            "/Hilannetv2/PersonalFile/Pdf106.aspx/Pdf106-2025.pdf?UserId=432112345&Year=2025"
         ));
 
         drop(requests);
