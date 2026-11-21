@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{Datelike, NaiveDate};
 use hr_core::{
     AbsenceProvider, AbsenceSymbol, AnnualDocumentDownload, AttendanceChange, AttendanceProvider,
     DocumentDownload, FixTarget, MonthCalendar, PayslipProvider, ProviderError, ReportProvider,
     ReportSpec, ReportTable, SalaryProvider, SalarySummary, TaxFormProvider, UserIdentity,
     WriteMode, WritePreview,
 };
+use jiff::civil::Date;
 use serde::Serialize;
 use std::path::Path;
 
@@ -116,7 +116,7 @@ fn outcome_from_anyhow(err: &anyhow::Error) -> PartialCommitOutcome {
 }
 
 fn partial_commit_error(
-    date: NaiveDate,
+    date: Date,
     desired_type_code: Option<&str>,
     completed: &[PartialCommitStep],
     failed: PartialCommitStep,
@@ -125,7 +125,7 @@ fn partial_commit_error(
 ) -> ProviderError {
     let message = format!(
         "partial commit while fixing {}: {} step(s) committed, then '{}' failed: {}",
-        date.format("%Y-%m-%d"),
+        date.strftime("%Y-%m-%d"),
         completed.len(),
         failed.label,
         source,
@@ -133,7 +133,7 @@ fn partial_commit_error(
 
     ProviderError::new("attendance_fix_partial_commit", message).with_details(serde_json::json!({
         "partial_commit": {
-            "date": date.format("%Y-%m-%d").to_string(),
+            "date": date.strftime("%Y-%m-%d").to_string(),
             "desired_type_code": desired_type_code,
             "completed_steps": completed,
             "failed_step": failed,
@@ -193,7 +193,7 @@ impl HilanProvider {
                         "invalid_fix_target",
                         format!(
                             "fix target for {} is missing Hilan error parameters",
-                            target.date.format("%Y-%m-%d")
+                            target.date.strftime("%Y-%m-%d")
                         ),
                     )
                     .with_details(serde_json::json!({
@@ -207,13 +207,13 @@ impl HilanProvider {
     fn preview_with_summary(
         preview: attendance::SubmitPreview,
         action: &str,
-        date: NaiveDate,
+        date: Date,
     ) -> WritePreview {
         let mut preview: WritePreview = preview.into();
         preview.summary = if preview.executed {
-            format!("{action} {}", date.format("%Y-%m-%d"))
+            format!("{action} {}", date.strftime("%Y-%m-%d"))
         } else {
-            format!("dry run: {action} {}", date.format("%Y-%m-%d"))
+            format!("dry run: {action} {}", date.strftime("%Y-%m-%d"))
         };
         preview
     }
@@ -257,7 +257,7 @@ impl HilanProvider {
     fn preview_with_steps(
         steps: &[(&'static str, attendance::SubmitPreview)],
         action: &str,
-        date: NaiveDate,
+        date: Date,
     ) -> WritePreview {
         let final_step = &steps[steps.len() - 1].1;
         let step_refs: Vec<(&str, &attendance::SubmitPreview)> = steps
@@ -269,9 +269,9 @@ impl HilanProvider {
         WritePreview {
             executed: final_step.executed,
             summary: if final_step.executed {
-                format!("{action} {}", date.format("%Y-%m-%d"))
+                format!("{action} {}", date.strftime("%Y-%m-%d"))
             } else {
-                format!("dry run: {action} {}", date.format("%Y-%m-%d"))
+                format!("dry run: {action} {}", date.strftime("%Y-%m-%d"))
             },
             provider_debug: Some(serde_json::json!({
                 "url": final_step.url,
@@ -301,7 +301,7 @@ impl AttendanceProvider for HilanProvider {
             .map_err(|err| Self::provider_error("identity_failed", err))
     }
 
-    async fn month_calendar(&mut self, month: NaiveDate) -> Result<MonthCalendar, ProviderError> {
+    async fn month_calendar(&mut self, month: Date) -> Result<MonthCalendar, ProviderError> {
         attendance::read_calendar(&mut self.client, month)
             .await
             .map(Into::into)
@@ -316,7 +316,7 @@ impl AttendanceProvider for HilanProvider {
             .map_err(|err| Self::provider_error("attendance_types_failed", err))
     }
 
-    async fn fix_targets(&mut self, month: NaiveDate) -> Result<Vec<FixTarget>, ProviderError> {
+    async fn fix_targets(&mut self, month: Date) -> Result<Vec<FixTarget>, ProviderError> {
         api::get_error_tasks(&mut self.client)
             .await
             .map(|tasks| {
@@ -381,7 +381,7 @@ impl AttendanceProvider for HilanProvider {
                 .with_context(|| {
                     format!(
                         "clear Hilan missing-report error before applying work from home for {}",
-                        change.date.format("%Y-%m-%d")
+                        change.date.strftime("%Y-%m-%d")
                     )
                 })
                 .map_err(|err| Self::attendance_write_error("attendance_fix_failed", err))?;
@@ -439,7 +439,7 @@ impl AttendanceProvider for HilanProvider {
                             ],
                             err.context(format!(
                                 "load calendar submit context after clearing error for {}",
-                                change.date.format("%Y-%m-%d")
+                                change.date.strftime("%Y-%m-%d")
                             )),
                         ));
                     }
@@ -473,7 +473,7 @@ impl AttendanceProvider for HilanProvider {
                             )],
                             err.context(format!(
                                 "delete conflicting existing attendance before applying requested type for {}",
-                                change.date.format("%Y-%m-%d")
+                                change.date.strftime("%Y-%m-%d")
                             )),
                         ));
                         }
@@ -534,7 +534,7 @@ impl AttendanceProvider for HilanProvider {
                                 &[],
                                 err.context(format!(
                                     "apply requested attendance via calendar page after clearing error for {}",
-                                    change.date.format("%Y-%m-%d")
+                                    change.date.strftime("%Y-%m-%d")
                                 )),
                             ));
                         }
@@ -577,7 +577,7 @@ impl AbsenceProvider for HilanProvider {
 impl PayslipProvider for HilanProvider {
     async fn download_payslip(
         &mut self,
-        month: NaiveDate,
+        month: Date,
         output: Option<&Path>,
     ) -> Result<DocumentDownload, ProviderError> {
         self.client
@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn change_to_submit_keeps_semantic_fields_and_disables_default_work_day() {
         let change = AttendanceChange {
-            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            date: Date::new(2026, 4, 10).unwrap(),
             attendance_type_code: Some("0".to_string()),
             use_default_attendance_type: false,
             entry_time: Some("09:00".to_string()),
@@ -659,7 +659,7 @@ mod tests {
     #[test]
     fn fix_params_prefer_explicit_metadata() {
         let target = FixTarget {
-            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            date: Date::new(2026, 4, 10).unwrap(),
             issue_kind: Some("missing".to_string()),
             provider_ref: "ignored:ignored".to_string(),
             metadata: BTreeMap::from([
@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn fix_params_fall_back_to_provider_ref() {
         let target = FixTarget {
-            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            date: Date::new(2026, 4, 10).unwrap(),
             issue_kind: None,
             provider_ref: "report-2:18".to_string(),
             metadata: BTreeMap::new(),
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn invalid_fix_target_returns_structured_error() {
         let target = FixTarget {
-            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            date: Date::new(2026, 4, 10).unwrap(),
             issue_kind: None,
             provider_ref: "broken".to_string(),
             metadata: BTreeMap::new(),
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn missing_report_wfh_uses_two_step_fix_strategy() {
         let submit = AttendanceSubmit {
-            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            date: Date::new(2026, 4, 9).unwrap(),
             attendance_type_code: Some(WORK_FROM_HOME_TYPE_CODE.to_string()),
             entry_time: Some("09:00".to_string()),
             exit_time: Some("18:00".to_string()),
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn non_wfh_fixes_stay_on_error_wizard() {
         let submit = AttendanceSubmit {
-            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            date: Date::new(2026, 4, 9).unwrap(),
             attendance_type_code: Some("481".to_string()),
             entry_time: None,
             exit_time: None,
@@ -764,7 +764,7 @@ mod tests {
 
     #[test]
     fn partial_commit_error_serialises_expected_envelope() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+        let date = Date::new(2026, 4, 9).unwrap();
         let completed = vec![PartialCommitStep {
             key: "clear_error",
             label: "clear the Hilan error via the error wizard",
@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn partial_commit_remaining_steps_use_full_step_shape() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+        let date = Date::new(2026, 4, 9).unwrap();
         let completed: [PartialCommitStep; 0] = [];
         let failed = PartialCommitStep::failed(
             "load_calendar_context",
@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn error_clear_submit_rewrites_work_from_home_to_work_day() {
         let submit = AttendanceSubmit {
-            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            date: Date::new(2026, 4, 9).unwrap(),
             attendance_type_code: Some(WORK_FROM_HOME_TYPE_CODE.to_string()),
             entry_time: Some("09:00".to_string()),
             exit_time: Some("18:00".to_string()),

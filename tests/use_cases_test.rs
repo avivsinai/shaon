@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use shaon::core::{
     AttendanceChange, AttendanceProvider, AttendanceType, FixTarget, MonthCalendar, ProviderError,
     WriteMode, WritePreview,
@@ -22,13 +22,13 @@ impl AttendanceProvider for OverviewProvider {
         })
     }
 
-    async fn month_calendar(&mut self, month: NaiveDate) -> Result<MonthCalendar, ProviderError> {
+    async fn month_calendar(&mut self, month: Date) -> Result<MonthCalendar, ProviderError> {
         Ok(MonthCalendar {
             month,
             employee_id: "e-1".to_string(),
             days: vec![
                 shaon::core::CalendarDay {
-                    date: NaiveDate::from_ymd_opt(2026, 4, 6).unwrap(),
+                    date: Date::new(2026, 4, 6).unwrap(),
                     day_name: "Sun".to_string(),
                     has_error: true,
                     error_message: Some("missing report".to_string()),
@@ -39,7 +39,7 @@ impl AttendanceProvider for OverviewProvider {
                     source: shaon::core::AttendanceSource::UserReported,
                 },
                 shaon::core::CalendarDay {
-                    date: NaiveDate::from_ymd_opt(2026, 4, 7).unwrap(),
+                    date: Date::new(2026, 4, 7).unwrap(),
                     day_name: "Mon".to_string(),
                     has_error: false,
                     error_message: None,
@@ -50,7 +50,7 @@ impl AttendanceProvider for OverviewProvider {
                     source: Default::default(),
                 },
                 shaon::core::CalendarDay {
-                    date: NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
+                    date: Date::new(2026, 4, 8).unwrap(),
                     day_name: "Tue".to_string(),
                     has_error: false,
                     error_message: None,
@@ -72,9 +72,9 @@ impl AttendanceProvider for OverviewProvider {
         }])
     }
 
-    async fn fix_targets(&mut self, _month: NaiveDate) -> Result<Vec<FixTarget>, ProviderError> {
+    async fn fix_targets(&mut self, _month: Date) -> Result<Vec<FixTarget>, ProviderError> {
         Ok(vec![FixTarget {
-            date: NaiveDate::from_ymd_opt(2026, 4, 6).unwrap(),
+            date: Date::new(2026, 4, 6).unwrap(),
             issue_kind: Some("missing".to_string()),
             provider_ref: "report-1:63".to_string(),
             metadata: BTreeMap::from([
@@ -105,8 +105,8 @@ impl AttendanceProvider for OverviewProvider {
 #[tokio::test]
 async fn overview_is_planned_from_provider_traits() {
     let mut provider = OverviewProvider;
-    let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
-    let today = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+    let month = Date::new(2026, 4, 1).unwrap();
+    let today = Date::new(2026, 4, 10).unwrap();
 
     let overview = build_overview(&mut provider, month, today)
         .await
@@ -127,10 +127,7 @@ async fn overview_is_planned_from_provider_traits() {
             .map(String::as_str),
         Some("report-1")
     );
-    assert_eq!(
-        overview.missing_days,
-        vec![NaiveDate::from_ymd_opt(2026, 4, 7).unwrap()]
-    );
+    assert_eq!(overview.missing_days, vec![Date::new(2026, 4, 7).unwrap()]);
     assert!(matches!(
         overview.suggested_actions[0],
         SuggestedActionPlan::FixErrors { count: 1, .. }
@@ -168,7 +165,7 @@ impl AttendanceProvider for RecordingProvider {
         })
     }
 
-    async fn month_calendar(&mut self, _month: NaiveDate) -> Result<MonthCalendar, ProviderError> {
+    async fn month_calendar(&mut self, _month: Date) -> Result<MonthCalendar, ProviderError> {
         Ok(self.calendar.clone())
     }
 
@@ -176,7 +173,7 @@ impl AttendanceProvider for RecordingProvider {
         Ok(Vec::new())
     }
 
-    async fn fix_targets(&mut self, _month: NaiveDate) -> Result<Vec<FixTarget>, ProviderError> {
+    async fn fix_targets(&mut self, _month: Date) -> Result<Vec<FixTarget>, ProviderError> {
         Ok(Vec::new())
     }
 
@@ -211,7 +208,7 @@ impl AttendanceProvider for RecordingProvider {
 #[tokio::test]
 async fn fill_range_submits_each_non_weekend_day_via_provider() {
     let calendar = MonthCalendar {
-        month: NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+        month: Date::new(2026, 4, 1).unwrap(),
         employee_id: "e-2".to_string(),
         days: Vec::new(),
     };
@@ -219,8 +216,8 @@ async fn fill_range_submits_each_non_weekend_day_via_provider() {
 
     let previews = fill_range(
         &mut provider,
-        NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
-        NaiveDate::from_ymd_opt(2026, 4, 12).unwrap(),
+        Date::new(2026, 4, 9).unwrap(),
+        Date::new(2026, 4, 12).unwrap(),
         FillRangeOptions {
             attendance_type_code: None,
             hours: Some(("09:00".to_string(), "18:00".to_string())),
@@ -235,11 +232,11 @@ async fn fill_range_submits_each_non_weekend_day_via_provider() {
     assert_eq!(provider.submissions.len(), 2);
     assert_eq!(
         provider.submissions[0].0.date,
-        NaiveDate::from_ymd_opt(2026, 4, 9).unwrap()
+        Date::new(2026, 4, 9).unwrap()
     );
     assert_eq!(
         provider.submissions[1].0.date,
-        NaiveDate::from_ymd_opt(2026, 4, 12).unwrap()
+        Date::new(2026, 4, 12).unwrap()
     );
     assert!(provider.submissions[0].0.use_default_attendance_type);
     assert_eq!(
@@ -256,13 +253,13 @@ async fn fill_range_submits_each_non_weekend_day_via_provider() {
 #[tokio::test]
 async fn fix_day_routes_target_and_change_through_provider() {
     let calendar = MonthCalendar {
-        month: NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+        month: Date::new(2026, 4, 1).unwrap(),
         employee_id: "e-2".to_string(),
         days: Vec::new(),
     };
     let mut provider = RecordingProvider::new(calendar);
     let target = FixTarget {
-        date: NaiveDate::from_ymd_opt(2026, 4, 6).unwrap(),
+        date: Date::new(2026, 4, 6).unwrap(),
         issue_kind: Some("missing".to_string()),
         provider_ref: "report-1:63".to_string(),
         metadata: BTreeMap::from([
@@ -292,13 +289,13 @@ async fn fix_day_routes_target_and_change_through_provider() {
 
 #[tokio::test]
 async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
-    let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+    let month = Date::new(2026, 4, 1).unwrap();
     let calendar = MonthCalendar {
         month,
         employee_id: "e-2".to_string(),
         days: vec![
             shaon::core::CalendarDay {
-                date: NaiveDate::from_ymd_opt(2026, 4, 6).unwrap(),
+                date: Date::new(2026, 4, 6).unwrap(),
                 day_name: "Sun".to_string(),
                 has_error: false,
                 error_message: None,
@@ -309,7 +306,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 source: Default::default(),
             },
             shaon::core::CalendarDay {
-                date: NaiveDate::from_ymd_opt(2026, 4, 7).unwrap(),
+                date: Date::new(2026, 4, 7).unwrap(),
                 day_name: "Mon".to_string(),
                 has_error: true,
                 error_message: Some("error".to_string()),
@@ -320,7 +317,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 source: Default::default(),
             },
             shaon::core::CalendarDay {
-                date: NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
+                date: Date::new(2026, 4, 8).unwrap(),
                 day_name: "Tue".to_string(),
                 has_error: false,
                 error_message: None,
@@ -331,7 +328,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 source: Default::default(),
             },
             shaon::core::CalendarDay {
-                date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+                date: Date::new(2026, 4, 10).unwrap(),
                 day_name: "Fri".to_string(),
                 has_error: false,
                 error_message: None,
@@ -342,7 +339,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
                 source: Default::default(),
             },
             shaon::core::CalendarDay {
-                date: NaiveDate::from_ymd_opt(2026, 4, 13).unwrap(),
+                date: Date::new(2026, 4, 13).unwrap(),
                 day_name: "Mon".to_string(),
                 has_error: false,
                 error_message: None,
@@ -366,7 +363,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
             include_weekends: false,
             mode: WriteMode::DryRun,
             max_days: 10,
-            today: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            today: Date::new(2026, 4, 10).unwrap(),
         },
     )
     .await
@@ -386,7 +383,7 @@ async fn auto_fill_only_targets_missing_days_and_respects_safety_cap() {
             include_weekends: false,
             mode: WriteMode::Execute,
             max_days: 0,
-            today: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            today: Date::new(2026, 4, 10).unwrap(),
         },
     )
     .await
