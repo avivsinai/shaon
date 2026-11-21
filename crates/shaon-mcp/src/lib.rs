@@ -637,22 +637,34 @@ fn report_response_json(
     })
 }
 
-fn write_bytes_to_path(path: &Path, bytes: &[u8], error_code: &str) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            ToolError::new(
-                error_code,
-                format!("failed to create {}: {e}", parent.display()),
-            )
-        })?;
-    }
-
-    fs::write(path, bytes).map_err(|e| {
+/// Read back a document the provider saved (0600, directory-aware) so it can also be returned inline.
+fn read_saved_document(path: &Path, error_code: &str) -> Result<Vec<u8>, ToolError> {
+    fs::read(path).map_err(|e| {
         ToolError::new(
             error_code,
-            format!("failed to write {}: {e}", path.display()),
+            format!("failed to read {}: {e}", path.display()),
         )
     })
+}
+
+/// MCP response for a downloaded PDF. `saved_path` is `None` when only bytes were requested.
+fn document_response(
+    key: (&str, serde_json::Value),
+    saved_path: Option<&Path>,
+    bytes: Option<&[u8]>,
+    size_bytes: usize,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        key.0: key.1,
+        "mime_type": "application/pdf",
+        "password_protected": true,
+        "size_bytes": size_bytes,
+        "path": saved_path.map(|path| path.display().to_string()),
+    });
+    if let Some(bytes) = bytes {
+        body["bytes_base64"] = serde_json::Value::String(STANDARD.encode(bytes));
+    }
+    body
 }
 
 // ---------------------------------------------------------------------------
@@ -971,39 +983,37 @@ impl ShaonMcpServer {
                 ));
             }
 
-            if include_bytes {
-                let mut client = new_provider().await?.into_inner();
-                let bytes = client
-                    .password_protected_payslip_bytes(month)
-                    .await
-                    .map_err(|err| ToolError::new("payslip_download_failed", err.to_string()))?;
-                if let Some(path) = output_path.as_deref() {
-                    write_bytes_to_path(path, &bytes, "payslip_write_failed")?;
+            let key = (
+                "month",
+                serde_json::json!(month.format("%Y-%m").to_string()),
+            );
+            match output_path.as_deref() {
+                Some(output) => {
+                    let mut provider = new_provider().await?;
+                    let download = provider
+                        .download_payslip(month, Some(output))
+                        .await
+                        .map_err(ToolError::from)?;
+                    let bytes = include_bytes
+                        .then(|| read_saved_document(&download.path, "payslip_read_failed"))
+                        .transpose()?;
+                    Ok(document_response(
+                        key,
+                        Some(&download.path),
+                        bytes.as_deref(),
+                        download.size_bytes,
+                    ))
                 }
-                Ok(serde_json::json!({
-                    "month": month.format("%Y-%m").to_string(),
-                    "mime_type": "application/pdf",
-                    "password_protected": true,
-                    "size_bytes": bytes.len(),
-                    "path": output_path.as_ref().map(|path| path.display().to_string()),
-                    "bytes_base64": STANDARD.encode(&bytes),
-                }))
-            } else {
-                let mut provider = new_provider().await?;
-                let output = output_path
-                    .as_deref()
-                    .expect("guard ensures output_path exists when include_bytes=false");
-                let download = provider
-                    .download_payslip(month, Some(output))
-                    .await
-                    .map_err(ToolError::from)?;
-                Ok(serde_json::json!({
-                    "month": download.month.format("%Y-%m").to_string(),
-                    "mime_type": "application/pdf",
-                    "password_protected": true,
-                    "size_bytes": download.size_bytes,
-                    "path": download.path.display().to_string(),
-                }))
+                None => {
+                    let mut client = new_provider().await?.into_inner();
+                    let bytes = client
+                        .password_protected_payslip_bytes(month)
+                        .await
+                        .map_err(|err| {
+                            ToolError::new("payslip_download_failed", err.to_string())
+                        })?;
+                    Ok(document_response(key, None, Some(&bytes), bytes.len()))
+                }
             }
         })
         .await
@@ -1028,36 +1038,34 @@ impl ShaonMcpServer {
                 ));
             }
 
-            if include_bytes {
-                let mut client = new_provider().await?.into_inner();
-                let bytes = client
-                    .password_protected_form106_bytes(year)
-                    .await
-                    .map_err(|err| ToolError::new("form106_download_failed", err.to_string()))?;
-                if let Some(path) = output_path.as_deref() {
-                    write_bytes_to_path(path, &bytes, "form106_write_failed")?;
+            let key = ("year", serde_json::json!(year));
+            match output_path.as_deref() {
+                Some(output) => {
+                    let mut provider = new_provider().await?;
+                    let download = provider
+                        .download_form106(year, Some(output))
+                        .await
+                        .map_err(ToolError::from)?;
+                    let bytes = include_bytes
+                        .then(|| read_saved_document(&download.path, "form106_read_failed"))
+                        .transpose()?;
+                    Ok(document_response(
+                        key,
+                        Some(&download.path),
+                        bytes.as_deref(),
+                        download.size_bytes,
+                    ))
                 }
-                Ok(serde_json::json!({
-                    "year": year,
-                    "mime_type": "application/pdf",
-                    "password_protected": true,
-                    "size_bytes": bytes.len(),
-                    "path": output_path.as_ref().map(|path| path.display().to_string()),
-                    "bytes_base64": STANDARD.encode(&bytes),
-                }))
-            } else {
-                let mut provider = new_provider().await?;
-                let download = provider
-                    .download_form106(year, output_path.as_deref())
-                    .await
-                    .map_err(ToolError::from)?;
-                Ok(serde_json::json!({
-                    "year": download.year,
-                    "mime_type": "application/pdf",
-                    "password_protected": true,
-                    "size_bytes": download.size_bytes,
-                    "path": download.path.display().to_string(),
-                }))
+                None => {
+                    let mut client = new_provider().await?.into_inner();
+                    let bytes = client
+                        .password_protected_form106_bytes(year)
+                        .await
+                        .map_err(|err| {
+                            ToolError::new("form106_download_failed", err.to_string())
+                        })?;
+                    Ok(document_response(key, None, Some(&bytes), bytes.len()))
+                }
             }
         })
         .await

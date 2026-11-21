@@ -474,7 +474,7 @@ impl HilanClient {
             user_id
         );
 
-        let label = format!("payslip {}", month.format("%Y-%m"));
+        let label = format!("Payslip {}", month.format("%Y-%m"));
         self.personal_file_pdf(&label, &url).await
     }
 
