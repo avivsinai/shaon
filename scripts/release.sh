@@ -209,6 +209,9 @@ while IFS= read -r skill_md; do
   fi
 done < <(find skills -mindepth 2 -maxdepth 2 -name SKILL.md | sort)
 
+# Refresh the workspace versions in Cargo.lock; --skip-verify must not commit a stale lock.
+cargo update --workspace --offline
+
 # --- Verify ---
 
 if [[ "$skip_verify" -eq 0 ]]; then
