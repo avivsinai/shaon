@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-27
+### Changed
+- The Rust API now uses `shaon::core::Date`. `previous_month_start` returns `Result<Date, jiff::Error>`. CLI and MCP wire formats are unchanged.
+
+### Security
+- Updated to the published MCP SDK (`rmcp` 3.12.0) and disabled its Chrono feature, removing Chrono from the locked dependency graph.
+- Updated `url` to 2.5.9 and `cookie` to 0.18.3. The existing Cargo Deny policy applies to the updated dependency graph.
+
+
 ## [0.11.0] - 2026-11-21
 ### Added
 - `shaon payroll form106 download --year YYYY` and the MCP tool `shaon_form106_download` download the annual Form 106 tax statement as a PDF sealed with the Hilan password.
