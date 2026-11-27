@@ -25,7 +25,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 cookie_store = "0.21"
 hkdf = "0.12"
-jiff = { version = "0.2", features = ["serde"] }
+jiff = { version = "1.0", features = ["serde"] }
 keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 lopdf = { version = "0.47", default-features = false, features = ["rayon"] }
 predicates = "3"
