@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate};
+use jiff::{civil::Date, ToSpan};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -25,13 +25,13 @@ pub struct OverviewErrorDay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SuggestedActionPlan {
     FixErrors {
-        month: NaiveDate,
+        month: Date,
         count: u32,
         fixable_targets: Vec<FixTarget>,
     },
     FillMissing {
-        from: NaiveDate,
-        to: NaiveDate,
+        from: Date,
+        to: Date,
         count: u32,
     },
 }
@@ -39,12 +39,12 @@ pub enum SuggestedActionPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverviewData {
     pub identity: UserIdentity,
-    pub month: NaiveDate,
+    pub month: Date,
     pub calendar: MonthCalendar,
     pub attendance_types: Vec<AttendanceType>,
     pub summary: OverviewSummary,
     pub error_days: Vec<OverviewErrorDay>,
-    pub missing_days: Vec<NaiveDate>,
+    pub missing_days: Vec<Date>,
     pub suggested_actions: Vec<SuggestedActionPlan>,
 }
 
@@ -70,7 +70,7 @@ pub struct AutoFillOptions {
     pub include_weekends: bool,
     pub mode: WriteMode,
     pub max_days: u32,
-    pub today: NaiveDate,
+    pub today: Date,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -108,8 +108,8 @@ pub struct AutoFillResult {
 
 pub async fn build_overview<P: AttendanceProvider>(
     provider: &mut P,
-    month: NaiveDate,
-    today: NaiveDate,
+    month: Date,
+    today: Date,
 ) -> Result<OverviewData, ProviderError> {
     let identity = provider.identity().await?;
     let calendar = provider.month_calendar(month).await?;
@@ -134,7 +134,7 @@ pub async fn build_overview<P: AttendanceProvider>(
         })
         .collect();
 
-    let missing_days: Vec<NaiveDate> = calendar
+    let missing_days: Vec<Date> = calendar
         .days
         .iter()
         .filter(|day| day.is_work_day() && !day.is_reported() && !day.has_error && is_past(day))
@@ -192,8 +192,8 @@ pub async fn build_overview<P: AttendanceProvider>(
 
 pub async fn fill_range<P: AttendanceProvider>(
     provider: &mut P,
-    from: NaiveDate,
-    to: NaiveDate,
+    from: Date,
+    to: Date,
     options: FillRangeOptions,
 ) -> Result<Vec<WritePreview>, ProviderError> {
     if from > to {
@@ -211,8 +211,7 @@ pub async fn fill_range<P: AttendanceProvider>(
     }
 
     let mut previews = Vec::new();
-    let mut current = from;
-    while current <= to {
+    for current in from.series(1.day()).take_while(|date| *date <= to) {
         if options.include_weekends || !crate::is_weekend(current) {
             let change = fill_change(
                 current,
@@ -221,7 +220,6 @@ pub async fn fill_range<P: AttendanceProvider>(
             );
             previews.push(provider.submit_day(&change, options.mode).await?);
         }
-        current = current.succ_opt().expect("valid next date");
     }
 
     Ok(previews)
@@ -274,8 +272,8 @@ pub async fn auto_fill<P: AttendanceProvider>(
     let mut skipped = Vec::new();
 
     for day in &calendar.days {
-        let date_str = day.date.format("%Y-%m-%d").to_string();
-        let day_label = day.date.format("%a").to_string();
+        let date_str = day.date.strftime("%Y-%m-%d").to_string();
+        let day_label = day.date.strftime("%a").to_string();
         let date_display = format!("{date_str} {day_label}");
 
         if day.date > options.today {
@@ -353,7 +351,7 @@ pub async fn auto_fill<P: AttendanceProvider>(
     let skipped_count = skipped.len() as u32;
 
     Ok(AutoFillResult {
-        month: calendar.month.format("%Y-%m").to_string(),
+        month: calendar.month.strftime("%Y-%m").to_string(),
         mode: if matches!(options.mode, WriteMode::Execute) {
             "executed".to_string()
         } else {
@@ -449,7 +447,7 @@ pub fn print_error_days(calendar: &MonthCalendar) {
 
     println!(
         "Attendance errors for {} ({}): {} day(s)",
-        calendar.month.format("%Y-%m"),
+        calendar.month.strftime("%Y-%m"),
         calendar.employee_id,
         error_days.len()
     );
@@ -469,7 +467,7 @@ pub fn print_error_days(calendar: &MonthCalendar) {
         let msg = day.error_message.as_deref().unwrap_or("missing report");
         println!(
             "{:<date_w$}  {:<day_w$}  {:<msg_w$}",
-            day.date.format("%Y-%m-%d"),
+            day.date.strftime("%Y-%m-%d"),
             day.day_name,
             msg,
         );
@@ -540,7 +538,7 @@ pub fn print_auto_fill(result: &AutoFillResult) {
 pub fn print_calendar(calendar: &MonthCalendar) {
     println!(
         "Attendance for {} (employee {})",
-        calendar.month.format("%Y-%m"),
+        calendar.month.strftime("%Y-%m"),
         calendar.employee_id
     );
     println!();
@@ -579,7 +577,7 @@ pub fn print_calendar(calendar: &MonthCalendar) {
 
         println!(
             "{:<date_w$}  {:<day_w$}  {:<entry_w$}  {:<exit_w$}  {:<type_w$}  {:<hours_w$}  {:<status_w$}",
-            day.date.format("%Y-%m-%d"),
+            day.date.strftime("%Y-%m-%d"),
             day.day_name,
             entry,
             exit,
@@ -764,10 +762,7 @@ async fn load_attendance_types<P: AttendanceProvider>(provider: &mut P) -> Vec<A
     }
 }
 
-async fn load_fix_targets<P: AttendanceProvider>(
-    provider: &mut P,
-    month: NaiveDate,
-) -> Vec<FixTarget> {
+async fn load_fix_targets<P: AttendanceProvider>(provider: &mut P, month: Date) -> Vec<FixTarget> {
     match provider.fix_targets(month).await {
         Ok(targets) => targets,
         Err(err) => {
@@ -777,7 +772,7 @@ async fn load_fix_targets<P: AttendanceProvider>(
     }
 }
 
-fn group_fix_targets_by_date(fix_targets: Vec<FixTarget>) -> BTreeMap<NaiveDate, Vec<FixTarget>> {
+fn group_fix_targets_by_date(fix_targets: Vec<FixTarget>) -> BTreeMap<Date, Vec<FixTarget>> {
     let mut by_date = BTreeMap::new();
     for target in fix_targets {
         by_date
@@ -789,7 +784,7 @@ fn group_fix_targets_by_date(fix_targets: Vec<FixTarget>) -> BTreeMap<NaiveDate,
 }
 
 fn fill_change(
-    date: NaiveDate,
+    date: Date,
     attendance_type_code: Option<String>,
     hours: Option<(String, String)>,
 ) -> AttendanceChange {
@@ -811,7 +806,7 @@ fn fill_change(
     }
 }
 
-fn auto_fill_change(date: NaiveDate, options: &AutoFillOptions) -> AttendanceChange {
+fn auto_fill_change(date: Date, options: &AutoFillOptions) -> AttendanceChange {
     let (entry_time, exit_time, clear_entry, clear_exit) = match &options.hours {
         Some((entry, exit)) => (Some(entry.clone()), Some(exit.clone()), false, false),
         None => (None, None, true, true),
@@ -851,7 +846,7 @@ mod tests {
     use crate::AttendanceSource;
     use std::collections::BTreeMap;
 
-    fn sample_target(date: NaiveDate, report_id: &str, error_type: &str) -> FixTarget {
+    fn sample_target(date: Date, report_id: &str, error_type: &str) -> FixTarget {
         FixTarget {
             date,
             issue_kind: None,
@@ -865,7 +860,7 @@ mod tests {
 
     #[test]
     fn group_fix_targets_by_date_preserves_multiple_targets_for_same_day() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let date = Date::new(2026, 4, 10).unwrap();
         let grouped = group_fix_targets_by_date(vec![
             sample_target(date, "report-1", "63"),
             sample_target(date, "report-2", "18"),
@@ -879,9 +874,9 @@ mod tests {
 
     #[test]
     fn build_overview_preserves_all_fix_targets_on_error_day() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let date = Date::new(2026, 4, 10).unwrap();
         let calendar = MonthCalendar {
-            month: date.with_day(1).unwrap(),
+            month: date.first_of_month(),
             employee_id: "123".to_string(),
             days: vec![CalendarDay {
                 date,

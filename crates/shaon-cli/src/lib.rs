@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use chrono::{Datelike, Local, NaiveDate};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use hr_core::{
     AttendanceProvider, AttendanceType as CoreAttendanceType, DocumentDownload,
@@ -7,6 +6,7 @@ use hr_core::{
     ReportTable, SalaryProvider, TaxFormProvider, WriteMode as CoreWriteMode,
     WritePreview as CoreWritePreview,
 };
+use jiff::{civil::Date, Zoned};
 use secrecy::ExposeSecret;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -740,10 +740,9 @@ async fn run_attendance_command(
         AttendanceCommand::Errors(args) => {
             let month = parse_month_or_current(args.month.as_deref())?;
             let mut provider = HilanProvider::from_client(client);
-            let overview =
-                use_cases::build_overview(&mut provider, month, Local::now().date_naive())
-                    .await
-                    .map_err(provider_error)?;
+            let overview = use_cases::build_overview(&mut provider, month, Zoned::now().date())
+                .await
+                .map_err(provider_error)?;
             if json {
                 print_json(&build_errors_response(&overview))?;
             } else {
@@ -795,7 +794,7 @@ async fn run_attendance_command(
                     include_weekends: args.include_weekends,
                     mode: args.write_mode.provider_mode(),
                     max_days: args.max_days,
-                    today: Local::now().date_naive(),
+                    today: Zoned::now().date(),
                 },
             )
             .await
@@ -816,7 +815,7 @@ async fn run_attendance_command(
                     .await
                     .map_err(provider_error)?
                     .map(|resolved| resolved.code);
-            let month = date.with_day(1).expect("valid day has month start");
+            let month = date.first_of_month();
             let fix_targets = provider.fix_targets(month).await.map_err(provider_error)?;
             let target = find_fix_target_for_date(&fix_targets, date)?;
             let preview = use_cases::fix_day(
@@ -886,7 +885,7 @@ async fn run_attendance_report_command(
                 )
                 .await?;
                 let submit = attendance::AttendanceSubmit {
-                    date: Local::now().date_naive(),
+                    date: Zoned::now().date(),
                     attendance_type_code: type_code,
                     entry_time: Some(current_local_time_hhmm()),
                     exit_time: None,
@@ -904,7 +903,7 @@ async fn run_attendance_report_command(
                 }
             } else {
                 let submit = attendance::AttendanceSubmit {
-                    date: Local::now().date_naive(),
+                    date: Zoned::now().date(),
                     attendance_type_code: None,
                     entry_time: None,
                     exit_time: Some(current_local_time_hhmm()),
@@ -996,7 +995,7 @@ async fn run_payroll_command(
         PayrollCommand::Form106 {
             command: Form106Command::Download { year, output },
         } => {
-            let year = year.unwrap_or_else(|| Local::now().year() - 1);
+            let year = year.unwrap_or_else(|| i32::from(Zoned::now().year()) - 1);
             let mut provider = HilanProvider::from_client(client);
             let download = provider
                 .download_form106(year, output.as_deref())
@@ -1028,7 +1027,7 @@ async fn run_payroll_command(
                 for entry in &summary.entries {
                     println!(
                         "{}: {}",
-                        entry.month.format("%Y-%m"),
+                        entry.month.strftime("%Y-%m"),
                         format_number(entry.amount)
                     );
                 }
@@ -1064,13 +1063,13 @@ async fn run_payslip_command(
             if json {
                 print_json(&serde_json::json!({
                     "status": "ok",
-                    "month": month.format("%Y-%m").to_string(),
+                    "month": month.strftime("%Y-%m").to_string(),
                     "viewer": viewer_name(),
                 }))?;
             } else {
                 println!(
                     "Opened payslip for {} in {}.",
-                    month.format("%Y-%m"),
+                    month.strftime("%Y-%m"),
                     viewer_name()
                 );
             }
@@ -1152,7 +1151,7 @@ async fn run_cache_command(
 }
 
 fn build_day_change(
-    date: NaiveDate,
+    date: Date,
     attendance_type_code: Option<String>,
     hours: Option<(String, String)>,
 ) -> Result<hr_core::AttendanceChange> {
@@ -1179,10 +1178,7 @@ fn build_day_change(
     })
 }
 
-fn find_fix_target_for_date(
-    fix_targets: &[CoreFixTarget],
-    date: NaiveDate,
-) -> Result<CoreFixTarget> {
+fn find_fix_target_for_date(fix_targets: &[CoreFixTarget], date: Date) -> Result<CoreFixTarget> {
     let mut matches = fix_targets
         .iter()
         .filter(|target| target.date == date)
@@ -1192,20 +1188,20 @@ fn find_fix_target_for_date(
         (Some(target), None) => Ok(target),
         (Some(_), Some(_)) => bail!(
             "Found multiple fix targets for {}. Inspect `shaon attendance errors --month {}` and retry.",
-            date.format("%Y-%m-%d"),
-            date.format("%Y-%m")
+            date.strftime("%Y-%m-%d"),
+            date.strftime("%Y-%m")
         ),
         _ => bail!(
             "No fix target found for {}. Run `shaon attendance errors --month {}` first and confirm the day is still fixable.",
-            date.format("%Y-%m-%d"),
-            date.format("%Y-%m")
+            date.strftime("%Y-%m-%d"),
+            date.strftime("%Y-%m")
         ),
     }
 }
 
 fn build_errors_response(overview: &use_cases::OverviewData) -> ErrorsResponse {
     ErrorsResponse {
-        month: overview.month.format("%Y-%m").to_string(),
+        month: overview.month.strftime("%Y-%m").to_string(),
         employee_id: overview.calendar.employee_id.clone(),
         error_count: overview.error_days.len(),
         errors: overview
@@ -1218,7 +1214,7 @@ fn build_errors_response(overview: &use_cases::OverviewData) -> ErrorsResponse {
 
 fn build_status_response(calendar: &hr_core::MonthCalendar) -> StatusResponse {
     StatusResponse {
-        month: calendar.month.format("%Y-%m").to_string(),
+        month: calendar.month.strftime("%Y-%m").to_string(),
         employee_id: calendar.employee_id.clone(),
         days: calendar
             .days
@@ -1249,7 +1245,7 @@ fn build_salary_response(summary: &hr_core::SalarySummary) -> SalaryResponse {
             .entries
             .iter()
             .map(|entry| SalaryEntryResponse {
-                month: entry.month.format("%Y-%m").to_string(),
+                month: entry.month.strftime("%Y-%m").to_string(),
                 amount: entry.amount,
             })
             .collect(),
@@ -1258,7 +1254,7 @@ fn build_salary_response(summary: &hr_core::SalarySummary) -> SalaryResponse {
 }
 
 fn build_overview_response(overview: &use_cases::OverviewData) -> OverviewResponse {
-    let missing_dates: BTreeSet<NaiveDate> = overview.missing_days.iter().copied().collect();
+    let missing_dates: BTreeSet<Date> = overview.missing_days.iter().copied().collect();
 
     let missing_days = overview
         .calendar
@@ -1281,7 +1277,7 @@ fn build_overview_response(overview: &use_cases::OverviewData) -> OverviewRespon
             name: overview.identity.display_name.clone(),
             is_manager: overview.identity.is_manager,
         },
-        month: overview.month.format("%Y-%m").to_string(),
+        month: overview.month.strftime("%Y-%m").to_string(),
         summary: MonthSummary {
             total_work_days: overview.summary.total_work_days,
             reported: overview.summary.reported,
@@ -1301,7 +1297,7 @@ fn build_overview_response(overview: &use_cases::OverviewData) -> OverviewRespon
 
 fn status_day_from_calendar_day(day: &hr_core::CalendarDay) -> StatusDay {
     StatusDay {
-        date: day.date.format("%Y-%m-%d").to_string(),
+        date: day.date.strftime("%Y-%m-%d").to_string(),
         day_name: day.day_name.clone(),
         has_error: day.has_error,
         error_message: day.error_message.clone(),
@@ -1315,7 +1311,7 @@ fn status_day_from_calendar_day(day: &hr_core::CalendarDay) -> StatusDay {
 
 fn missing_day_from_calendar_day(day: &hr_core::CalendarDay) -> MissingDay {
     MissingDay {
-        date: day.date.format("%Y-%m-%d").to_string(),
+        date: day.date.strftime("%Y-%m-%d").to_string(),
         day_name: day.day_name.clone(),
     }
 }
@@ -1328,7 +1324,7 @@ fn error_day_from_overview(entry: &use_cases::OverviewErrorDay) -> ErrorDay {
     };
 
     ErrorDay {
-        date: entry.day.date.format("%Y-%m-%d").to_string(),
+        date: entry.day.date.strftime("%Y-%m-%d").to_string(),
         day_name: entry.day.day_name.clone(),
         error_message: entry
             .day
@@ -1349,13 +1345,13 @@ fn suggested_action_from_plan(action: &use_cases::SuggestedActionPlan) -> Sugges
         } => SuggestedAction::FixErrors {
             reason: format!("{count} day(s) have attendance errors"),
             safety: "dry_run_default".to_string(),
-            month: month.format("%Y-%m").to_string(),
+            month: month.strftime("%Y-%m").to_string(),
             count: *count,
             fixable_days: fixable_targets
                 .iter()
                 .filter_map(|target| {
                     error_fix_params_from_target(target).map(|params| FixableDay {
-                        date: target.date.format("%Y-%m-%d").to_string(),
+                        date: target.date.strftime("%Y-%m-%d").to_string(),
                         report_id: params.report_id,
                         error_type: params.error_type,
                     })
@@ -1366,8 +1362,8 @@ fn suggested_action_from_plan(action: &use_cases::SuggestedActionPlan) -> Sugges
             SuggestedAction::FillMissing {
                 reason: format!("{count} work day(s) have no attendance report"),
                 safety: "dry_run_default".to_string(),
-                from: from.format("%Y-%m-%d").to_string(),
-                to: to.format("%Y-%m-%d").to_string(),
+                from: from.strftime("%Y-%m-%d").to_string(),
+                to: to.strftime("%Y-%m-%d").to_string(),
                 count: *count,
             }
         }
@@ -1410,7 +1406,7 @@ fn print_payslip_download(download: DocumentDownload, json: bool) -> Result<()> 
     } else {
         println!(
             "Saved password-protected payslip for {} to {} ({} bytes)",
-            download.month.format("%Y-%m"),
+            download.month.strftime("%Y-%m"),
             download.path.display(),
             download.size_bytes
         );
@@ -1459,29 +1455,26 @@ fn viewer_name() -> &'static str {
     "the system PDF viewer"
 }
 
-fn parse_month_or_previous(month: Option<&str>) -> Result<NaiveDate> {
+fn parse_month_or_previous(month: Option<&str>) -> Result<Date> {
     match month {
         Some(value) => parse_month(value),
-        None => Ok(client::previous_month_start(Local::now().date_naive())),
+        None => Ok(client::previous_month_start(Zoned::now().date())?),
     }
 }
 
-fn parse_month_or_current(month: Option<&str>) -> Result<NaiveDate> {
+fn parse_month_or_current(month: Option<&str>) -> Result<Date> {
     match month {
         Some(value) => parse_month(value),
         None => Ok(current_month_start()),
     }
 }
 
-fn parse_month(value: &str) -> Result<NaiveDate> {
-    Ok(NaiveDate::parse_from_str(
-        &format!("{value}-01"),
-        "%Y-%m-%d",
-    )?)
+fn parse_month(value: &str) -> Result<Date> {
+    parse_date(&format!("{value}-01"))
 }
 
-fn parse_date(value: &str) -> Result<NaiveDate> {
-    Ok(NaiveDate::parse_from_str(value, "%Y-%m-%d")?)
+fn parse_date(value: &str) -> Result<Date> {
+    Ok(Date::strptime("%Y-%m-%d", value)?)
 }
 
 fn parse_hours_range(value: &str) -> Result<(String, String)> {
@@ -1510,7 +1503,7 @@ async fn resolve_attendance_type_code(
 }
 
 fn current_local_time_hhmm() -> String {
-    Local::now().format("%H:%M").to_string()
+    Zoned::now().strftime("%H:%M").to_string()
 }
 
 fn print_json(value: &impl Serialize) -> Result<()> {
@@ -1557,8 +1550,8 @@ fn print_provider_preview(action: &str, preview: &CoreWritePreview) {
     }
 }
 
-fn current_month_start() -> NaiveDate {
-    Local::now().date_naive().with_day(1).unwrap()
+fn current_month_start() -> Date {
+    Zoned::now().date().first_of_month()
 }
 
 fn format_number(value: u64) -> String {
@@ -1587,7 +1580,7 @@ async fn run_overview(
     json: bool,
 ) -> Result<()> {
     let month = parse_month_or_current(month_arg)?;
-    let today = Local::now().date_naive();
+    let today = Zoned::now().date();
     let overview = use_cases::build_overview(provider, month, today)
         .await
         .map_err(provider_error)?;
@@ -1700,7 +1693,7 @@ fn error_fix_params_candidates(targets: &[hr_core::FixTarget]) -> Vec<ErrorFixPa
 fn print_calendar_verbose(calendar: &hr_core::MonthCalendar) {
     println!(
         "Calendar {} (employee {})",
-        calendar.month.format("%Y-%m"),
+        calendar.month.strftime("%Y-%m"),
         calendar.employee_id
     );
     println!("Date        Day    Entry  Exit   Type                  Source     Hours  Error");
@@ -1709,7 +1702,7 @@ fn print_calendar_verbose(calendar: &hr_core::MonthCalendar) {
     for day in &calendar.days {
         println!(
             "{:<10}  {:<5}  {:<5}  {:<5}  {:<20}  {:<9}  {:<5}  {}",
-            day.date.format("%Y-%m-%d"),
+            day.date.strftime("%Y-%m-%d"),
             day.day_name,
             day.entry_time.as_deref().unwrap_or(""),
             day.exit_time.as_deref().unwrap_or(""),
@@ -1802,10 +1795,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn sample_overview(targets: Vec<CoreFixTarget>) -> use_cases::OverviewData {
-        let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let month = Date::new(2026, 4, 1).unwrap();
         let fixable_targets = targets.clone();
         let missing_day = CalendarDay {
-            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            date: Date::new(2026, 4, 9).unwrap(),
             day_name: "Wed".to_string(),
             has_error: false,
             error_message: None,
@@ -1816,7 +1809,7 @@ mod tests {
             source: AttendanceSource::Unreported,
         };
         let error_day = CalendarDay {
-            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            date: Date::new(2026, 4, 10).unwrap(),
             day_name: "Thu".to_string(),
             has_error: true,
             error_message: Some("missing report".to_string()),
@@ -1934,7 +1927,7 @@ mod tests {
     #[test]
     fn find_fix_target_for_date_returns_the_matching_target() {
         let target = CoreFixTarget {
-            date: NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            date: Date::new(2026, 4, 10).unwrap(),
             issue_kind: Some("missing_report".to_string()),
             provider_ref: "report:error".to_string(),
             metadata: BTreeMap::from([
@@ -1946,7 +1939,7 @@ mod tests {
 
         let found = find_fix_target_for_date(
             &overview.error_days[0].fix_targets,
-            NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            Date::new(2026, 4, 10).unwrap(),
         )
         .expect("find target");
 
@@ -1959,7 +1952,7 @@ mod tests {
 
         let err = find_fix_target_for_date(
             &overview.error_days[0].fix_targets,
-            NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+            Date::new(2026, 4, 10).unwrap(),
         )
         .expect_err("missing target should fail");
 
@@ -1970,7 +1963,7 @@ mod tests {
 
     #[test]
     fn find_fix_target_for_date_fails_when_multiple_targets_match() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let date = Date::new(2026, 4, 10).unwrap();
         let overview = sample_overview(vec![
             CoreFixTarget {
                 date,
@@ -2002,7 +1995,7 @@ mod tests {
 
     #[test]
     fn build_errors_response_preserves_multiple_fix_param_candidates() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let date = Date::new(2026, 4, 10).unwrap();
         let overview = sample_overview(vec![
             CoreFixTarget {
                 date,
@@ -2062,7 +2055,7 @@ mod tests {
 
     #[test]
     fn build_overview_response_uses_structured_missing_days_and_actions() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let date = Date::new(2026, 4, 10).unwrap();
         let overview = sample_overview(vec![CoreFixTarget {
             date,
             issue_kind: Some("missing_report".to_string()),
@@ -2114,7 +2107,7 @@ mod tests {
         let summary = SalarySummary {
             label: "Net".to_string(),
             entries: vec![SalaryEntry {
-                month: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                month: Date::new(2026, 3, 1).unwrap(),
                 amount: 123_456,
             }],
             percent_diff: Some(1.5),

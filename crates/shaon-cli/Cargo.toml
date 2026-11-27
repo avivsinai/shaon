@@ -10,11 +10,11 @@ description = "CLI frontend for the Shaon provider stack"
 
 [dependencies]
 anyhow.workspace = true
-chrono.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 shaon-mcp = { path = "../shaon-mcp" }
 hr-core = { path = "../hr-core" }
+jiff.workspace = true
 provider-hilan = { path = "../provider-hilan" }
 rand.workspace = true
 rpassword.workspace = true

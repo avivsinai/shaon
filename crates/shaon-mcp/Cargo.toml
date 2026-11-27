@@ -11,8 +11,8 @@ description = "MCP frontend for the Shaon provider stack"
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
-chrono.workspace = true
 hr-core = { path = "../hr-core" }
+jiff.workspace = true
 provider-hilan = { path = "../provider-hilan" }
 rmcp.workspace = true
 schemars.workspace = true

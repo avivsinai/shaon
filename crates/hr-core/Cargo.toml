@@ -10,7 +10,7 @@ description = "Provider-agnostic core DTOs, traits, and use cases for HR tooling
 
 [dependencies]
 async-trait.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

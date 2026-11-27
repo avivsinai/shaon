@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,7 +62,7 @@ pub struct SalaryInitialData {
 
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ErrorTask {
-    pub date: NaiveDate,
+    pub date: Date,
     pub report_id: String,
     pub error_type: String,
 }
@@ -191,7 +191,7 @@ fn parse_error_task_link(link: &str) -> Option<ErrorTask> {
         let (key, value) = pair.split_once('=')?;
         let value = urlencoding::decode(value).ok()?.into_owned();
         match key {
-            "date" => date = NaiveDate::parse_from_str(&value, "%d/%m/%Y").ok(),
+            "date" => date = Date::strptime("%d/%m/%Y", &value).ok(),
             "reportId" => report_id = Some(value),
             "errorType" => error_type = Some(value),
             _ => {}
@@ -366,10 +366,10 @@ mod tests {
         let tasks = parse_error_tasks(text).expect("parse tasks GetData fixture");
 
         assert_eq!(tasks.len(), 2);
-        assert_eq!(tasks[0].date, NaiveDate::from_ymd_opt(2026, 4, 9).unwrap());
+        assert_eq!(tasks[0].date, Date::new(2026, 4, 9).unwrap());
         assert_eq!(tasks[0].report_id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(tasks[0].error_type, "63");
-        assert_eq!(tasks[1].date, NaiveDate::from_ymd_opt(2026, 4, 6).unwrap());
+        assert_eq!(tasks[1].date, Date::new(2026, 4, 6).unwrap());
         assert_eq!(tasks[1].report_id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(tasks[1].error_type, "63");
     }

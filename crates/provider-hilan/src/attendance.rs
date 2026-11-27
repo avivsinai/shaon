@@ -2,11 +2,14 @@ use std::collections::{btree_map::Entry, BTreeMap};
 use std::sync::LazyLock;
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use jiff::{
+    civil::{date, Date},
+    Timestamp,
+};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
-use crate::client::{format_form_fields_for_display, HilanClient};
+use crate::client::{format_form_fields_for_display, shift_month, HilanClient};
 
 // Pre-compiled scraper selectors. Building a Selector allocates, so cache the
 // constant-string ones at module scope to keep hot parsing paths allocation-free.
@@ -100,7 +103,7 @@ enum SubmitPage {
 #[derive(Debug, Clone)]
 pub(crate) struct CalendarSubmitContext {
     pub url: String,
-    pub date: NaiveDate,
+    pub date: Date,
     pub employee_id: String,
     pub fields: BTreeMap<String, String>,
     pub reports: Vec<CalendarExistingReport>,
@@ -189,7 +192,7 @@ pub(crate) const TYPE_KEYWORDS: &[&str] = &[
 
 #[derive(Debug, Serialize)]
 pub struct CalendarDay {
-    pub date: NaiveDate,
+    pub date: Date,
     pub day_name: String,
     pub has_error: bool,
     pub error_message: Option<String>,
@@ -213,20 +216,20 @@ impl CalendarDay {
 
     /// Whether this day falls on a work day (Sun-Thu, Israeli work week).
     pub fn is_work_day(&self) -> bool {
-        self.date.weekday().num_days_from_sunday() < 5
+        !hr_core::is_weekend(self.date)
     }
 }
 
 #[derive(Debug, Serialize)]
 pub struct MonthCalendar {
-    pub month: NaiveDate,
+    pub month: Date,
     pub employee_id: String,
     pub days: Vec<CalendarDay>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AttendanceSubmit {
-    pub date: NaiveDate,
+    pub date: Date,
     pub attendance_type_code: Option<String>,
     pub entry_time: Option<String>,
     pub exit_time: Option<String>,
@@ -248,7 +251,7 @@ pub struct SubmitPreview {
 }
 
 /// Fetch and parse the attendance calendar for a given month.
-pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result<MonthCalendar> {
+pub async fn read_calendar(client: &mut HilanClient, month: Date) -> Result<MonthCalendar> {
     let url = format!(
         "{}/Hilannetv2/Attendance/calendarpage.aspx?isOnSelf=true",
         client.base_url
@@ -287,7 +290,7 @@ pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result
         tracing::debug!(
             "Calendar page has {} day(s) but no attendance data for {}; trying async postback for full grid",
             days.len(),
-            month.format("%Y-%m")
+            month.strftime("%Y-%m")
         );
         // The calendar grid lazy-loads via ASP.NET UpdatePanel. The RefreshPeriod
         // button is inside an UpdatePanel with ChildrenAsTriggers=true, so clicking
@@ -311,7 +314,7 @@ pub async fn read_calendar(client: &mut HilanClient, month: NaiveDate) -> Result
     tracing::debug!(
         "Parsed {} calendar days for {} (employee {})",
         days.len(),
-        month.format("%Y-%m"),
+        month.strftime("%Y-%m"),
         employee_id
     );
 
@@ -327,9 +330,9 @@ async fn load_month_page(
     url: &str,
     mut html: String,
     mut fields: BTreeMap<String, String>,
-    requested_month: NaiveDate,
+    requested_month: Date,
 ) -> Result<(String, BTreeMap<String, String>)> {
-    let requested_month = month_start(requested_month)?;
+    let requested_month = requested_month.first_of_month();
     let mut current_month = displayed_month(&fields)?;
 
     if current_month == requested_month {
@@ -362,14 +365,14 @@ async fn load_month_page(
                 if displayed == requested_month {
                     tracing::debug!(
                         "direct month refresh to {} succeeded",
-                        requested_month.format("%Y-%m")
+                        requested_month.strftime("%Y-%m")
                     );
                     return Ok((new_html, new_fields));
                 }
                 tracing::debug!(
                     "direct month refresh landed on {} instead of {}; trying other navigation paths",
-                    displayed.format("%Y-%m"),
-                    requested_month.format("%Y-%m")
+                    displayed.strftime("%Y-%m"),
+                    requested_month.strftime("%Y-%m")
                 );
                 html = new_html;
                 fields = new_fields;
@@ -379,7 +382,7 @@ async fn load_month_page(
         Err(err) => {
             tracing::debug!(
                 "direct month refresh to {} failed: {err}",
-                requested_month.format("%Y-%m")
+                requested_month.strftime("%Y-%m")
             );
         }
     }
@@ -406,14 +409,14 @@ async fn load_month_page(
                 if displayed == requested_month {
                     tracing::debug!(
                         "direct dropdown jump to {} succeeded",
-                        requested_month.format("%Y-%m")
+                        requested_month.strftime("%Y-%m")
                     );
                     return Ok((new_html, new_fields));
                 }
                 tracing::debug!(
                     "direct dropdown jump landed on {} instead of {}; falling back to step-by-step",
-                    displayed.format("%Y-%m"),
-                    requested_month.format("%Y-%m")
+                    displayed.strftime("%Y-%m"),
+                    requested_month.strftime("%Y-%m")
                 );
                 // Use the jumped page as starting point if it moved closer.
                 html = new_html;
@@ -424,7 +427,7 @@ async fn load_month_page(
         Err(err) => {
             tracing::debug!(
                 "direct dropdown jump to {} failed: {err}",
-                requested_month.format("%Y-%m")
+                requested_month.strftime("%Y-%m")
             );
         }
     }
@@ -437,7 +440,7 @@ async fn load_month_page(
         if nav_step > MAX_NAV_STEPS {
             return Err(anyhow!(
                 "calendar navigation exceeded {MAX_NAV_STEPS} steps (stuck at {})",
-                current_month.format("%Y-%m")
+                current_month.strftime("%Y-%m")
             ));
         }
         let go_forward = current_month < requested_month;
@@ -466,18 +469,18 @@ async fn load_month_page(
             .with_context(|| {
                 format!(
                     "navigate attendance calendar from {} to {}",
-                    current_month.format("%Y-%m"),
-                    next_month.format("%Y-%m")
+                    current_month.strftime("%Y-%m"),
+                    next_month.strftime("%Y-%m")
                 )
             })?;
         fields = crate::client::parse_aspx_form_fields(&html);
-        dump_debug_html(&format!("nav-{}", next_month.format("%Y-%m")), &html);
+        dump_debug_html(&format!("nav-{}", next_month.strftime("%Y-%m")), &html);
         let displayed = displayed_month(&fields)?;
         if displayed == current_month {
             return Err(anyhow!(
                 "calendar navigation via {} did not change displayed month from {}",
                 event_target,
-                current_month.format("%Y-%m")
+                current_month.strftime("%Y-%m")
             ));
         }
         current_month = displayed;
@@ -496,7 +499,7 @@ async fn load_full_grid_async(
     client: &mut HilanClient,
     url: &str,
     fields: &BTreeMap<String, String>,
-    month: NaiveDate,
+    month: Date,
 ) -> Result<Vec<CalendarDay>> {
     let month_value = month_field_value(month);
 
@@ -514,7 +517,7 @@ async fn load_full_grid_async(
         .await
         .context("async postback for RefreshPeriod")?;
 
-    dump_debug_html(&format!("async-{}", month.format("%Y-%m")), &delta);
+    dump_debug_html(&format!("async-{}", month.strftime("%Y-%m")), &delta);
 
     // If the response looks like full HTML (not delta), try parsing it directly
     if delta.contains("<html") || delta.contains("<!DOCTYPE") {
@@ -557,15 +560,16 @@ async fn probe_month_days(
     client: &mut HilanClient,
     url: &str,
     fields: &BTreeMap<String, String>,
-    month: NaiveDate,
+    month: Date,
 ) -> Result<Vec<CalendarDay>> {
-    let month = month_start(month)?;
+    let month = month.first_of_month();
     let mut fields = fields.clone();
-    let mut days = Vec::with_capacity(days_in_month(month) as usize);
+    let mut days = Vec::with_capacity(month.days_in_month() as usize);
 
-    for day_num in 1..=days_in_month(month) {
-        let date = NaiveDate::from_ymd_opt(month.year(), month.month(), day_num)
-            .ok_or_else(|| anyhow!("invalid date while probing month: {month} + day {day_num}"))?;
+    for day_num in 1..=month.days_in_month() {
+        let date = Date::new(month.year(), month.month(), day_num).with_context(|| {
+            format!("invalid date while probing month: {month} + day {day_num}")
+        })?;
         let selected_day = calendar_selected_day_value(date);
         let month_value = month_field_value(date);
         let html = client
@@ -581,12 +585,14 @@ async fn probe_month_days(
                 true, // read-only navigation, safe to retry
             )
             .await
-            .with_context(|| format!("load attendance details for {}", date.format("%Y-%m-%d")))?;
+            .with_context(|| {
+                format!("load attendance details for {}", date.strftime("%Y-%m-%d"))
+            })?;
         fields = crate::client::parse_aspx_form_fields(&html);
 
         if day_num <= 3 {
             dump_debug_html(
-                &format!("probe-{}-{:02}", month.format("%Y-%m"), day_num),
+                &format!("probe-{}-{:02}", month.strftime("%Y-%m"), day_num),
                 &html,
             );
         }
@@ -601,7 +607,7 @@ async fn probe_month_days(
 }
 
 /// Parse the calendar HTML grid and extract day information.
-fn parse_calendar_html(html: &str, month: NaiveDate) -> Result<Vec<CalendarDay>> {
+fn parse_calendar_html(html: &str, month: Date) -> Result<Vec<CalendarDay>> {
     let document = Html::parse_document(html);
     let mut days = parse_calendar_grid(&document, month);
     days.extend(parse_calendar_detail_rows_from_dom(&document, month));
@@ -673,7 +679,7 @@ fn merge_calendar_day_into(existing: &mut CalendarDay, candidate: CalendarDay) {
     existing.source = preferred_source(existing.source, candidate_source);
 }
 
-fn parse_calendar_detail_rows_from_dom(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
+fn parse_calendar_detail_rows_from_dom(document: &Html, month: Date) -> Vec<CalendarDay> {
     let mut days = Vec::new();
 
     for row in document.select(&REPORT_DAY_ROW_SEL) {
@@ -705,7 +711,7 @@ fn parse_calendar_detail_rows_from_dom(document: &Html, month: NaiveDate) -> Vec
 
         days.push(CalendarDay {
             date,
-            day_name: date.format("%a").to_string(),
+            day_name: date.strftime("%a").to_string(),
             has_error: false,
             error_message: None,
             entry_time,
@@ -719,7 +725,7 @@ fn parse_calendar_detail_rows_from_dom(document: &Html, month: NaiveDate) -> Vec
     days
 }
 
-fn parse_detail_row_date(row: &ElementRef<'_>, month: NaiveDate) -> Option<NaiveDate> {
+fn parse_detail_row_date(row: &ElementRef<'_>, month: Date) -> Option<Date> {
     let cell = row.select(&REPORT_DATE_CELL_SEL).next()?;
     let day_num = cell
         .value()
@@ -728,7 +734,7 @@ fn parse_detail_row_date(row: &ElementRef<'_>, month: NaiveDate) -> Option<Naive
         .or_else(|| cell.value().attr("title").and_then(extract_day_number))
         .or_else(|| extract_day_number(&cell_visible_text(&cell)))?;
 
-    NaiveDate::from_ymd_opt(month.year(), month.month(), day_num)
+    Date::new(month.year(), month.month(), day_num).ok()
 }
 
 fn detail_input_value(row: &ElementRef<'_>, field_fragment: &str) -> Option<String> {
@@ -790,7 +796,7 @@ fn normalized_cell_value(value: Option<&str>) -> Option<String> {
 }
 
 /// Try to interpret a table row as a calendar day entry.
-fn try_parse_day_row(cells: &[String], month: NaiveDate) -> Option<CalendarDay> {
+fn try_parse_day_row(cells: &[String], month: Date) -> Option<CalendarDay> {
     // Common patterns:
     // Cell 0: date like "01" or "1" or "01/04" or day name
     // Cell 1: day name or entry time
@@ -801,7 +807,7 @@ fn try_parse_day_row(cells: &[String], month: NaiveDate) -> Option<CalendarDay> 
     // Try to extract a day number from the first cell
     let day_num = extract_day_number(first)?;
 
-    let date = NaiveDate::from_ymd_opt(month.year(), month.month(), day_num)?;
+    let date = Date::new(month.year(), month.month(), day_num).ok()?;
 
     // Hebrew day names for matching
     let hebrew_days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
@@ -882,7 +888,7 @@ fn try_parse_day_row(cells: &[String], month: NaiveDate) -> Option<CalendarDay> 
 
     // If we have no day name, derive from the date
     if day_name.is_empty() {
-        day_name = date.format("%a").to_string();
+        day_name = date.strftime("%a").to_string();
     }
 
     let source = if let Some(attendance_type) = attendance_type.as_deref() {
@@ -917,7 +923,7 @@ fn try_parse_day_row(cells: &[String], month: NaiveDate) -> Option<CalendarDay> 
 /// - Nested: `<span class="calendarIcon mx-1 fh-x">` — absence/vacation icon
 /// - Nested: `<span class="calendarIcon mx-1 fh-error">` — error icon
 /// - Nested: `<div class="cDM">H:MM</div>` — clock-in time display
-fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
+fn parse_calendar_grid(document: &Html, month: Date) -> Vec<CalendarDay> {
     let mut days = Vec::new();
 
     // Target calendar day cells: both regular (cDIES) and absence (calendarAbcenseDay).
@@ -933,7 +939,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
             .or_else(|| {
                 td.value()
                     .attr("aria-label")
-                    .and_then(|label| label.parse::<u32>().ok())
+                    .and_then(|label| label.parse::<i8>().ok())
                     .filter(|&n| (1..=31).contains(&n))
             });
 
@@ -942,9 +948,8 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
             None => continue,
         };
 
-        let date = match NaiveDate::from_ymd_opt(month.year(), month.month(), day_num) {
-            Some(d) => d,
-            None => continue,
+        let Ok(date) = Date::new(month.year(), month.month(), day_num) else {
+            continue;
         };
 
         // Determine attendance source from CSS class:
@@ -1038,7 +1043,7 @@ fn parse_calendar_grid(document: &Html, month: NaiveDate) -> Vec<CalendarDay> {
 
         days.push(CalendarDay {
             date,
-            day_name: date.format("%a").to_string(),
+            day_name: date.strftime("%a").to_string(),
             has_error,
             error_message,
             entry_time,
@@ -1121,12 +1126,12 @@ fn cell_visible_text(cell: &ElementRef<'_>) -> String {
 }
 
 /// Extract a day number (1-31) from a string that starts with digits.
-fn extract_day_number(s: &str) -> Option<u32> {
+fn extract_day_number(s: &str) -> Option<i8> {
     let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
         return None;
     }
-    let num: u32 = digits.parse().ok()?;
+    let num: i8 = digits.parse().ok()?;
     if (1..=31).contains(&num) {
         Some(num)
     } else {
@@ -1136,7 +1141,7 @@ fn extract_day_number(s: &str) -> Option<u32> {
 
 /// Stricter day number extraction: the cell text should be short
 /// or the number should be prominent (not embedded in a long string).
-fn extract_day_number_strict(s: &str) -> Option<u32> {
+fn extract_day_number_strict(s: &str) -> Option<i8> {
     let trimmed = s.trim();
     // If the entire content is just a number, or starts with a number
     // followed by whitespace or non-digit content
@@ -1149,7 +1154,7 @@ fn extract_day_number_strict(s: &str) -> Option<u32> {
     if remaining == Some(':') {
         return None;
     }
-    let num: u32 = digits.parse().ok()?;
+    let num: i8 = digits.parse().ok()?;
     if (1..=31).contains(&num) {
         Some(num)
     } else {
@@ -1230,7 +1235,7 @@ pub fn print_errors(cal: &MonthCalendar) {
     if error_days.is_empty() {
         println!(
             "No errors found for {} (employee {})",
-            cal.month.format("%Y-%m"),
+            cal.month.strftime("%Y-%m"),
             cal.employee_id
         );
         return;
@@ -1238,7 +1243,7 @@ pub fn print_errors(cal: &MonthCalendar) {
 
     println!(
         "Errors for {} (employee {}): {} day(s)",
-        cal.month.format("%Y-%m"),
+        cal.month.strftime("%Y-%m"),
         cal.employee_id,
         error_days.len()
     );
@@ -1259,7 +1264,7 @@ pub fn print_errors(cal: &MonthCalendar) {
 
         println!(
             "{:<date_w$}  {:<day_w$}  {:<msg_w$}",
-            day.date.format("%Y-%m-%d"),
+            day.date.strftime("%Y-%m-%d"),
             day.day_name,
             msg,
         );
@@ -1331,7 +1336,7 @@ pub(crate) async fn submit_day_with_context(
                 .with_context(|| {
                     format!(
                         "reload calendar submit context after conflict for {}",
-                        submit.date.format("%Y-%m-%d")
+                        submit.date.strftime("%Y-%m-%d")
                     )
                 })?;
             let (delete_previews, refreshed_context) = delete_conflicting_absence_reports(
@@ -1385,7 +1390,7 @@ fn calendar_submit_object_id(context: &CalendarSubmitContext) -> &str {
 
 pub(crate) async fn load_calendar_submit_context(
     client: &mut HilanClient,
-    date: NaiveDate,
+    date: Date,
 ) -> Result<CalendarSubmitContext> {
     let url = calendar_page_url(client);
     let (html, fields) = load_calendar_submit_form(client, &url, date).await?;
@@ -1504,7 +1509,7 @@ pub(crate) async fn delete_calendar_report(
         .await
         .with_context(|| format!("delete calendar attendance row for {}", context.date))?;
     dump_debug_html(
-        &format!("delete-response-{}", context.date.format("%Y-%m-%d")),
+        &format!("delete-response-{}", context.date.strftime("%Y-%m-%d")),
         &response,
     );
     if let Some(message) = extract_submit_error_message(&response) {
@@ -1567,7 +1572,7 @@ pub async fn fix_error_day(
     let url = format!(
         "{}/Hilannetv2/EmployeeErrorHandling.aspx?date={}&reportId={}&errorType={}&HideStrip=1&HideEmployeeStrip=1",
         client.base_url,
-        submit.date.format("%d/%m/%Y"),
+        submit.date.strftime("%d/%m/%Y"),
         report_id,
         error_type
     );
@@ -1576,7 +1581,7 @@ pub async fn fix_error_day(
     let (_html, fields) = client
         .get_aspx_form(&url)
         .await
-        .with_context(|| format!("load form for {}", submit.date.format("%Y-%m-%d")))?;
+        .with_context(|| format!("load form for {}", submit.date.strftime("%Y-%m-%d")))?;
 
     replay_submit_with_fields(
         client,
@@ -1594,13 +1599,13 @@ pub async fn fix_error_day(
 async fn load_calendar_submit_form(
     client: &mut HilanClient,
     url: &str,
-    date: NaiveDate,
+    date: Date,
 ) -> Result<(String, BTreeMap<String, String>)> {
     client.ensure_authenticated().await?;
     let (html, fields) = client
         .get_aspx_form(url)
         .await
-        .with_context(|| format!("load calendar form for {}", date.format("%Y-%m-%d")))?;
+        .with_context(|| format!("load calendar form for {}", date.strftime("%Y-%m-%d")))?;
     let (_html, fields) = load_month_page(client, url, html, fields, date).await?;
     let selected_day = calendar_selected_day_value(date);
     // RefreshSelectedDays expects the browser's leading-comma encoding; save posts the bare day.
@@ -1622,9 +1627,9 @@ async fn load_calendar_submit_form(
             true,
         )
         .await
-        .with_context(|| format!("select calendar day {}", date.format("%Y-%m-%d")))?;
+        .with_context(|| format!("select calendar day {}", date.strftime("%Y-%m-%d")))?;
     dump_debug_html(
-        &format!("select-day-{}", date.format("%Y-%m-%d")),
+        &format!("select-day-{}", date.strftime("%Y-%m-%d")),
         &response,
     );
 
@@ -1638,14 +1643,14 @@ async fn load_calendar_submit_form(
     let selected_row_date = selected_row_date(&response).ok_or_else(|| {
         anyhow!(
             "calendar selection response for {} did not expose a selected row date",
-            date.format("%Y-%m-%d")
+            date.strftime("%Y-%m-%d")
         )
     })?;
     if selected_row_date != date {
         bail!(
             "calendar selection stayed on {} instead of {}",
-            selected_row_date.format("%Y-%m-%d"),
-            date.format("%Y-%m-%d")
+            selected_row_date.strftime("%Y-%m-%d"),
+            date.strftime("%Y-%m-%d")
         );
     }
     if calendar_save_button_disabled(&response, date) == Some(true) {
@@ -1654,7 +1659,7 @@ async fn load_calendar_submit_form(
             .unwrap_or_default();
         bail!(
             "Hilan does not allow self-service edits for {} (selected calendar row is disabled{range})",
-            date.format("%Y-%m-%d")
+            date.strftime("%Y-%m-%d")
         );
     }
     // Delta refreshes omit these browser-maintained fields, but the final save depends on them.
@@ -1816,7 +1821,7 @@ async fn replay_submit_with_fields(
             .await
             .with_context(|| format!("submit attendance form for {}", submit.date))?;
         dump_debug_html(
-            &format!("submit-response-{}", submit.date.format("%Y-%m-%d")),
+            &format!("submit-response-{}", submit.date.strftime("%Y-%m-%d")),
             &response,
         );
         if let Some(message) = extract_submit_error_message(&response) {
@@ -1917,7 +1922,7 @@ fn calendar_page_url(client: &HilanClient) -> String {
     )
 }
 
-fn calendar_grid_dom_id(employee_id: &str, date: NaiveDate) -> String {
+fn calendar_grid_dom_id(employee_id: &str, date: Date) -> String {
     format!(
         "ctl00_mp_RG_Days_{}_{:04}_{:02}_reportsGrid",
         employee_id,
@@ -1929,7 +1934,7 @@ fn calendar_grid_dom_id(employee_id: &str, date: NaiveDate) -> String {
 fn parse_calendar_existing_reports(
     html: &str,
     employee_id: &str,
-    date: NaiveDate,
+    date: Date,
 ) -> Result<Vec<CalendarExistingReport>> {
     let dom_rows = parse_calendar_report_rows_from_dom(html, employee_id, date)?;
     if dom_rows.is_empty() {
@@ -1957,8 +1962,12 @@ fn parse_calendar_existing_reports(
         };
         used[idx] = true;
         let row = &data_rows[idx];
-        let report_date_iso_utc = row_data_report_date_to_iso_utc(row)
-            .ok_or_else(|| anyhow!("parse row-data report date for {}", date.format("%Y-%m-%d")))?;
+        let report_date_iso_utc = row_data_report_date_to_iso_utc(row).ok_or_else(|| {
+            anyhow!(
+                "parse row-data report date for {}",
+                date.strftime("%Y-%m-%d")
+            )
+        })?;
         reports.push(CalendarExistingReport {
             object_id: row.id.clone(),
             employee_id: row.employee_id,
@@ -1980,7 +1989,7 @@ fn parse_calendar_existing_reports(
 fn parse_calendar_report_rows_from_dom(
     html: &str,
     employee_id: &str,
-    date: NaiveDate,
+    date: Date,
 ) -> Result<Vec<ParsedCalendarReportRow>> {
     let document = Html::parse_document(html);
     let row_selector = Selector::parse(r#"tr[id*="_EmployeeReports_row_"]"#)
@@ -2035,14 +2044,18 @@ fn parse_calendar_report_rows_from_dom(
     Ok(rows)
 }
 
-fn parse_row_data_entries(html: &str, date: NaiveDate) -> Result<Vec<RowDataEntry>> {
+fn parse_row_data_entries(html: &str, date: Date) -> Result<Vec<RowDataEntry>> {
     let row_date = format!("{}-{}-{}", date.year(), date.month(), date.day());
     let raw = extract_row_data_json_for_date(html, &row_date)
-        .ok_or_else(|| anyhow!("missing RowData JSON for {}", date.format("%Y-%m-%d")))?;
-    let decoded: String = serde_json::from_str(&format!("\"{raw}\""))
-        .with_context(|| format!("decode RowData JSON string for {}", date.format("%Y-%m-%d")))?;
+        .ok_or_else(|| anyhow!("missing RowData JSON for {}", date.strftime("%Y-%m-%d")))?;
+    let decoded: String = serde_json::from_str(&format!("\"{raw}\"")).with_context(|| {
+        format!(
+            "decode RowData JSON string for {}",
+            date.strftime("%Y-%m-%d")
+        )
+    })?;
     let rows: Vec<RowDataEntry> = serde_json::from_str(&decoded)
-        .with_context(|| format!("parse RowData array for {}", date.format("%Y-%m-%d")))?;
+        .with_context(|| format!("parse RowData array for {}", date.strftime("%Y-%m-%d")))?;
     let mut unique = Vec::new();
     for row in rows {
         if row.is_report_deleted {
@@ -2074,7 +2087,7 @@ fn extract_row_data_json_for_date<'a>(html: &'a str, row_date: &str) -> Option<&
 /// signal: Hilan serializes it as `false` even for days it accepts edits
 /// for. Locked days (outside the self-service window) are instead rendered
 /// with `disabled="disabled"` on the grid's edit inputs and save button.
-fn calendar_save_button_disabled(html: &str, date: NaiveDate) -> Option<bool> {
+fn calendar_save_button_disabled(html: &str, date: Date) -> Option<bool> {
     let document = Html::parse_document(html);
     let name_suffix = format!("_{:04}_{:02}$btnSave", date.year(), date.month());
     let id_suffix = format!("_{:04}_{:02}_btnSave", date.year(), date.month());
@@ -2092,16 +2105,16 @@ fn calendar_save_button_disabled(html: &str, date: NaiveDate) -> Option<bool> {
         .map(|input| input.value().attr("disabled").is_some())
 }
 
-fn calendar_editable_range(html: &str) -> Option<(NaiveDate, NaiveDate)> {
+fn calendar_editable_range(html: &str) -> Option<(Date, Date)> {
     let min = json_date_value(html, "\"MinDate\":\"")?;
     let max = json_date_value(html, "\"MaxDate\":\"")?;
     Some((min, max))
 }
 
-fn json_date_value(html: &str, needle: &str) -> Option<NaiveDate> {
+fn json_date_value(html: &str, needle: &str) -> Option<Date> {
     let start = html.find(needle)? + needle.len();
     let date = html.get(start..start + "YYYY-MM-DD".len())?;
-    NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
+    Date::strptime("%Y-%m-%d", date).ok()
 }
 
 fn row_data_report_date_to_iso_utc(row: &RowDataEntry) -> Option<String> {
@@ -2119,11 +2132,11 @@ fn aspx_json_date_to_iso_utc(raw: &str) -> Option<String> {
         .strip_suffix(")/")?
         .parse::<i64>()
         .ok()?;
-    let dt: DateTime<Utc> = DateTime::from_timestamp_millis(millis)?;
-    Some(dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    let timestamp = Timestamp::from_millisecond(millis).ok()?;
+    Some(format!("{timestamp:.3}"))
 }
 
-fn delete_row_name(employee_id: &str, date: NaiveDate, suffix: &str) -> String {
+fn delete_row_name(employee_id: &str, date: Date, suffix: &str) -> String {
     format!(
         "{}$cellOf_SysColumn_Delete_EmployeeReports_row_{}$sysCol_EmployeeReports_row_{}",
         day_field_prefix(employee_id, date),
@@ -2199,7 +2212,7 @@ fn extract_js_message(text: &str) -> Option<String> {
     None
 }
 
-fn selected_row_date(html: &str) -> Option<NaiveDate> {
+fn selected_row_date(html: &str) -> Option<Date> {
     // Hilan serializes RowDate without zero-padding on month/day,
     // e.g. `"RowDate":"2026-4-9"` rather than `"2026-04-09"`. Parse manually.
     // Use escaped quotes (not raw strings — `"#` would terminate r#"..."# early).
@@ -2213,14 +2226,14 @@ fn selected_row_date(html: &str) -> Option<NaiveDate> {
         return None;
     }
     let (y, m, d) = (
-        parts[0].parse::<i32>().ok()?,
-        parts[1].parse::<u32>().ok()?,
-        parts[2].parse::<u32>().ok()?,
+        parts[0].parse().ok()?,
+        parts[1].parse().ok()?,
+        parts[2].parse().ok()?,
     );
-    NaiveDate::from_ymd_opt(y, m, d)
+    Date::new(y, m, d).ok()
 }
 
-fn day_field_prefix(employee_id: &str, date: NaiveDate) -> String {
+fn day_field_prefix(employee_id: &str, date: Date) -> String {
     format!(
         "ctl00$mp$RG_Days_{}_{:04}_{:02}",
         employee_id,
@@ -2229,44 +2242,29 @@ fn day_field_prefix(employee_id: &str, date: NaiveDate) -> String {
     )
 }
 
-fn month_field_value(date: NaiveDate) -> String {
+fn month_field_value(date: Date) -> String {
     format!("01/{:02}/{:04}", date.month(), date.year())
 }
 
-fn displayed_month(fields: &BTreeMap<String, String>) -> Result<NaiveDate> {
+fn displayed_month(fields: &BTreeMap<String, String>) -> Result<Date> {
     let raw = fields
         .get("ctl00$mp$currentMonth")
         .ok_or_else(|| anyhow!("calendar page is missing ctl00$mp$currentMonth"))?;
-    let parsed = NaiveDate::parse_from_str(raw, "%d/%m/%Y")
+    let parsed = Date::strptime("%d/%m/%Y", raw)
         .with_context(|| format!("parse displayed month from '{raw}'"))?;
-    month_start(parsed)
+    Ok(parsed.first_of_month())
 }
 
-fn month_start(date: NaiveDate) -> Result<NaiveDate> {
-    NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
-        .ok_or_else(|| anyhow!("invalid month start for {}", date.format("%Y-%m-%d")))
-}
-
-fn shift_month(date: NaiveDate, months: i32) -> Result<NaiveDate> {
-    Ok(crate::client::shift_month(date, months))
-}
-
-fn days_in_month(date: NaiveDate) -> u32 {
-    let current = month_start(date).expect("valid month start");
-    let next = shift_month(current, 1).expect("next month");
-    next.signed_duration_since(current).num_days() as u32
-}
-
-fn calendar_selected_day_value(date: NaiveDate) -> String {
+fn calendar_selected_day_value(day: Date) -> String {
     // Inferred from the captured Hilanet payload where 2026-04-10 maps to 9596.
-    let epoch = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
-    date.signed_duration_since(epoch).num_days().to_string()
+    const EPOCH: Date = date(2000, 1, 1);
+    (day - EPOCH).get_days().to_string()
 }
 
-fn blank_calendar_day(date: NaiveDate) -> CalendarDay {
+fn blank_calendar_day(date: Date) -> CalendarDay {
     CalendarDay {
         date,
-        day_name: date.format("%a").to_string(),
+        day_name: date.strftime("%a").to_string(),
         has_error: false,
         error_message: None,
         entry_time: None,
@@ -2376,10 +2374,10 @@ mod tests {
             "/tests/fixtures/calendar/calendar-row0.html"
         ));
         let html = format!("<html><body><table><tbody>{row}</tbody></table></body></html>");
-        let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let month = Date::new(2026, 4, 1).unwrap();
 
         let days = parse_calendar_html(&html, month).expect("parse live calendar row fixture");
-        let expected_date = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+        let expected_date = Date::new(2026, 4, 10).unwrap();
         let day = days
             .iter()
             .find(|day| day.date == expected_date)
@@ -2405,12 +2403,12 @@ mod tests {
                 </td>
             </tr></tbody></table></body></html>
         "#;
-        let month = NaiveDate::from_ymd_opt(2025, 11, 1).unwrap();
+        let month = Date::new(2025, 11, 1).unwrap();
 
         let days = parse_calendar_html(html, month).expect("parse visual calendar work day");
         let day = days
             .iter()
-            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 11, 2).unwrap())
+            .find(|day| day.date == Date::new(2025, 11, 2).unwrap())
             .expect("day 2025-11-02");
 
         assert_eq!(day.entry_time.as_deref(), Some("6:55"));
@@ -2464,12 +2462,12 @@ mod tests {
                 </tbody></table>
             </body></html>
         "#;
-        let month = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let month = Date::new(2026, 4, 1).unwrap();
 
         let days = parse_calendar_html(html, month).expect("parse selected day detail");
         let day = days
             .iter()
-            .find(|day| day.date == NaiveDate::from_ymd_opt(2026, 4, 26).unwrap())
+            .find(|day| day.date == Date::new(2026, 4, 26).unwrap())
             .expect("day 2026-04-26");
 
         assert_eq!(day.entry_time.as_deref(), Some("09:00"));
@@ -2497,12 +2495,12 @@ mod tests {
                 </td>
             </tr></tbody></table></body></html>
         "#;
-        let month = NaiveDate::from_ymd_opt(2025, 11, 1).unwrap();
+        let month = Date::new(2025, 11, 1).unwrap();
 
         let days = parse_calendar_html(html, month).expect("parse visual calendar absence");
         let day = days
             .iter()
-            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 11, 6).unwrap())
+            .find(|day| day.date == Date::new(2025, 11, 6).unwrap())
             .expect("day 2025-11-06");
 
         assert_eq!(day.attendance_type.as_deref(), Some("vacation"));
@@ -2530,12 +2528,12 @@ mod tests {
                 </td>
             </tr></tbody></table></body></html>
         "#;
-        let month = NaiveDate::from_ymd_opt(2025, 4, 1).unwrap();
+        let month = Date::new(2025, 4, 1).unwrap();
 
         let days = parse_calendar_html(html, month).expect("parse user-reported vacation");
         let day = days
             .iter()
-            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 4, 4).unwrap())
+            .find(|day| day.date == Date::new(2025, 4, 4).unwrap())
             .expect("day 2025-04-04");
 
         assert_eq!(day.attendance_type.as_deref(), Some("vacation"));
@@ -2561,12 +2559,12 @@ mod tests {
                 </td>
             </tr></tbody></table></body></html>
         "#;
-        let month = NaiveDate::from_ymd_opt(2025, 9, 1).unwrap();
+        let month = Date::new(2025, 9, 1).unwrap();
 
         let days = parse_calendar_html(html, month).expect("parse holiday cell");
         let day = days
             .iter()
-            .find(|day| day.date == NaiveDate::from_ymd_opt(2025, 9, 25).unwrap())
+            .find(|day| day.date == Date::new(2025, 9, 25).unwrap())
             .expect("day 2025-09-25");
 
         assert_eq!(day.attendance_type.as_deref(), Some("חג"));
@@ -2584,38 +2582,48 @@ mod tests {
 
         assert_eq!(
             displayed_month(&fields).unwrap(),
-            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()
+            Date::new(2026, 4, 1).unwrap()
         );
     }
 
     #[test]
     fn shift_month_moves_across_year_boundaries() {
         assert_eq!(
-            shift_month(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), -1).unwrap(),
-            NaiveDate::from_ymd_opt(2025, 12, 1).unwrap()
+            shift_month(Date::new(2026, 1, 1).unwrap(), -1).unwrap(),
+            Date::new(2025, 12, 1).unwrap()
         );
         assert_eq!(
-            shift_month(NaiveDate::from_ymd_opt(2026, 12, 1).unwrap(), 1).unwrap(),
-            NaiveDate::from_ymd_opt(2027, 1, 1).unwrap()
+            shift_month(Date::new(2026, 12, 1).unwrap(), 1).unwrap(),
+            Date::new(2027, 1, 1).unwrap()
         );
     }
 
     #[test]
-    fn days_in_month_handles_leap_and_non_leap_february() {
-        assert_eq!(
-            days_in_month(NaiveDate::from_ymd_opt(2024, 2, 1).unwrap()),
-            29
-        );
-        assert_eq!(
-            days_in_month(NaiveDate::from_ymd_opt(2025, 2, 1).unwrap()),
-            28
-        );
+    fn calendar_selection_counts_civil_days_from_hilan_epoch() {
+        assert_eq!(calendar_selected_day_value(date(1999, 12, 31)), "-1");
+        assert_eq!(calendar_selected_day_value(date(2000, 2, 29)), "59");
+        assert_eq!(calendar_selected_day_value(date(2000, 3, 1)), "60");
+        assert_eq!(calendar_selected_day_value(date(2026, 4, 10)), "9596");
+    }
+
+    #[test]
+    fn aspx_report_date_preserves_utc_and_millisecond_precision() {
+        for (input, expected) in [
+            ("/Date(-1)/", Some("1969-12-31T23:59:59.999Z")),
+            ("/Date(0)/", Some("1970-01-01T00:00:00.000Z")),
+            ("/Date(100)/", Some("1970-01-01T00:00:00.100Z")),
+            ("/Date(86400000)/", Some("1970-01-02T00:00:00.000Z")),
+            ("/Date(123+0200)/", None),
+            ("/Date(9223372036854775807)/", None),
+        ] {
+            assert_eq!(aspx_json_date_to_iso_utc(input).as_deref(), expected);
+        }
     }
 
     #[test]
     fn dirty_fields_json_matches_browser_shape_for_completion_submit() {
         let submit = AttendanceSubmit {
-            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            date: Date::new(2026, 4, 9).unwrap(),
             attendance_type_code: Some("120".to_string()),
             entry_time: None,
             exit_time: None,
@@ -2641,7 +2649,7 @@ mod tests {
     #[test]
     fn dirty_fields_json_uses_passed_object_id() {
         let submit = AttendanceSubmit {
-            date: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+            date: Date::new(2026, 4, 9).unwrap(),
             attendance_type_code: Some("120".to_string()),
             entry_time: Some("09:00".to_string()),
             exit_time: Some("18:00".to_string()),
@@ -2738,12 +2746,9 @@ mod tests {
             </body></html>
         "#;
 
-        let reports = parse_calendar_existing_reports(
-            html,
-            "460627",
-            NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
-        )
-        .unwrap();
+        let reports =
+            parse_calendar_existing_reports(html, "460627", Date::new(2026, 4, 9).unwrap())
+                .unwrap();
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].object_id, "628cce48-84b5-4a3d-b507-c40169cdfefe");
@@ -2760,7 +2765,7 @@ mod tests {
 
     #[test]
     fn conflicting_absence_reports_collects_all_non_matching_absence_rows() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+        let date = Date::new(2026, 4, 9).unwrap();
         let context = CalendarSubmitContext {
             url: "https://example.test/calendar".to_string(),
             date,
@@ -2824,7 +2829,7 @@ mod tests {
             </script>
         "#;
 
-        let rows = parse_row_data_entries(html, NaiveDate::from_ymd_opt(2026, 4, 9).unwrap())
+        let rows = parse_row_data_entries(html, Date::new(2026, 4, 9).unwrap())
             .expect("parse requested row data");
 
         assert_eq!(rows.len(), 1);
@@ -2849,14 +2854,14 @@ mod tests {
         "#;
 
         assert_eq!(
-            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 5, 27).unwrap()),
+            calendar_save_button_disabled(html, Date::new(2026, 5, 27).unwrap()),
             Some(true)
         );
         assert_eq!(
             calendar_editable_range(html),
             Some((
-                NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
-                NaiveDate::from_ymd_opt(2026, 9, 30).unwrap()
+                Date::new(2026, 6, 1).unwrap(),
+                Date::new(2026, 9, 30).unwrap()
             ))
         );
     }
@@ -2874,7 +2879,7 @@ mod tests {
         "#;
 
         assert_eq!(
-            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 7, 7).unwrap()),
+            calendar_save_button_disabled(html, Date::new(2026, 7, 7).unwrap()),
             Some(false)
         );
     }
@@ -2887,18 +2892,18 @@ mod tests {
         "#;
 
         assert_eq!(
-            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 7, 7).unwrap()),
+            calendar_save_button_disabled(html, Date::new(2026, 7, 7).unwrap()),
             Some(false)
         );
         assert_eq!(
-            calendar_save_button_disabled(html, NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()),
+            calendar_save_button_disabled(html, Date::new(2026, 6, 15).unwrap()),
             Some(true)
         );
     }
 
     #[test]
     fn delete_action_key_matches_browser_shape() {
-        let date = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+        let date = Date::new(2026, 4, 9).unwrap();
         let action_key = format!(
             "{}_action",
             calendar_grid_dom_id("460627", date).replace('_', "$")

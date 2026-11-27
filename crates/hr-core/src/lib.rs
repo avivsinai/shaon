@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use chrono::{Datelike, NaiveDate};
+/// Civil date used by the provider traits and DTOs.
+pub use jiff::civil::Date;
+use jiff::civil::Weekday;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -49,7 +51,7 @@ pub enum AttendanceSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CalendarDay {
-    pub date: NaiveDate,
+    pub date: Date,
     pub day_name: String,
     pub has_error: bool,
     pub error_message: Option<String>,
@@ -72,20 +74,20 @@ impl CalendarDay {
     }
 
     pub fn is_work_day(&self) -> bool {
-        self.date.weekday().num_days_from_sunday() < 5
+        !is_weekend(self.date)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MonthCalendar {
-    pub month: NaiveDate,
+    pub month: Date,
     pub employee_id: String,
     pub days: Vec<CalendarDay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttendanceChange {
-    pub date: NaiveDate,
+    pub date: Date,
     pub attendance_type_code: Option<String>,
     pub use_default_attendance_type: bool,
     pub entry_time: Option<String>,
@@ -126,7 +128,7 @@ impl WritePreview {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FixTarget {
-    pub date: NaiveDate,
+    pub date: Date,
     pub issue_kind: Option<String>,
     pub provider_ref: String,
     pub metadata: BTreeMap<String, String>,
@@ -134,7 +136,7 @@ pub struct FixTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SalaryEntry {
-    pub month: NaiveDate,
+    pub month: Date,
     pub amount: u64,
 }
 
@@ -147,7 +149,7 @@ pub struct SalarySummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocumentDownload {
-    pub month: NaiveDate,
+    pub month: Date,
     pub path: PathBuf,
     pub size_bytes: usize,
 }
@@ -209,16 +211,16 @@ impl fmt::Display for ProviderError {
 
 impl Error for ProviderError {}
 
-pub fn is_weekend(date: NaiveDate) -> bool {
-    matches!(date.weekday(), chrono::Weekday::Fri | chrono::Weekday::Sat)
+pub fn is_weekend(date: Date) -> bool {
+    matches!(date.weekday(), Weekday::Friday | Weekday::Saturday)
 }
 
 #[async_trait]
 pub trait AttendanceProvider: Send {
     async fn identity(&mut self) -> Result<UserIdentity, ProviderError>;
-    async fn month_calendar(&mut self, month: NaiveDate) -> Result<MonthCalendar, ProviderError>;
+    async fn month_calendar(&mut self, month: Date) -> Result<MonthCalendar, ProviderError>;
     async fn attendance_types(&mut self) -> Result<Vec<AttendanceType>, ProviderError>;
-    async fn fix_targets(&mut self, month: NaiveDate) -> Result<Vec<FixTarget>, ProviderError>;
+    async fn fix_targets(&mut self, month: Date) -> Result<Vec<FixTarget>, ProviderError>;
 
     async fn submit_day(
         &mut self,
@@ -248,7 +250,7 @@ pub trait AbsenceProvider: Send {
 pub trait PayslipProvider: Send {
     async fn download_payslip(
         &mut self,
-        month: NaiveDate,
+        month: Date,
         output: Option<&Path>,
     ) -> Result<DocumentDownload, ProviderError>;
 }
@@ -266,4 +268,21 @@ pub trait TaxFormProvider: Send {
 #[async_trait]
 pub trait ReportProvider: Send {
     async fn report(&mut self, spec: ReportSpec) -> Result<ReportTable, ProviderError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calendar_month_round_trips_as_an_iso_date_string() {
+        let json = serde_json::json!({
+            "month": "2024-02-01",
+            "employee_id": "test",
+            "days": [],
+        });
+        let calendar: MonthCalendar = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(calendar.month, jiff::civil::date(2024, 2, 1));
+        assert_eq!(serde_json::to_value(calendar).unwrap(), json);
+    }
 }
